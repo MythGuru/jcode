@@ -367,6 +367,26 @@ impl Config {
                 self.agents.memory_sidecar_enabled = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_WORKING_MEMORY_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.agents.working_memory_enabled = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_WORKING_MEMORY_CAPACITY") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.agents.working_memory_capacity = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_WORKING_MEMORY_ITEM_CHARS") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.agents.working_memory_item_chars = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_MEMORY_IMPORTANCE_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.agents.memory_importance_enabled = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_MEMORY_EMBEDDING_BACKEND") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {

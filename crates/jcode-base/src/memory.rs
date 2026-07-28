@@ -61,6 +61,18 @@ const LEGACY_NOTE_CATEGORY: &str = "note";
 const MEMORY_RELEVANCE_MAX_CANDIDATES: usize = 30;
 const MEMORY_RELEVANCE_MAX_RESULTS: usize = 10;
 
+/// Absolute ceiling on working-memory slots, regardless of config.
+///
+/// Working memory is re-injected on EVERY turn, so its size is a per-request
+/// cost rather than a one-off. This cap keeps a misconfigured value from
+/// silently inflating every prompt. See `docs/MEMORY_BUDGET.md`.
+const WORKING_MEMORY_MAX_CAPACITY: usize = 16;
+
+/// Absolute ceiling on characters retained per working-memory item.
+/// With `WORKING_MEMORY_MAX_CAPACITY` this bounds the STM payload at ~16 KiB
+/// worst case, and ~1.7 KiB at the shipped defaults (7 x 240).
+const WORKING_MEMORY_MAX_ITEM_CHARS: usize = 1024;
+
 /// Producer of synthetic [`MemoryEntry`] values contributed by a higher layer.
 ///
 /// Used to invert the legacy `memory -> skill` dependency: the `skill` layer
@@ -120,6 +132,39 @@ pub type MemoryEventSink = Arc<dyn Fn(crate::protocol::ServerEvent) + Send + Syn
 /// the no-LLM hybrid path (`agents.memory_sidecar_enabled = false`).
 pub fn memory_sidecar_enabled() -> bool {
     crate::config::config().agents.memory_sidecar_enabled
+}
+
+/// Whether the explicit working / short-term memory buffer is active.
+///
+/// Read live (not cached) so toggling the flag takes effect without a restart,
+/// matching how `memory_sidecar_enabled` behaves.
+pub fn working_memory_enabled() -> bool {
+    crate::config::config().agents.working_memory_enabled
+}
+
+/// Number of working-memory slots per session.
+///
+/// Clamped to a sane range: 0 would make the buffer useless, and an unbounded
+/// value would defeat the point of a *short-term* store (every slot is
+/// re-injected on every turn, so the cost is per-request, not one-off).
+pub fn working_memory_capacity() -> usize {
+    crate::config::config()
+        .agents
+        .working_memory_capacity
+        .clamp(1, WORKING_MEMORY_MAX_CAPACITY)
+}
+
+/// Maximum characters retained per working-memory item.
+pub fn working_memory_item_chars() -> usize {
+    crate::config::config()
+        .agents
+        .working_memory_item_chars
+        .clamp(32, WORKING_MEMORY_MAX_ITEM_CHARS)
+}
+
+/// Whether long-term retrieval ranking applies the explicit importance signal.
+pub fn memory_importance_enabled() -> bool {
+    crate::config::config().agents.memory_importance_enabled
 }
 
 /// Whether the LLM precision-judge (sidecar) path can actually run right now:
