@@ -271,7 +271,29 @@ pub struct MemoryEntry {
     /// Confidence score (0.0-1.0) - decays over time, boosted by use
     #[serde(default = "default_confidence")]
     pub confidence: f32,
+    /// Explicit long-term importance (0.0-1.0): how much this memory *matters*,
+    /// as opposed to how *true* it is (`confidence`) or how *often* it is used
+    /// (`access_count` / `strength`).
+    ///
+    /// Set by the agent via the memory tool, seeded on promotion from working
+    /// memory, and nudged during ambient consolidation. Defaults to
+    /// `NEUTRAL_IMPORTANCE` so memories written before this field existed rank
+    /// exactly as they did before.
+    #[serde(default = "default_importance")]
+    pub importance: f32,
+    /// When this memory was promoted out of working (short-term) memory, if it
+    /// came from there. Lets consolidation distinguish rehearsed, task-derived
+    /// knowledge from directly-extracted memories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_at: Option<DateTime<Utc>>,
 }
+
+/// Importance of a memory that nobody has explicitly rated.
+///
+/// Deliberately the midpoint: `memory_priority_score` is centered on this value,
+/// so an unrated memory receives neither a bonus nor a penalty and legacy data
+/// ranks unchanged.
+pub const NEUTRAL_IMPORTANCE: f32 = 0.5;
 
 /// Model id used for memories embedded before model tagging existed. These were
 /// all produced by the local all-MiniLM-L6-v2 model.
@@ -294,6 +316,10 @@ impl MemoryEntry {
 
 fn default_confidence() -> f32 {
     1.0
+}
+
+fn default_importance() -> f32 {
+    NEUTRAL_IMPORTANCE
 }
 
 fn default_active() -> bool {
@@ -328,6 +354,8 @@ impl MemoryEntry {
             embedding: None,
             embedding_model: None,
             confidence: 1.0,
+            importance: NEUTRAL_IMPORTANCE,
+            promoted_at: None,
         }
     }
 
@@ -377,6 +405,34 @@ impl MemoryEntry {
     /// Decay confidence (called when memory was retrieved but not relevant)
     pub fn decay_confidence(&mut self, amount: f32) {
         self.confidence = (self.confidence - amount).max(0.0);
+    }
+
+    /// Set explicit importance, clamped to the valid 0.0-1.0 range.
+    ///
+    /// Clamping here (rather than trusting callers) keeps a bad tool argument or
+    /// a hand-edited JSON file from producing a score outside the range every
+    /// other part of ranking assumes.
+    pub fn set_importance(&mut self, importance: f32) {
+        self.importance = importance.clamp(0.0, 1.0);
+        self.updated_at = Utc::now();
+    }
+
+    /// Nudge importance by a signed delta, clamped to 0.0-1.0.
+    /// Used by ambient consolidation to reward memories that keep proving
+    /// relevant and gently discount ones that keep getting rejected.
+    pub fn adjust_importance(&mut self, delta: f32) {
+        self.importance = (self.importance + delta).clamp(0.0, 1.0);
+    }
+
+    /// Builder form of [`set_importance`].
+    pub fn with_importance(mut self, importance: f32) -> Self {
+        self.importance = importance.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Mark this entry as having been promoted out of working memory.
+    pub fn mark_promoted(&mut self) {
+        self.promoted_at = Some(Utc::now());
     }
 
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
@@ -622,6 +678,84 @@ pub fn memory_score(entry: &MemoryEntry) -> f64 {
     };
     score += (entry.strength as f64).ln() * 5.0;
     score
+}
+
+/// Relative weights of the priority factors. They sum to 1.0, so
+/// `memory_priority_score` always lands in `0.0..=1.0` and composes cleanly with
+/// the cosine / RRF scales used elsewhere in retrieval.
+const PRIORITY_W_IMPORTANCE: f32 = 0.35;
+const PRIORITY_W_CONFIDENCE: f32 = 0.20;
+const PRIORITY_W_RECENCY: f32 = 0.20;
+const PRIORITY_W_USAGE: f32 = 0.15;
+const PRIORITY_W_TRUST: f32 = 0.10;
+
+/// Recency half-life. A memory untouched for this long contributes half its
+/// recency weight; the curve is smooth, so there is no cliff where a memory
+/// abruptly stops mattering.
+const PRIORITY_RECENCY_HALF_LIFE_DAYS: f32 = 14.0;
+
+/// Usage saturation point. Roughly this many combined accesses/reinforcements
+/// earns most of the usage weight, so a heavily-used memory cannot dominate the
+/// score purely by being old and frequently touched.
+const PRIORITY_USAGE_SATURATION: f32 = 20.0;
+
+/// Corrections encode "the user told me I got this wrong". Losing one is much
+/// more costly than carrying it, so they never score below this floor.
+const PRIORITY_CORRECTION_FLOOR: f32 = 0.5;
+
+/// Multi-factor long-term priority for a memory, in `0.0..=1.0`.
+///
+/// This is the prioritized-long-term-memory counterpart to the legacy
+/// [`memory_score`], which it deliberately does NOT replace: `memory_score`
+/// still drives the existing fallback ordering, so adding this function cannot
+/// change current behavior on its own.
+///
+/// Factors, in descending weight:
+/// 1. **importance** - explicit "does this matter", set by the agent/ambient
+/// 2. **confidence** - time-decayed "is this still true" (existing signal)
+/// 3. **recency** - exponential decay on last update
+/// 4. **usage** - saturating curve over access count + reinforcement strength
+/// 5. **trust** - provenance quality
+///
+/// Inactive (superseded) memories score 0.0, matching `memory_score`.
+pub fn memory_priority_score(entry: &MemoryEntry) -> f32 {
+    if !entry.active {
+        return 0.0;
+    }
+
+    let importance = entry.importance.clamp(0.0, 1.0);
+    let confidence = entry.effective_confidence().clamp(0.0, 1.0);
+
+    let age_days = (Utc::now() - entry.updated_at).num_seconds() as f32 / 86_400.0;
+    // Guard against clock skew / future timestamps producing a recency > 1.
+    let recency = (-age_days.max(0.0) / PRIORITY_RECENCY_HALF_LIFE_DAYS * std::f32::consts::LN_2)
+        .exp()
+        .clamp(0.0, 1.0);
+
+    // Saturating usage: ln-based so the first few uses count for a lot and the
+    // hundredth counts for almost nothing.
+    let uses = entry.access_count as f32 + entry.strength as f32;
+    let usage = (uses.max(0.0).ln_1p() / PRIORITY_USAGE_SATURATION.ln_1p()).clamp(0.0, 1.0);
+
+    let trust = match entry.trust {
+        TrustLevel::High => 1.0,
+        TrustLevel::Medium => 0.7,
+        TrustLevel::Low => 0.4,
+    };
+
+    let score = PRIORITY_W_IMPORTANCE * importance
+        + PRIORITY_W_CONFIDENCE * confidence
+        + PRIORITY_W_RECENCY * recency
+        + PRIORITY_W_USAGE * usage
+        + PRIORITY_W_TRUST * trust;
+
+    let score = if matches!(entry.category, MemoryCategory::Correction) {
+        score.max(PRIORITY_CORRECTION_FLOOR)
+    } else {
+        score
+    };
+
+    score.clamp(0.0, 1.0)
 }
 
 fn selected_entries_for_prompt(entries: &[MemoryEntry], limit: usize) -> Vec<&MemoryEntry> {
@@ -1003,5 +1137,179 @@ pub mod ranking {
             assert!(top_k_by_score([("a", 1.0)], 0).is_empty());
             assert!(top_k_by_ord([("a", 1)], 0).is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod priority_tests {
+    use super::*;
+
+    fn entry(category: MemoryCategory) -> MemoryEntry {
+        MemoryEntry::new(category, "probe")
+    }
+
+    #[test]
+    fn new_entries_start_at_neutral_importance() {
+        let e = entry(MemoryCategory::Fact);
+        assert_eq!(e.importance, NEUTRAL_IMPORTANCE);
+        assert!(e.promoted_at.is_none());
+    }
+
+    /// The migration guarantee: memory JSON written before `importance` existed
+    /// must still load, and must land on the neutral value so ranking is
+    /// unchanged for every pre-existing memory.
+    #[test]
+    fn legacy_json_without_importance_deserializes_to_neutral() {
+        let legacy = r#"{
+            "id": "mem_legacy",
+            "category": "fact",
+            "content": "old memory",
+            "tags": [],
+            "created_at": "2020-01-01T00:00:00Z",
+            "updated_at": "2020-01-01T00:00:00Z",
+            "access_count": 3,
+            "source": null
+        }"#;
+        let parsed: MemoryEntry =
+            serde_json::from_str(legacy).expect("legacy entry without importance must parse");
+        assert_eq!(parsed.importance, NEUTRAL_IMPORTANCE);
+        assert!(parsed.promoted_at.is_none());
+        assert_eq!(parsed.access_count, 3);
+    }
+
+    #[test]
+    fn importance_is_clamped_on_set_and_adjust() {
+        let mut e = entry(MemoryCategory::Fact);
+        e.set_importance(5.0);
+        assert_eq!(e.importance, 1.0);
+        e.set_importance(-5.0);
+        assert_eq!(e.importance, 0.0);
+        e.adjust_importance(-1.0);
+        assert_eq!(e.importance, 0.0);
+        e.adjust_importance(2.0);
+        assert_eq!(e.importance, 1.0);
+    }
+
+    #[test]
+    fn inactive_memories_score_zero() {
+        let mut e = entry(MemoryCategory::Fact).with_importance(1.0);
+        e.active = false;
+        assert_eq!(memory_priority_score(&e), 0.0);
+    }
+
+    #[test]
+    fn priority_is_monotone_in_importance() {
+        let low = entry(MemoryCategory::Fact).with_importance(0.1);
+        let high = entry(MemoryCategory::Fact).with_importance(0.9);
+        assert!(
+            memory_priority_score(&high) > memory_priority_score(&low),
+            "raising importance must raise priority"
+        );
+    }
+
+    #[test]
+    fn corrections_never_fall_below_the_floor() {
+        // Worst case on every other axis: no importance, no trust, no usage,
+        // and old enough that recency and confidence have both decayed away.
+        let mut e = entry(MemoryCategory::Correction).with_importance(0.0);
+        e.trust = TrustLevel::Low;
+        e.confidence = 0.0;
+        e.strength = 0;
+        e.access_count = 0;
+        e.updated_at = Utc::now() - chrono::Duration::days(4000);
+        e.created_at = e.updated_at;
+        assert!(
+            memory_priority_score(&e) >= 0.5,
+            "corrections must stay retrievable no matter how stale"
+        );
+    }
+
+    #[test]
+    fn recent_memory_outranks_identical_stale_one() {
+        let fresh = entry(MemoryCategory::Fact);
+        let mut stale = entry(MemoryCategory::Fact);
+        stale.updated_at = Utc::now() - chrono::Duration::days(180);
+        stale.created_at = stale.updated_at;
+        assert!(memory_priority_score(&fresh) > memory_priority_score(&stale));
+    }
+
+    #[test]
+    fn high_importance_can_outrank_a_fresher_unimportant_memory() {
+        // The point of the importance signal: something the user marked as
+        // mattering should not be buried by mere recency.
+        let mut important = entry(MemoryCategory::Fact).with_importance(1.0);
+        important.updated_at = Utc::now() - chrono::Duration::days(30);
+        important.created_at = important.updated_at;
+
+        let trivial = entry(MemoryCategory::Fact).with_importance(0.0);
+
+        assert!(memory_priority_score(&important) > memory_priority_score(&trivial));
+    }
+
+    /// State-space sweep: across the cartesian product of every field that feeds
+    /// the formula, the score must stay a well-formed probability-like value.
+    /// This is the guard against a future weight change silently producing NaN,
+    /// a negative score, or a value above 1.0 that would corrupt the bounded
+    /// retrieval nudge that consumes it.
+    #[test]
+    fn priority_stays_in_unit_range_across_state_space() {
+        let categories = [
+            MemoryCategory::Fact,
+            MemoryCategory::Preference,
+            MemoryCategory::Entity,
+            MemoryCategory::Correction,
+            MemoryCategory::Custom("note".to_string()),
+        ];
+        let trusts = [TrustLevel::High, TrustLevel::Medium, TrustLevel::Low];
+        let importances = [0.0_f32, 0.25, 0.5, 0.75, 1.0];
+        let confidences = [0.0_f32, 0.5, 1.0];
+        let ages_days = [0_i64, 1, 14, 90, 365, 4000];
+        let usages = [0_u32, 1, 20, 10_000];
+
+        let mut checked = 0usize;
+        for category in &categories {
+            for trust in &trusts {
+                for &importance in &importances {
+                    for &confidence in &confidences {
+                        for &age in &ages_days {
+                            for &uses in &usages {
+                                let mut e = entry(category.clone());
+                                e.trust = *trust;
+                                e.importance = importance;
+                                e.confidence = confidence;
+                                e.access_count = uses;
+                                e.strength = uses;
+                                e.updated_at = Utc::now() - chrono::Duration::days(age);
+                                e.created_at = e.updated_at;
+
+                                let score = memory_priority_score(&e);
+                                assert!(
+                                    score.is_finite(),
+                                    "score must be finite (category={category:?} trust={trust:?} \
+                                     importance={importance} confidence={confidence} age={age} uses={uses})"
+                                );
+                                assert!(
+                                    (0.0..=1.0).contains(&score),
+                                    "score {score} out of range (category={category:?} trust={trust:?} \
+                                     importance={importance} confidence={confidence} age={age} uses={uses})"
+                                );
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 5 * 3 * 5 * 3 * 6 * 4);
+    }
+
+    /// A future timestamp (clock skew, or a restored backup) must not produce a
+    /// recency term above 1.0 and inflate the score past the range.
+    #[test]
+    fn future_timestamps_do_not_inflate_priority() {
+        let mut e = entry(MemoryCategory::Fact);
+        e.updated_at = Utc::now() + chrono::Duration::days(365);
+        let score = memory_priority_score(&e);
+        assert!((0.0..=1.0).contains(&score), "score {score} out of range");
     }
 }
