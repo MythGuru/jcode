@@ -309,6 +309,90 @@ fn debug_memory_profile_includes_app_owned_summary_for_large_client_state() {
     );
 }
 
+// === P3: working (short-term) memory reaches the TUI prompt path ===
+//
+// The TUI builds its system prompt through `App::build_system_prompt_split`,
+// the TUI half of the shared chokepoint. Driving the real `App` method here
+// (rather than the base function) is what proves the TUI path is wired, and
+// catches a regression that forgets to pass the session id.
+
+fn set_tui_working_memory_flag(enabled: bool) -> Option<std::ffi::OsString> {
+    let previous = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
+    crate::env::set_var(
+        "JCODE_WORKING_MEMORY_ENABLED",
+        if enabled { "true" } else { "false" },
+    );
+    crate::config::invalidate_config_cache();
+    previous
+}
+
+fn restore_tui_working_memory_flag(previous: Option<std::ffi::OsString>) {
+    match previous {
+        Some(value) => crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", value),
+        None => crate::env::remove_var("JCODE_WORKING_MEMORY_ENABLED"),
+    }
+    crate::config::invalidate_config_cache();
+}
+
+#[test]
+fn tui_prompt_path_injects_working_memory() {
+    let previous = set_tui_working_memory_flag(true);
+    let mut app = create_test_app();
+    let session_id = app.session.id.clone();
+
+    crate::memory::clear_working_memory(&session_id);
+    crate::memory::push_working_memory(
+        &session_id,
+        "tui must restate this every turn",
+        crate::memory::WorkingMemoryKind::Goal,
+    );
+
+    let split = app.build_system_prompt_split(None);
+
+    assert!(
+        split.dynamic_part.contains("# Working Memory"),
+        "the TUI prompt path must inject working memory"
+    );
+    assert!(
+        split
+            .dynamic_part
+            .contains("tui must restate this every turn")
+    );
+    assert!(
+        !split.static_part.contains("# Working Memory"),
+        "working memory must stay out of the cacheable static prefix"
+    );
+
+    crate::memory::clear_working_memory(&session_id);
+    restore_tui_working_memory_flag(previous);
+}
+
+#[test]
+fn tui_prompt_path_omits_working_memory_when_disabled() {
+    let previous = set_tui_working_memory_flag(false);
+    let mut app = create_test_app();
+    let session_id = app.session.id.clone();
+
+    crate::memory::clear_working_memory(&session_id);
+    crate::memory::push_working_memory(
+        &session_id,
+        "tui must not show this while off",
+        crate::memory::WorkingMemoryKind::Goal,
+    );
+
+    let split = app.build_system_prompt_split(None);
+
+    assert!(!split.dynamic_part.contains("# Working Memory"));
+    assert!(
+        !split
+            .dynamic_part
+            .contains("tui must not show this while off")
+    );
+
+    crate::memory::clear_working_memory(&session_id);
+    restore_tui_working_memory_flag(previous);
+}
+
 fn test_side_panel_snapshot(page_id: &str, title: &str) -> crate::side_panel::SidePanelSnapshot {
     crate::side_panel::SidePanelSnapshot {
         focused_page_id: Some(page_id.to_string()),
@@ -502,3 +586,4 @@ fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
         );
     });
 }
+

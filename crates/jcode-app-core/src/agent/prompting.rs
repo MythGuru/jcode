@@ -113,6 +113,7 @@ impl Agent {
             self.session.is_canary,
             memory_prompt,
             working_dir.as_deref(),
+            Some(self.session.id.as_str()),
         );
 
         self.append_current_turn_system_reminder(&mut split);

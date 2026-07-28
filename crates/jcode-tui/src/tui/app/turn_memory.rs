@@ -33,6 +33,7 @@ impl App {
             self.session.is_canary,
             memory_prompt,
             None,
+            Some(self.session.id.as_str()),
         );
         self.append_current_turn_system_reminder(&mut split);
         crate::prompt::append_swarm_effort_directive(
