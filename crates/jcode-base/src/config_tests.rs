@@ -314,6 +314,55 @@ fn test_env_override_memory_sidecar() {
 }
 
 #[test]
+fn working_memory_defaults_are_off_and_bounded() {
+    // Default OFF is deliberate: with both new flags off the memory system must
+    // behave exactly as it did before working memory existed.
+    let cfg = Config::default();
+    assert!(!cfg.agents.working_memory_enabled);
+    assert!(!cfg.agents.memory_importance_enabled);
+    assert_eq!(cfg.agents.working_memory_capacity, 7);
+    assert_eq!(cfg.agents.working_memory_item_chars, 240);
+}
+
+#[test]
+fn test_env_override_working_memory() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_enabled = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
+    let prev_capacity = std::env::var_os("JCODE_WORKING_MEMORY_CAPACITY");
+    let prev_chars = std::env::var_os("JCODE_WORKING_MEMORY_ITEM_CHARS");
+    let prev_importance = std::env::var_os("JCODE_MEMORY_IMPORTANCE_ENABLED");
+    crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "true");
+    crate::env::set_var("JCODE_WORKING_MEMORY_CAPACITY", "5");
+    crate::env::set_var("JCODE_WORKING_MEMORY_ITEM_CHARS", "120");
+    crate::env::set_var("JCODE_MEMORY_IMPORTANCE_ENABLED", "true");
+
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+
+    assert!(cfg.agents.working_memory_enabled);
+    assert!(cfg.agents.memory_importance_enabled);
+    assert_eq!(cfg.agents.working_memory_capacity, 5);
+    assert_eq!(cfg.agents.working_memory_item_chars, 120);
+
+    restore_env_var("JCODE_WORKING_MEMORY_ENABLED", prev_enabled);
+    restore_env_var("JCODE_WORKING_MEMORY_CAPACITY", prev_capacity);
+    restore_env_var("JCODE_WORKING_MEMORY_ITEM_CHARS", prev_chars);
+    restore_env_var("JCODE_MEMORY_IMPORTANCE_ENABLED", prev_importance);
+}
+
+#[test]
+fn working_memory_config_omitted_from_toml_uses_defaults() {
+    // Existing user config.toml files predate these keys. They must still parse,
+    // and must land on the safe defaults rather than failing or enabling STM.
+    let cfg: Config = toml::from_str("[agents]\nmemory_sidecar_enabled = true\n")
+        .expect("config without working-memory keys should parse");
+    assert!(!cfg.agents.working_memory_enabled);
+    assert_eq!(cfg.agents.working_memory_capacity, 7);
+    assert_eq!(cfg.agents.working_memory_item_chars, 240);
+    assert!(!cfg.agents.memory_importance_enabled);
+}
+
+#[test]
 fn tool_config_defaults_to_full_toolset() {
     let selection = ToolConfig::default().selection();
     assert!(selection.allowed_tools.is_none());

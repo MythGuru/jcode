@@ -577,6 +577,37 @@ pub struct AgentsConfig {
     /// metadata / sanity checks). Unset = inferred from the model name.
     #[serde(default)]
     pub memory_embedding_dim: Option<usize>,
+    /// Whether the explicit working / short-term memory (STM) buffer is active.
+    ///
+    /// When enabled, a small fixed-capacity per-session buffer is injected at the
+    /// highest priority on every turn (unlike long-term memories, which are
+    /// suppressed after their first injection). Defaults to `false` so the memory
+    /// system behaves exactly as before until the feature is deliberately turned
+    /// on. Env override: `JCODE_WORKING_MEMORY_ENABLED`.
+    #[serde(default = "default_working_memory_enabled")]
+    pub working_memory_enabled: bool,
+    /// Number of working-memory slots per session (Miller's 7 +/- 2).
+    ///
+    /// This is a hard cap: pushing past it evicts the least-rehearsed item. Keep
+    /// it small; working memory is re-injected every turn, so each slot costs
+    /// context on every request. Env override: `JCODE_WORKING_MEMORY_CAPACITY`.
+    #[serde(default = "default_working_memory_capacity")]
+    pub working_memory_capacity: usize,
+    /// Maximum characters retained per working-memory item. Longer content is
+    /// truncated on push. Combined with `working_memory_capacity` this bounds the
+    /// per-turn injection cost of the STM buffer.
+    /// Env override: `JCODE_WORKING_MEMORY_ITEM_CHARS`.
+    #[serde(default = "default_working_memory_item_chars")]
+    pub working_memory_item_chars: usize,
+    /// Whether long-term memory retrieval applies the explicit importance signal.
+    ///
+    /// When enabled, hybrid retrieval scores are nudged by each memory's
+    /// `importance` (bounded, so importance only breaks near-ties and can never
+    /// displace a clearly better semantic match). Defaults to `false` so ranking
+    /// is bit-identical to today until deliberately enabled.
+    /// Env override: `JCODE_MEMORY_IMPORTANCE_ENABLED`.
+    #[serde(default = "default_memory_importance_enabled")]
+    pub memory_importance_enabled: bool,
     /// Maximum number of live swarm worker agents in one swarm. This is the RAM
     /// safety budget for both recursive ad hoc spawning and deep-mode `run_plan`
     /// parallelism. Completed/stopped workers do not consume slots. Light mode
@@ -611,6 +642,25 @@ fn default_memory_rerank_min_agree() -> usize {
     2
 }
 
+fn default_working_memory_enabled() -> bool {
+    false
+}
+
+/// Default working-memory slot count. 7 is the classic short-term span; large
+/// enough to hold a task's goal, constraints and open threads, small enough that
+/// re-injecting it every turn stays cheap.
+fn default_working_memory_capacity() -> usize {
+    7
+}
+
+fn default_working_memory_item_chars() -> usize {
+    240
+}
+
+fn default_memory_importance_enabled() -> bool {
+    false
+}
+
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
@@ -627,6 +677,10 @@ impl Default for AgentsConfig {
             memory_embedding_model: None,
             memory_embedding_base_url: None,
             memory_embedding_dim: None,
+            working_memory_enabled: default_working_memory_enabled(),
+            working_memory_capacity: default_working_memory_capacity(),
+            working_memory_item_chars: default_working_memory_item_chars(),
+            memory_importance_enabled: default_memory_importance_enabled(),
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
         }
     }

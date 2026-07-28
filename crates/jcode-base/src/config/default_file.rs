@@ -413,6 +413,21 @@ swarm_max_concurrent_agents = 32
 # memory_embedding_model = "text-embedding-3-small"
 # memory_embedding_base_url = "https://api.openai.com/v1"
 # memory_embedding_dim = 1536
+#
+# Working / short-term memory (STM). A small per-session buffer that is
+# re-injected at the top of context on EVERY turn, unlike long-term memories
+# which are suppressed after their first injection. Holds the current task's
+# goal, constraints and open threads. Items that get rehearsed are promoted into
+# long-term memory; the rest are discarded when the session ends.
+# Default off. Env override: JCODE_WORKING_MEMORY_ENABLED
+# working_memory_enabled = false
+# working_memory_capacity = 7
+# working_memory_item_chars = 240
+#
+# Use the explicit per-memory importance signal when ranking long-term recall.
+# Bounded: importance only breaks near-ties, it can never displace a clearly
+# better semantic match. Default off. Env: JCODE_MEMORY_IMPORTANCE_ENABLED
+# memory_importance_enabled = false
 
 [terminal]
 # Without a hook, clients inside tmux automatically use a right-side pane.
