@@ -28,6 +28,8 @@ mod cache;
 mod pending;
 #[path = "memory_prompt.rs"]
 mod prompt_support;
+#[path = "memory/working.rs"]
+mod working;
 
 pub use crate::memory_types::{
     MemoryCategory, MemoryEntry, MemoryScope, MemoryStore, Reinforcement, TrustLevel,
@@ -55,6 +57,12 @@ use pending::{begin_memory_check, finish_memory_check};
 pub(crate) use prompt_support::format_context_for_extraction;
 pub use prompt_support::{
     focus_query_text, format_context_for_relevance, format_focused_query_for_relevance,
+};
+pub use working::{
+    WorkingMemoryItem, WorkingMemoryKind, clear_all_working_memory, clear_working_memory,
+    delete_working_memory_file, format_working_memory_for_prompt, list_working_memory,
+    load_working_memory, push_working_memory, rehearse_working_memory, remove_working_memory,
+    restore_working_memory, save_working_memory, working_memory_is_empty,
 };
 
 const LEGACY_NOTE_CATEGORY: &str = "note";
