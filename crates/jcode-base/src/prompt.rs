@@ -225,6 +225,12 @@ pub struct ContextInfo {
     pub selfdev_chars: usize,
     /// Memory section size (chars)
     pub memory_chars: usize,
+    /// Working (short-term) memory section size (chars).
+    ///
+    /// Tracked separately from `memory_chars` because the two have different
+    /// cost profiles: long-term memory is injected once and then suppressed,
+    /// while working memory is re-sent on every turn.
+    pub working_memory_chars: usize,
     /// Prompt overlay section size (chars)
     pub prompt_overlay_chars: usize,
     /// Preferred tools section size (chars)
@@ -269,6 +275,7 @@ impl ContextInfo {
             + self.skills_chars
             + self.selfdev_chars
             + self.memory_chars
+            + self.working_memory_chars
             + self.prompt_overlay_chars
             + self.preferred_tools_chars
             + self.tool_defs_chars
@@ -302,6 +309,9 @@ impl ContextInfo {
         }
         if self.memory_chars > 0 {
             parts.push(("mem", self.memory_chars, "🧠"));
+        }
+        if self.working_memory_chars > 0 {
+            parts.push(("stm", self.working_memory_chars, "📌"));
         }
         if self.prompt_overlay_chars > 0 {
             parts.push(("overlay", self.prompt_overlay_chars, "🧩"));
@@ -450,12 +460,19 @@ pub fn build_system_prompt_full_with_capabilities(
 
 /// Build system prompt split into static (cacheable) and dynamic parts
 /// This improves cache hit rate by keeping frequently-changing content separate
+///
+/// `session_id` identifies whose working-memory buffer to inject. Pass `None`
+/// when there is no session (e.g. one-off prompt rendering); short-term memory
+/// is then skipped. It is a required parameter rather than one with a default
+/// so a new caller has to make that choice consciously instead of silently
+/// dropping short-term memory.
 pub fn build_system_prompt_split(
     skill_prompt: Option<&str>,
     available_skills: &[SkillInfo],
     is_selfdev: bool,
     memory_prompt: Option<&str>,
     working_dir: Option<&Path>,
+    session_id: Option<&str>,
 ) -> (SplitSystemPrompt, ContextInfo) {
     build_system_prompt_split_with_capabilities(
         skill_prompt,
@@ -463,6 +480,7 @@ pub fn build_system_prompt_split(
         is_selfdev,
         memory_prompt,
         working_dir,
+        session_id,
         PromptCapabilities::current(),
     )
 }
@@ -473,6 +491,7 @@ pub fn build_system_prompt_split_with_capabilities(
     is_selfdev: bool,
     memory_prompt: Option<&str>,
     working_dir: Option<&Path>,
+    session_id: Option<&str>,
     capabilities: PromptCapabilities,
 ) -> (SplitSystemPrompt, ContextInfo) {
     let mut static_parts = base_system_prompt_parts(capabilities);
@@ -536,6 +555,21 @@ pub fn build_system_prompt_split_with_capabilities(
     if let Some(memory) = memory_prompt {
         info.memory_chars = memory.len();
         dynamic_parts.push(memory.to_string());
+    }
+
+    // Working (short-term) memory: what this session is actively working on.
+    //
+    // Deliberately in the DYNAMIC part. Working memory is re-stated on every
+    // turn and changes as the session progresses, so putting it in the static
+    // part would invalidate the cached prefix on each edit. Placed after
+    // long-term memory so the most session-local, most recently true context is
+    // closest to the conversation.
+    //
+    // Yields `None` when the feature flag is off, so the flag-off prompt is
+    // byte-identical to the pre-working-memory prompt.
+    if let Some(working) = crate::memory::working_memory_prompt_section(session_id) {
+        info.working_memory_chars = working.len();
+        dynamic_parts.push(working);
     }
 
     // Active skill prompt (changes per skill invocation)

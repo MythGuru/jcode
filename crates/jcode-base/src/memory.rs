@@ -150,6 +150,26 @@ pub fn working_memory_enabled() -> bool {
     crate::config::config().agents.working_memory_enabled
 }
 
+/// The working-memory section to inject into this turn's prompt, if any.
+///
+/// This is the single gate for short-term memory injection. It returns `None`
+/// unless ALL of the following hold, so a caller cannot accidentally inject STM
+/// by forgetting a check:
+/// - the `working_memory_enabled` flag is on (default OFF),
+/// - a session id is known (a buffer is per-session; no id means no buffer),
+/// - that session's buffer is non-empty.
+///
+/// Returning `None` rather than an empty string matters: the prompt builder
+/// skips the section entirely, so with the flag off the produced prompt is
+/// byte-identical to the pre-working-memory behavior.
+pub fn working_memory_prompt_section(session_id: Option<&str>) -> Option<String> {
+    if !working_memory_enabled() {
+        return None;
+    }
+    let session_id = session_id?;
+    format_working_memory_for_prompt(session_id)
+}
+
 /// Number of working-memory slots per session.
 ///
 /// Clamped to a sane range: 0 would make the buffer useless, and an unbounded

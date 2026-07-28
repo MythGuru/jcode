@@ -1513,3 +1513,95 @@ async fn stranded_tool_use_stop_continues_instead_of_ending_the_turn() {
         "the recovered turn must deliver the model's real completion, got {text:?}"
     );
 }
+
+// === P3: working (short-term) memory reaches the APP-CORE prompt path ===
+//
+// The app-core `Agent` builds its system prompt through
+// `Agent::build_system_prompt_split`, which is the app-core half of the shared
+// chokepoint. These tests drive that real method (not the base function
+// directly) so a regression that drops the session id here is caught.
+
+fn set_working_memory_flag(enabled: bool) -> Option<std::ffi::OsString> {
+    let previous = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
+    crate::env::set_var(
+        "JCODE_WORKING_MEMORY_ENABLED",
+        if enabled { "true" } else { "false" },
+    );
+    crate::config::invalidate_config_cache();
+    previous
+}
+
+fn restore_working_memory_flag(previous: Option<std::ffi::OsString>) {
+    match previous {
+        Some(value) => crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", value),
+        None => crate::env::remove_var("JCODE_WORKING_MEMORY_ENABLED"),
+    }
+    crate::config::invalidate_config_cache();
+}
+
+#[tokio::test]
+async fn app_core_prompt_path_injects_working_memory() {
+    let _guard = crate::storage::lock_test_env();
+    let previous = set_working_memory_flag(true);
+
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let agent = Agent::new(provider, registry);
+    let session_id = agent.session.id.clone();
+
+    crate::memory::clear_working_memory(&session_id);
+    crate::memory::push_working_memory(
+        &session_id,
+        "app-core must restate this every turn",
+        crate::memory::WorkingMemoryKind::Constraint,
+    );
+
+    let split = agent.build_system_prompt_split(None);
+
+    assert!(
+        split.dynamic_part.contains("# Working Memory"),
+        "the app-core prompt path must inject working memory"
+    );
+    assert!(
+        split
+            .dynamic_part
+            .contains("app-core must restate this every turn")
+    );
+    assert!(
+        !split.static_part.contains("# Working Memory"),
+        "working memory must stay out of the cacheable static prefix"
+    );
+
+    crate::memory::clear_working_memory(&session_id);
+    restore_working_memory_flag(previous);
+}
+
+#[tokio::test]
+async fn app_core_prompt_path_omits_working_memory_when_disabled() {
+    let _guard = crate::storage::lock_test_env();
+    let previous = set_working_memory_flag(false);
+
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let agent = Agent::new(provider, registry);
+    let session_id = agent.session.id.clone();
+
+    crate::memory::clear_working_memory(&session_id);
+    crate::memory::push_working_memory(
+        &session_id,
+        "must not appear while the flag is off",
+        crate::memory::WorkingMemoryKind::Constraint,
+    );
+
+    let split = agent.build_system_prompt_split(None);
+
+    assert!(!split.dynamic_part.contains("# Working Memory"));
+    assert!(
+        !split
+            .dynamic_part
+            .contains("must not appear while the flag is off")
+    );
+
+    crate::memory::clear_working_memory(&session_id);
+    restore_working_memory_flag(previous);
+}

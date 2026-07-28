@@ -24,6 +24,7 @@ fn mermaid_prompt_module_follows_capability() {
         false,
         None,
         None,
+        None,
         PromptCapabilities { mermaid: true },
     );
     assert!(enabled.static_part.contains(MERMAID_PROMPT));
@@ -32,6 +33,7 @@ fn mermaid_prompt_module_follows_capability() {
         None,
         &[],
         false,
+        None,
         None,
         None,
         PromptCapabilities { mermaid: false },
@@ -108,7 +110,7 @@ fn test_session_context_includes_time_timezone_and_system_info() {
 
 #[test]
 fn test_split_prompt_does_not_inject_session_context_per_turn() {
-    let (split, _info) = build_system_prompt_split(None, &[], false, None, None);
+    let (split, _info) = build_system_prompt_split(None, &[], false, None, None, None);
     assert!(!split.dynamic_part.contains("# Session Context"));
     assert!(!split.dynamic_part.contains("Time: "));
     assert!(!split.dynamic_part.contains("Timezone: UTC"));
@@ -116,7 +118,7 @@ fn test_split_prompt_does_not_inject_session_context_per_turn() {
 
 #[test]
 fn sponsored_discovery_is_not_injected_into_the_system_prompt() {
-    let (split, _) = build_system_prompt_split(None, &[], false, None, None);
+    let (split, _) = build_system_prompt_split(None, &[], false, None, None, None);
     assert!(!split.static_part.contains("Discoverable Tools"));
     assert!(!split.static_part.contains("discover_tools"));
 }
@@ -215,7 +217,7 @@ fn test_preferred_tools_files_are_loaded_from_project_and_global_jcode_dirs() {
     assert!(info.preferred_tools_chars > 0);
 
     let (split, split_info) =
-        build_system_prompt_split(None, &[], false, None, Some(project_dir.path()));
+        build_system_prompt_split(None, &[], false, None, Some(project_dir.path()), None);
     assert!(
         split
             .static_part
@@ -314,7 +316,7 @@ fn test_selfdev_prompt_uses_desktop_focus_for_desktop_working_dir() {
 #[test]
 fn test_split_selfdev_prompt_defaults_to_tui_focus_for_repo_root() {
     let repo_dir = std::path::Path::new("/tmp/jcode");
-    let (split, _info) = build_system_prompt_split(None, &[], true, None, Some(repo_dir));
+    let (split, _info) = build_system_prompt_split(None, &[], true, None, Some(repo_dir), None);
     assert!(
         split
             .static_part
@@ -348,7 +350,7 @@ fn test_selfdev_prompt_template_placeholders_are_resolved() {
 
 #[test]
 fn split_prompt_estimated_tokens_is_positive_when_populated() {
-    let (split, _info) = build_system_prompt_split(None, &[], false, None, None);
+    let (split, _info) = build_system_prompt_split(None, &[], false, None, None, None);
     assert!(split.chars() > 0);
     assert!(split.estimated_tokens() > 0);
 }
@@ -417,4 +419,198 @@ fn classify_effort_distinguishes_reasoning_from_swarm_modes() {
     assert!(EffortKind::SwarmLight.is_swarm_mode());
     assert!(EffortKind::SwarmDeep.is_swarm_mode());
     assert!(!EffortKind::Reasoning.is_swarm_mode());
+}
+
+// === Working (short-term) memory injection at the shared chokepoint ===
+//
+// `build_system_prompt_split` is the single place both the TUI and the
+// app-core agent build their system prompt, so injecting here is what makes
+// STM reach both products. These tests pin the behavior of that chokepoint
+// itself; the per-path tests live next to each caller.
+
+/// Toggle the working-memory flag for the duration of a test.
+///
+/// The flag is read live from the process config cache, so it has to be set via
+/// the env override and the cache invalidated on both entry and exit.
+struct WorkingMemoryFlag {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl WorkingMemoryFlag {
+    fn set(enabled: bool) -> Self {
+        let previous = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
+        crate::env::set_var(
+            "JCODE_WORKING_MEMORY_ENABLED",
+            if enabled { "true" } else { "false" },
+        );
+        crate::config::invalidate_config_cache();
+        Self { previous }
+    }
+}
+
+impl Drop for WorkingMemoryFlag {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", value),
+            None => crate::env::remove_var("JCODE_WORKING_MEMORY_ENABLED"),
+        }
+        crate::config::invalidate_config_cache();
+    }
+}
+
+#[test]
+fn working_memory_is_injected_into_the_dynamic_part_when_enabled() {
+    let _guard = crate::storage::lock_test_env();
+    let _flag = WorkingMemoryFlag::set(true);
+    let session = "prompt-stm-enabled";
+    crate::memory::clear_working_memory(session);
+    crate::memory::push_working_memory(
+        session,
+        "ship the working memory phase",
+        crate::memory::WorkingMemoryKind::Goal,
+    );
+
+    let (split, info) = build_system_prompt_split(None, &[], false, None, None, Some(session));
+
+    assert!(
+        split.dynamic_part.contains("# Working Memory"),
+        "STM must be injected when the flag is on"
+    );
+    assert!(
+        split.dynamic_part.contains("ship the working memory phase"),
+        "the item content itself must reach the prompt"
+    );
+    assert!(
+        !split.static_part.contains("# Working Memory"),
+        "STM changes every turn, so it must NOT land in the cacheable static prefix"
+    );
+    assert!(info.working_memory_chars > 0);
+
+    crate::memory::clear_working_memory(session);
+}
+
+#[test]
+fn working_memory_is_not_injected_when_the_flag_is_off() {
+    let _guard = crate::storage::lock_test_env();
+    let _flag = WorkingMemoryFlag::set(false);
+    let session = "prompt-stm-disabled";
+    crate::memory::clear_working_memory(session);
+    crate::memory::push_working_memory(
+        session,
+        "this must stay invisible",
+        crate::memory::WorkingMemoryKind::Goal,
+    );
+
+    let (split, info) = build_system_prompt_split(None, &[], false, None, None, Some(session));
+
+    assert!(!split.dynamic_part.contains("# Working Memory"));
+    assert!(!split.dynamic_part.contains("this must stay invisible"));
+    assert_eq!(info.working_memory_chars, 0);
+
+    // The default-off prompt must be byte-identical to one built with no
+    // session at all. This is the regression guard for "P3 changed prompts for
+    // users who never opted in".
+    let (no_session, _) = build_system_prompt_split(None, &[], false, None, None, None);
+    assert_eq!(split.dynamic_part, no_session.dynamic_part);
+    assert_eq!(split.static_part, no_session.static_part);
+
+    crate::memory::clear_working_memory(session);
+}
+
+#[test]
+fn working_memory_section_is_skipped_when_the_buffer_is_empty() {
+    let _guard = crate::storage::lock_test_env();
+    let _flag = WorkingMemoryFlag::set(true);
+    let session = "prompt-stm-empty";
+    crate::memory::clear_working_memory(session);
+
+    let (split, info) = build_system_prompt_split(None, &[], false, None, None, Some(session));
+
+    assert!(
+        !split.dynamic_part.contains("# Working Memory"),
+        "an empty buffer must not inject a bare header"
+    );
+    assert_eq!(info.working_memory_chars, 0);
+}
+
+#[test]
+fn working_memory_without_a_session_id_injects_nothing() {
+    let _guard = crate::storage::lock_test_env();
+    let _flag = WorkingMemoryFlag::set(true);
+    let session = "prompt-stm-other-session";
+    crate::memory::clear_working_memory(session);
+    crate::memory::push_working_memory(
+        session,
+        "belongs to another session",
+        crate::memory::WorkingMemoryKind::Fact,
+    );
+
+    let (split, info) = build_system_prompt_split(None, &[], false, None, None, None);
+
+    assert!(!split.dynamic_part.contains("# Working Memory"));
+    assert!(!split.dynamic_part.contains("belongs to another session"));
+    assert_eq!(info.working_memory_chars, 0);
+
+    crate::memory::clear_working_memory(session);
+}
+
+#[test]
+fn working_memory_injection_is_isolated_per_session() {
+    let _guard = crate::storage::lock_test_env();
+    let _flag = WorkingMemoryFlag::set(true);
+    let mine = "prompt-stm-mine";
+    let theirs = "prompt-stm-theirs";
+    crate::memory::clear_working_memory(mine);
+    crate::memory::clear_working_memory(theirs);
+    crate::memory::push_working_memory(mine, "my own goal", crate::memory::WorkingMemoryKind::Goal);
+    crate::memory::push_working_memory(
+        theirs,
+        "someone else's goal",
+        crate::memory::WorkingMemoryKind::Goal,
+    );
+
+    let (split, _) = build_system_prompt_split(None, &[], false, None, None, Some(mine));
+
+    assert!(split.dynamic_part.contains("my own goal"));
+    assert!(
+        !split.dynamic_part.contains("someone else's goal"),
+        "one session must never see another session's working memory"
+    );
+
+    crate::memory::clear_working_memory(mine);
+    crate::memory::clear_working_memory(theirs);
+}
+
+#[test]
+fn long_term_and_working_memory_coexist_in_order() {
+    let _guard = crate::storage::lock_test_env();
+    let _flag = WorkingMemoryFlag::set(true);
+    let session = "prompt-stm-with-ltm";
+    crate::memory::clear_working_memory(session);
+    crate::memory::push_working_memory(
+        session,
+        "current working goal",
+        crate::memory::WorkingMemoryKind::Goal,
+    );
+
+    let long_term = "# Memory\n\n## Notes\n1. recalled long-term fact";
+    let (split, info) =
+        build_system_prompt_split(None, &[], false, Some(long_term), None, Some(session));
+
+    let ltm_at = split
+        .dynamic_part
+        .find("recalled long-term fact")
+        .expect("long-term memory should still be injected");
+    let stm_at = split
+        .dynamic_part
+        .find("current working goal")
+        .expect("working memory should be injected alongside long-term memory");
+    assert!(
+        ltm_at < stm_at,
+        "session-local working memory belongs closest to the conversation"
+    );
+    assert!(info.memory_chars > 0);
+    assert!(info.working_memory_chars > 0);
+
+    crate::memory::clear_working_memory(session);
 }

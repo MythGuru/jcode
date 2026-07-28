@@ -769,7 +769,7 @@ mod tests {
             !name.contains(".."),
             "sanitized name still traverses: {name}"
         );
-        assert!(path.ends_with(format!("{name}")));
+        assert!(path.ends_with(name));
         assert!(
             path.parent()
                 .and_then(|p| p.file_name())
