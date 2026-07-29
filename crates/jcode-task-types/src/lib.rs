@@ -344,6 +344,12 @@ pub struct TodoGoal {
     /// oldest first. Tool-maintained; model-supplied values are ignored.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub end_to_end_ownership_history: Vec<u8>,
+    /// Optional link from this session goal to a durable task-graph step,
+    /// as `"<initiative-id>/<step-id>"`. When the group completes, the todo
+    /// tool checkpoints that step (subject to its verification gate).
+    /// Ignored unless the task graph is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_ref: Option<String>,
 }
 
 /// A goal field changed by a todo-tool update. This lets transcript renderers

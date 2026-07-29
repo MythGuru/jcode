@@ -131,6 +131,9 @@ fn merge_goals(stored: &[TodoGoal], incoming: Option<Vec<TodoGoal>>) -> Vec<Todo
             if goal.feedback_loop.is_none() {
                 goal.feedback_loop = prev.feedback_loop.clone();
             }
+            if goal.graph_ref.is_none() {
+                goal.graph_ref = prev.graph_ref.clone();
+            }
         }
         record_score_observation(
             &mut goal.closed_feedback_loop_history,
@@ -328,6 +331,70 @@ fn record_reframe_observations(
         }
     }
     (observations, immediate)
+}
+
+/// T3 bridge from session todos to the durable task graph: when this write
+/// closes a todo group whose goal carries a `graph_ref`
+/// (`"<initiative-id>/<step-id>"`), checkpoint that step. Completion passes
+/// through the T2 verification gate, so an unverified step parks as
+/// done_pending_verification rather than silently completing.
+///
+/// Best-effort by design: the durable graph is a secondary consumer of todo
+/// state, so a broken ref or storage failure logs and returns a note instead
+/// of failing the todo write.
+fn checkpoint_linked_graph_steps(
+    ctx: &ToolContext,
+    previous: &[TodoItem],
+    todos: &[TodoItem],
+    goals: &[TodoGoal],
+) -> Vec<String> {
+    if !crate::goal::graph::task_graph_enabled() {
+        return Vec::new();
+    }
+    let closed = crate::todo::groups_closed_by_update(previous, todos);
+    let mut notes = Vec::new();
+    for group in closed {
+        let Some(graph_ref) = goals
+            .iter()
+            .find(|goal| goal_group_key(goal.group.as_deref()) == group)
+            .and_then(|goal| goal.graph_ref.as_deref())
+        else {
+            continue;
+        };
+        let Some((goal_id, step_id)) = graph_ref.split_once('/') else {
+            notes.push(format!(
+                "Note: graph_ref `{}` is malformed (expected <initiative-id>/<step-id>); skipped.",
+                graph_ref
+            ));
+            continue;
+        };
+        match crate::goal::verification::checkpoint_goal_step(
+            goal_id,
+            ctx.working_dir.as_deref(),
+            step_id,
+            &ctx.session_id,
+        ) {
+            Ok(status) if status == "completed" => notes.push(format!(
+                "Task graph: step `{}` of `{}` completed.",
+                step_id, goal_id
+            )),
+            Ok(status) => notes.push(format!(
+                "Task graph: step `{}` of `{}` is `{}`. Run the verification (build/tests), then use the initiative tool's verify_step action.",
+                step_id, goal_id, status
+            )),
+            Err(err) => {
+                crate::logging::warn(&format!(
+                    "[tool:todo] graph checkpoint failed ref={} session_id={} error={}",
+                    graph_ref, ctx.session_id, err
+                ));
+                notes.push(format!(
+                    "Note: could not checkpoint task-graph step `{}`: {}",
+                    graph_ref, err
+                ));
+            }
+        }
+    }
+    notes
 }
 
 fn build_todo_output(
@@ -652,6 +719,8 @@ impl Tool for TodoTool {
                 let concise_plan_change = assessment_only
                     .then(|| plan_change(&stored_plan, &plan))
                     .flatten();
+                let graph_notes =
+                    checkpoint_linked_graph_steps(&ctx, &previous, &todos, &goals);
                 save_todos(&ctx.session_id, &todos)?;
                 save_goals(&ctx.session_id, &goals)?;
                 save_plan(&ctx.session_id, &plan)?;
@@ -667,7 +736,7 @@ impl Tool for TodoTool {
                     goals,
                     concise_plan_change,
                     concise_goal_changes,
-                    nudges,
+                    nudges.into_iter().chain(graph_notes),
                 )
             })()
         } else {
@@ -1589,5 +1658,98 @@ mod tests {
         let mut incoming = vec![history_todo("9", Some(80), vec![1, 2, 3])];
         merge_confidence_history(&[], &mut incoming);
         assert_eq!(incoming[0].confidence_history, vec![80]);
+    }
+
+    /// T3 bridge: closing a todo group whose goal carries a graph_ref
+    /// checkpoints the durable step through the T2 gate.
+    #[tokio::test]
+    async fn closing_a_linked_group_checkpoints_the_graph_step() {
+        let _env = crate::storage::lock_test_env();
+        crate::knowledge::verification::clear_all();
+        let home = tempfile::tempdir().expect("home");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_flag = std::env::var_os("JCODE_TASK_GRAPH_ENABLED");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var("JCODE_TASK_GRAPH_ENABLED", "true");
+        crate::config::invalidate_config_cache();
+
+        let project = home.path().join("repo");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let goal = crate::goal::create_goal(
+            crate::goal::GoalCreateInput {
+                title: "Bridge demo".to_string(),
+                scope: crate::goal::GoalScope::Project,
+                milestones: vec![serde_json::from_value(serde_json::json!({
+                    "id": "m1",
+                    "title": "milestone",
+                    "steps": [{"id": "step1", "content": "durable step", "status": "pending"}]
+                }))
+                .expect("milestone")],
+                ..Default::default()
+            },
+            Some(&project),
+        )
+        .expect("create goal");
+
+        let tool = TodoTool::new();
+        let ctx = ToolContext {
+            session_id: "ses_todo_bridge".to_string(),
+            message_id: "msg1".to_string(),
+            tool_call_id: "tool1".to_string(),
+            working_dir: Some(project.clone()),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+        };
+
+        // Open the group with a linked goal.
+        tool.execute(
+            serde_json::json!({
+                "todos": [{"content": "work", "status": "in_progress", "priority": "high",
+                            "id": "w1", "group": "bridge work", "confidence": 90}],
+                "goals": [{"group": "bridge work", "closed_feedback_loop": 97,
+                            "feedback_loop": "cargo test result observed",
+                            "graph_ref": format!("{}/step1", goal.id)}]
+            }),
+            ctx.clone(),
+        )
+        .await
+        .expect("open group");
+
+        // Close the group; the plain step (no verification) completes.
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "todos": [{"content": "work", "status": "completed", "priority": "high",
+                                "id": "w1", "group": "bridge work", "confidence": 97,
+                                "completion_confidence": 97}],
+                    "goals": [{"group": "bridge work", "closed_feedback_loop": 97,
+                                "feedback_loop": "cargo test result observed",
+                                "end_to_end_ownership": 97}]
+                }),
+                ctx,
+            )
+            .await
+            .expect("close group");
+        assert!(
+            out.output.contains("Task graph: step `step1`"),
+            "bridge note missing: {}",
+            out.output
+        );
+
+        let stored = crate::goal::load_goal(&goal.id, None, Some(&project))
+            .expect("load")
+            .expect("goal");
+        assert_eq!(stored.milestones[0].steps[0].status, "completed");
+
+        match prev_home {
+            Some(v) => crate::env::set_var("JCODE_HOME", v),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        match prev_flag {
+            Some(v) => crate::env::set_var("JCODE_TASK_GRAPH_ENABLED", v),
+            None => crate::env::remove_var("JCODE_TASK_GRAPH_ENABLED"),
+        }
+        crate::config::invalidate_config_cache();
     }
 }

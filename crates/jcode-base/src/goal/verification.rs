@@ -272,6 +272,50 @@ pub fn verify_goal_step_by_user(
     Ok((goal, provenance))
 }
 
+/// Mark one step complete on behalf of the todo bridge (T3): the session
+/// finished the todo group linked to this step, so the durable graph should
+/// record that progress. Completion still passes through the T2 gate: with
+/// qualifying evidence the step completes with provenance; without it the
+/// step parks as done_pending_verification. Steps without a verification
+/// requirement complete directly.
+///
+/// Returns the resulting step status. Refuses when the flag is off.
+pub fn checkpoint_goal_step(
+    goal_id: &str,
+    working_dir: Option<&Path>,
+    step_id: &str,
+    session_id: &str,
+) -> Result<String, StepVerifyError> {
+    if !super::graph::task_graph_enabled() {
+        return Err(StepVerifyError::Disabled);
+    }
+    let mut goal = super::load_goal(goal_id, None, working_dir)
+        .map_err(|err| StepVerifyError::Storage(err.to_string()))?
+        .ok_or(StepVerifyError::UnknownGoal)?;
+    let previous = goal.milestones.clone();
+    let step = goal
+        .milestones
+        .iter_mut()
+        .flat_map(|milestone| milestone.steps.iter_mut())
+        .find(|step| step.id == step_id)
+        .ok_or(StepVerifyError::UnknownStep)?;
+    if is_completion_status(&step.status) {
+        return Ok(step.status.clone());
+    }
+    step.status = "completed".to_string();
+    let events = session_events(session_id);
+    gate_step_completions(&previous, &mut goal.milestones, &events);
+    let status = goal
+        .milestones
+        .iter()
+        .flat_map(|milestone| milestone.steps.iter())
+        .find(|step| step.id == step_id)
+        .map(|step| step.status.clone())
+        .unwrap_or_default();
+    finish_step_verification(&mut goal, working_dir)?;
+    Ok(status)
+}
+
 fn finish_step_verification(
     goal: &mut Goal,
     working_dir: Option<&Path>,

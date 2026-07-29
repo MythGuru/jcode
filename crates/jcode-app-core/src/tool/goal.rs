@@ -81,6 +81,17 @@ struct GoalInput {
     checkpoint_summary: Option<String>,
     #[serde(default)]
     display: Option<String>,
+    /// Step id for verify_step.
+    #[serde(default)]
+    step_id: Option<String>,
+    /// For verify_step with user authority: what the user said, briefly.
+    #[serde(default)]
+    note: Option<String>,
+    /// For verify_step: "evidence" (default) uses this session's build/test
+    /// events; "user" records explicit user confirmation and must only be
+    /// used after the user actually confirmed.
+    #[serde(default)]
+    authority: Option<String>,
 }
 
 fn goal_step_schema() -> Value {
@@ -121,7 +132,7 @@ impl Tool for InitiativeTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list", "show", "resume", "update", "checkpoint", "focus"],
+                    "enum": ["create", "list", "show", "resume", "update", "checkpoint", "focus", "ready", "verify_step"],
                     "description": "Action."
                 },
                 "id": {"type": "string"},
@@ -136,7 +147,10 @@ impl Tool for InitiativeTool {
                 "blockers": {"type": "array", "items": {"type": "string"}},
                 "current_milestone_id": {"type": "string"},
                 "progress_percent": {"type": "integer"},
-                "checkpoint_summary": {"type": "string"}
+                "checkpoint_summary": {"type": "string"},
+                "step_id": {"type": "string", "description": "Step id (verify_step)."},
+                "note": {"type": "string", "description": "For verify_step with authority=user: what the user said, briefly."},
+                "authority": {"type": "string", "enum": ["evidence", "user"], "description": "verify_step authority. evidence (default) uses this session's build/test events; user records explicit user confirmation and must only be used after the user actually confirmed."}
             }
         })
     }
@@ -178,7 +192,7 @@ impl Tool for InitiativeTool {
                     .as_deref()
                     .and_then(crate::goal::GoalScope::parse)
                     .unwrap_or(crate::goal::GoalScope::Project);
-                let goal = crate::goal::create_goal(
+                let goal = crate::goal::create_goal_in_session(
                     crate::goal::GoalCreateInput {
                         id: params.id.clone(),
                         title: title.to_string(),
@@ -193,6 +207,7 @@ impl Tool for InitiativeTool {
                         progress_percent: params.progress_percent,
                     },
                     working_dir,
+                    Some(&ctx.session_id),
                 )?;
                 let metadata = serde_json::to_value(&goal)?;
                 let output = if display == crate::goal::GoalDisplayMode::None {
@@ -285,7 +300,7 @@ impl Tool for InitiativeTool {
                             .ok_or_else(|| anyhow::anyhow!("invalid goal status: {}", value))
                     })
                     .transpose()?;
-                let goal = crate::goal::update_goal(
+                let goal = crate::goal::update_goal_in_session(
                     id,
                     params
                         .scope
@@ -320,6 +335,7 @@ impl Tool for InitiativeTool {
                             params.checkpoint_summary.clone()
                         },
                     },
+                    Some(&ctx.session_id),
                 )?
                 .ok_or_else(|| anyhow::anyhow!("initiative not found: {}", id))?;
                 if display != crate::goal::GoalDisplayMode::None {
@@ -347,6 +363,143 @@ impl Tool for InitiativeTool {
                         .with_title(goal.title.clone())
                         .with_metadata(serde_json::to_value(&goal)?),
                 )
+            }
+            "ready" => {
+                if !crate::goal::graph::task_graph_enabled() {
+                    return Ok(ToolOutput::new(
+                        "The task graph is disabled (agents.task_graph_enabled = false).",
+                    ));
+                }
+                let goal = match params.id.as_deref() {
+                    Some(id) => crate::goal::load_goal(id, None, working_dir)?
+                        .ok_or_else(|| anyhow::anyhow!("initiative not found: {}", id))?,
+                    None => crate::goal::resume_goal(&ctx.session_id, working_dir)?
+                        .ok_or_else(|| anyhow::anyhow!("no resumable initiative; pass id explicitly"))?,
+                };
+                let summary = crate::goal::graph::summarize_goal_graph(&goal);
+                let mut out = format!("# Ready steps for `{}`\n", goal.id);
+                let find_step = |step_id: &str| {
+                    goal.milestones
+                        .iter()
+                        .flat_map(|milestone| milestone.steps.iter())
+                        .find(|step| step.id == step_id)
+                };
+                if summary.ready_step_ids.is_empty() {
+                    out.push_str("\nNo steps are ready.\n");
+                } else {
+                    for step_id in &summary.ready_step_ids {
+                        if let Some(step) = find_step(step_id) {
+                            let ambient = if step.safe_for_ambient { " [ambient-safe]" } else { "" };
+                            out.push_str(&format!("- `{}` {}{}\n", step.id, step.content, ambient));
+                        }
+                    }
+                }
+                if !summary.blocked_step_ids.is_empty() {
+                    out.push_str("\nBlocked:\n");
+                    for step_id in &summary.blocked_step_ids {
+                        if let Some(step) = find_step(step_id) {
+                            let waiting = if step.status == "done_pending_verification" {
+                                " (awaiting verification)".to_string()
+                            } else if step.blocked_by.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (blocked by {})", step.blocked_by.join(", "))
+                            };
+                            out.push_str(&format!("- `{}` {}{}\n", step.id, step.content, waiting));
+                        }
+                    }
+                }
+                let pending: Vec<&str> = goal
+                    .milestones
+                    .iter()
+                    .flat_map(|milestone| milestone.steps.iter())
+                    .filter(|step| step.status == "done_pending_verification")
+                    .map(|step| step.id.as_str())
+                    .collect();
+                if !pending.is_empty() {
+                    out.push_str(&format!(
+                        "\nAwaiting verification: {} (use action=verify_step after a passing build/test)\n",
+                        pending.join(", ")
+                    ));
+                }
+                if !summary.cycle_step_ids.is_empty() {
+                    out.push_str(&format!(
+                        "\nDependency cycle (fix the plan): {}\n",
+                        summary.cycle_step_ids.join(", ")
+                    ));
+                }
+                if !summary.unknown_dependency_ids.is_empty() {
+                    out.push_str(&format!(
+                        "\nUnknown dependency ids (fix the plan): {}\n",
+                        summary.unknown_dependency_ids.join(", ")
+                    ));
+                }
+                Ok(ToolOutput::new(out)
+                    .with_title(format!("{} ready", summary.ready_step_ids.len()))
+                    .with_metadata(json!({
+                        "goal_id": goal.id,
+                        "ready": summary.ready_step_ids,
+                        "blocked": summary.blocked_step_ids,
+                        "completed": summary.completed_step_ids,
+                        "cycles": summary.cycle_step_ids,
+                        "unknown_dependencies": summary.unknown_dependency_ids,
+                    })))
+            }
+            "verify_step" => {
+                let id = params
+                    .id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("id is required for verify_step"))?;
+                let step_id = params
+                    .step_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("step_id is required for verify_step"))?;
+                let scope_hint = params
+                    .scope
+                    .as_deref()
+                    .and_then(crate::goal::GoalScope::parse);
+                let result = match params.authority.as_deref().unwrap_or("evidence") {
+                    "user" => crate::goal::verification::verify_goal_step_by_user(
+                        id,
+                        scope_hint,
+                        working_dir,
+                        step_id,
+                        params.note.as_deref(),
+                    ),
+                    "evidence" => crate::goal::verification::verify_goal_step(
+                        id,
+                        scope_hint,
+                        working_dir,
+                        step_id,
+                        &ctx.session_id,
+                    ),
+                    other => anyhow::bail!("unknown verify_step authority: {}", other),
+                };
+                match result {
+                    Ok((goal, evidence)) => {
+                        if display != crate::goal::GoalDisplayMode::None
+                            && goal_page_is_open(&ctx.session_id, &goal.id)?
+                        {
+                            let snapshot = crate::goal::write_goal_page(
+                                &ctx.session_id,
+                                working_dir,
+                                &goal,
+                                crate::goal::GoalDisplayMode::UpdateOnly,
+                            )?;
+                            publish_side_panel_snapshot(&ctx.session_id, &snapshot);
+                        }
+                        Ok(ToolOutput::new(format!(
+                            "Verified step `{}` of `{}` ({}).",
+                            step_id, goal.id, evidence
+                        ))
+                        .with_title(format!("verified {}", step_id))
+                        .with_metadata(serde_json::to_value(&goal)?))
+                    }
+                    Err(err) => Ok(ToolOutput::new(format!(
+                        "Could not verify step `{}`: {}",
+                        step_id, err
+                    ))),
+                }
             }
             other => anyhow::bail!("unknown goal action: {}", other),
         }
