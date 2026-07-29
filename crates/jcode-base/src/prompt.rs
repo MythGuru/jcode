@@ -569,7 +569,8 @@ pub fn build_system_prompt_split_with_capabilities(
     //
     // Yields `None` when the flag is off, so the flag-off prompt stays
     // byte-identical to the current one.
-    if let Some(project_knowledge) = crate::knowledge::project_knowledge_prompt_section(working_dir) {
+    if let Some(project_knowledge) = crate::knowledge::project_knowledge_prompt_section(working_dir)
+    {
         info.project_knowledge_chars = project_knowledge.len();
         dynamic_parts.push(project_knowledge);
     }

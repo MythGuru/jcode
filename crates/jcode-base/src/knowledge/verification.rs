@@ -69,9 +69,7 @@ impl std::fmt::Display for VerifyError {
             Self::Disabled => "project knowledge is disabled",
             Self::UnknownEntry => "no such knowledge entry",
             Self::AlreadyVerified => "entry is already verified",
-            Self::NoEvidence => {
-                "no successful build/test verification event in this session yet"
-            }
+            Self::NoEvidence => "no successful build/test verification event in this session yet",
             Self::StaleEvidence => {
                 "the entry was edited after the last successful verification; run build/tests again"
             }
@@ -93,7 +91,9 @@ static EVENTS: Mutex<Option<HashMap<String, Vec<VerificationEvent>>>> = Mutex::n
 const MAX_EVENTS_PER_SESSION: usize = 32;
 
 fn with_events<T>(f: impl FnOnce(&mut HashMap<String, Vec<VerificationEvent>>) -> T) -> T {
-    let mut guard = EVENTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = EVENTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     f(map)
 }
@@ -341,11 +341,17 @@ mod tests {
     #[test]
     fn classification_is_conservative() {
         use VerificationKind::*;
-        assert_eq!(classify_command("cargo test -p jcode-base"), Some(TestsPassed));
+        assert_eq!(
+            classify_command("cargo test -p jcode-base"),
+            Some(TestsPassed)
+        );
         assert_eq!(classify_command("cargo nextest run"), Some(TestsPassed));
         assert_eq!(classify_command("cargo build --release"), Some(BuildPassed));
         assert_eq!(classify_command("cargo check -p foo"), Some(BuildPassed));
-        assert_eq!(classify_command("cargo clippy -- -D warnings"), Some(BuildPassed));
+        assert_eq!(
+            classify_command("cargo clippy -- -D warnings"),
+            Some(BuildPassed)
+        );
         assert_eq!(classify_command("cargo +nightly test"), Some(TestsPassed));
         assert_eq!(
             classify_command("cd C:/repo && cargo check && cargo test"),
@@ -355,7 +361,10 @@ mod tests {
 
         assert_eq!(classify_command("cargo run --bin server"), None);
         assert_eq!(classify_command("cargo fmt"), None);
-        assert_eq!(classify_command("echo cargo test is not a test"), Some(TestsPassed));
+        assert_eq!(
+            classify_command("echo cargo test is not a test"),
+            Some(TestsPassed)
+        );
         // ^ deliberate: token-pair matching cannot see quoting. Documented
         //   tradeoff; the alternative (shell parsing) is not worth the risk of
         //   missing real verification runs. Failure direction is safe: a false
@@ -443,7 +452,11 @@ mod tests {
 
         // A failure AFTER the success invalidates it.
         let broken = [
-            event(VerificationKind::TestsPassed, true, now - Duration::seconds(5)),
+            event(
+                VerificationKind::TestsPassed,
+                true,
+                now - Duration::seconds(5),
+            ),
             event(VerificationKind::BuildPassed, false, now),
         ];
         assert_eq!(
@@ -453,7 +466,11 @@ mod tests {
 
         // A failure BEFORE the success does not.
         let recovered = [
-            event(VerificationKind::BuildPassed, false, now - Duration::seconds(5)),
+            event(
+                VerificationKind::BuildPassed,
+                false,
+                now - Duration::seconds(5),
+            ),
             event(VerificationKind::TestsPassed, true, now),
         ];
         assert!(qualifying_evidence(&recovered, edited).is_ok());
@@ -476,8 +493,7 @@ mod tests {
             entry_edited + Duration::seconds(1),
         )];
 
-        let evidence =
-            try_verify_with_events(project, &id, &events).expect("gate should pass");
+        let evidence = try_verify_with_events(project, &id, &events).expect("gate should pass");
         assert!(evidence.contains("test event"));
 
         let reloaded = super::super::load(project);

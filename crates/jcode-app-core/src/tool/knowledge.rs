@@ -14,8 +14,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-use crate::knowledge::{self, KnowledgeSection, KnowledgeStatus};
 use crate::knowledge::verification::{self, VerifyError};
+use crate::knowledge::{self, KnowledgeSection, KnowledgeStatus};
 
 pub struct KnowledgeTool;
 
@@ -52,9 +52,7 @@ struct KnowledgeInput {
 }
 
 fn disabled_message() -> ToolOutput {
-    ToolOutput::new(
-        "Project knowledge is disabled (agents.project_knowledge_enabled = false).",
-    )
+    ToolOutput::new("Project knowledge is disabled (agents.project_knowledge_enabled = false).")
 }
 
 fn status_label(status: KnowledgeStatus) -> &'static str {
@@ -177,9 +175,9 @@ impl Tool for KnowledgeTool {
             "confirm" => {
                 let id = input.id.ok_or_else(|| anyhow::anyhow!("id required"))?;
                 match verification::verify_by_user(&project_dir, &id, input.note.as_deref()) {
-                    Ok(provenance) => Ok(ToolOutput::new(format!(
-                        "Confirmed {id} ({provenance})."
-                    ))),
+                    Ok(provenance) => {
+                        Ok(ToolOutput::new(format!("Confirmed {id} ({provenance}).")))
+                    }
                     Err(err) => Ok(ToolOutput::new(format!("Cannot confirm {id}: {err}."))),
                 }
             }
@@ -333,7 +331,10 @@ mod tests {
             )
             .await
             .expect("confirm");
-        assert!(out.output.contains("user confirmation: user said yes in chat"));
+        assert!(
+            out.output
+                .contains("user confirmation: user said yes in chat")
+        );
 
         let out = tool
             .execute(json!({ "action": "show" }), project)
@@ -372,7 +373,10 @@ mod tests {
             .execute(json!({ "action": "verify", "id": id }), project.clone())
             .await
             .expect("verify without evidence");
-        assert!(out.output.contains("no successful build/test verification event"));
+        assert!(
+            out.output
+                .contains("no successful build/test verification event")
+        );
 
         // Simulate this session's cargo test passing (recorded after the
         // propose, so it is fresh).

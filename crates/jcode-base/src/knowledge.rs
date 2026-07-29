@@ -409,13 +409,17 @@ fn project_hash(project_dir: &Path) -> String {
 
 /// JSON path for a project's knowledge file.
 pub fn knowledge_path(project_dir: &Path) -> anyhow::Result<PathBuf> {
-    let dir = crate::storage::jcode_dir()?.join("knowledge").join("projects");
+    let dir = crate::storage::jcode_dir()?
+        .join("knowledge")
+        .join("projects");
     Ok(dir.join(format!("{}.json", project_hash(project_dir))))
 }
 
 /// Rendered markdown path, sibling of the JSON file.
 pub fn knowledge_markdown_path(project_dir: &Path) -> anyhow::Result<PathBuf> {
-    let dir = crate::storage::jcode_dir()?.join("knowledge").join("projects");
+    let dir = crate::storage::jcode_dir()?
+        .join("knowledge")
+        .join("projects");
     Ok(dir.join(format!("{}.md", project_hash(project_dir))))
 }
 
@@ -529,7 +533,10 @@ mod tests {
     fn entries_start_proposed_and_only_the_gate_verifies() {
         let mut knowledge = ProjectKnowledge::default();
         let id = knowledge.propose(KnowledgeSection::Decision, "use cargo only on Windows");
-        assert_eq!(knowledge.get(&id).unwrap().status, KnowledgeStatus::Proposed);
+        assert_eq!(
+            knowledge.get(&id).unwrap().status,
+            KnowledgeStatus::Proposed
+        );
         assert!(knowledge.get(&id).unwrap().verified_at.is_none());
 
         assert!(knowledge.mark_verified(&id, "cargo test -p jcode-base (exit 0)"));
