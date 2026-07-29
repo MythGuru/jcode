@@ -773,6 +773,11 @@ impl BashTool {
         let stdin_tx = ctx.stdin_request_tx.clone();
         let tool_call_id = ctx.tool_call_id.clone();
         let title_for_work = title.clone();
+        // For the project-knowledge verification gate (K2): observed inside
+        // the work task so evidence is recorded even when the command is
+        // later promoted to a background task on timeout.
+        let observed_command = params.command.clone();
+        let observed_session = ctx.session_id.clone();
 
         // Run the command (read stdout/stderr, service stdin, wait for exit) in a
         // dedicated task so that, if it exceeds the foreground timeout, we can hand
@@ -859,6 +864,15 @@ impl BashTool {
                 };
 
                 let status = child.wait().await?;
+
+                // Verification-gate hook: no-op unless project knowledge is
+                // enabled, and only ever consulted for cargo build/test-style
+                // commands (see knowledge::verification::classify_command).
+                crate::knowledge::verification::observe_command(
+                    &observed_session,
+                    &observed_command,
+                    status.code(),
+                );
 
                 if let Some(task) = stdin_task {
                     task.abort();
