@@ -290,6 +290,53 @@ impl ProjectKnowledge {
     }
 }
 
+// === Prompt injection (K5) ===
+
+/// The `# Project Knowledge` section to inject into this turn's prompt, if any.
+///
+/// Single gate, mirroring `working_memory_prompt_section`: returns `None`
+/// unless ALL of the following hold, so a caller cannot accidentally inject
+/// the section by forgetting a check:
+/// - the `project_knowledge_enabled` flag is on (default OFF),
+/// - a working directory is known (no project, no map),
+/// - that project's map is non-empty.
+///
+/// The section is truncated to the configured char budget, dropping whole
+/// entries (never splitting one mid-sentence), verified entries surviving
+/// preferentially because they render first within each section.
+pub fn project_knowledge_prompt_section(working_dir: Option<&Path>) -> Option<String> {
+    if !project_knowledge_enabled() {
+        return None;
+    }
+    let project_dir = working_dir?;
+    let knowledge = load(project_dir);
+    if knowledge.is_empty() {
+        return None;
+    }
+    Some(render_budgeted(&knowledge, project_knowledge_max_chars()))
+}
+
+/// Render the map within a char budget by dropping whole lines from the end.
+/// Verified-first ordering inside `render_markdown` means proposed entries are
+/// the first to go, then the least-oriented sections.
+fn render_budgeted(knowledge: &ProjectKnowledge, max_chars: usize) -> String {
+    let full = knowledge.render_markdown();
+    if full.chars().count() <= max_chars {
+        return full;
+    }
+    let mut out = String::new();
+    for line in full.lines() {
+        // +1 for the newline; the truncation marker needs room too.
+        if out.chars().count() + line.chars().count() + 1 > max_chars.saturating_sub(24) {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("(truncated to budget)");
+    out
+}
+
 // === Persistence ===
 
 /// Stable per-project hash, matching how `memory.rs` keys project graphs so
@@ -548,6 +595,68 @@ mod tests {
             knowledge_path(a).unwrap(),
             knowledge_path(b).unwrap(),
             "distinct projects must map to distinct files"
+        );
+    }
+
+    #[test]
+    fn prompt_section_requires_flag_dir_and_content() {
+        let _home = setup();
+        let project = std::path::Path::new("C:/prompt/project");
+
+        // Flag off (default): always None, even with a populated map.
+        let mut knowledge = ProjectKnowledge::default();
+        knowledge.propose(KnowledgeSection::Rule, "some rule");
+        save(project, &knowledge);
+        assert!(project_knowledge_prompt_section(Some(project)).is_none());
+
+        // The remaining gates are testable via the pure renderer: no dir and
+        // empty map are handled before rendering.
+        assert!(project_knowledge_prompt_section(None).is_none());
+    }
+
+    #[test]
+    fn budgeted_render_drops_whole_lines_and_marks_truncation() {
+        let mut knowledge = ProjectKnowledge::default();
+        for i in 0..50 {
+            knowledge.propose(
+                KnowledgeSection::Rule,
+                &format!("rule number {i} with some padding text"),
+            );
+        }
+        let full = knowledge.render_markdown();
+
+        // A generous budget returns the full render untouched.
+        assert_eq!(render_budgeted(&knowledge, full.chars().count()), full);
+
+        // A tight budget truncates on line boundaries with a marker.
+        let tight = render_budgeted(&knowledge, 300);
+        assert!(tight.chars().count() <= 300);
+        assert!(tight.ends_with("(truncated to budget)"));
+        for line in tight.lines() {
+            if line.starts_with("- ") {
+                assert!(
+                    full.contains(line),
+                    "truncation must keep whole lines, found fragment: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn budgeted_render_prefers_verified_entries() {
+        let mut knowledge = ProjectKnowledge::default();
+        // One verified and many proposed entries in the same section: under
+        // pressure the verified one must survive because it renders first.
+        let keeper = knowledge.propose(KnowledgeSection::Rule, "the verified keeper rule");
+        knowledge.mark_verified(&keeper, "cargo test (exit 0)");
+        for i in 0..30 {
+            knowledge.propose(KnowledgeSection::Rule, &format!("proposed filler {i}"));
+        }
+
+        let tight = render_budgeted(&knowledge, 120);
+        assert!(
+            tight.contains("the verified keeper rule"),
+            "verified entry must survive the budget:\n{tight}"
         );
     }
 

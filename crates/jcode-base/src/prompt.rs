@@ -231,6 +231,10 @@ pub struct ContextInfo {
     /// cost profiles: long-term memory is injected once and then suppressed,
     /// while working memory is re-sent on every turn.
     pub working_memory_chars: usize,
+    /// Project knowledge section size (chars). Like working memory this is
+    /// re-sent while present, but it changes only when entries are proposed
+    /// or verified, so it is budgeted separately (project_knowledge_max_chars).
+    pub project_knowledge_chars: usize,
     /// Prompt overlay section size (chars)
     pub prompt_overlay_chars: usize,
     /// Preferred tools section size (chars)
@@ -555,6 +559,19 @@ pub fn build_system_prompt_split_with_capabilities(
     if let Some(memory) = memory_prompt {
         info.memory_chars = memory.len();
         dynamic_parts.push(memory.to_string());
+    }
+
+    // Project knowledge: the verified map of this project. In the DYNAMIC
+    // part because entries can be proposed/verified mid-session, and a
+    // static placement would invalidate the cached prefix on each change.
+    // Placed before working memory: project-level context first, then the
+    // session-local context closest to the conversation.
+    //
+    // Yields `None` when the flag is off, so the flag-off prompt stays
+    // byte-identical to the current one.
+    if let Some(project_knowledge) = crate::knowledge::project_knowledge_prompt_section(working_dir) {
+        info.project_knowledge_chars = project_knowledge.len();
+        dynamic_parts.push(project_knowledge);
     }
 
     // Working (short-term) memory: what this session is actively working on.

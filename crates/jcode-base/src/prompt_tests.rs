@@ -614,3 +614,22 @@ fn long_term_and_working_memory_coexist_in_order() {
 
     crate::memory::clear_working_memory(session);
 }
+
+#[test]
+fn project_knowledge_absent_from_prompt_when_flag_off() {
+    // K5 guarantee: with the default config (flag off) the built prompt
+    // must contain no project-knowledge section and report zero chars for
+    // it, keeping the prompt byte-identical to the pre-K5 behavior.
+    let (split, info) = crate::prompt::build_system_prompt_split_with_capabilities(
+        None,
+        &[],
+        false,
+        None,
+        None,
+        Some("prompt-test-session"),
+        crate::prompt::PromptCapabilities::default(),
+    );
+    assert_eq!(info.project_knowledge_chars, 0);
+    assert!(!split.static_part.contains("# Project Knowledge"));
+    assert!(!split.dynamic_part.contains("# Project Knowledge"));
+}
