@@ -861,82 +861,11 @@ fn prompt_try_it_out(installed_alacritty: bool) {
     std::thread::sleep(std::time::Duration::from_secs(3));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_windows_hotkeys_are_shared_defaults_plus_copilot_key() {
-        let entries = default_windows_launch_entries();
-        let shared = crate::launch_hotkeys::default_launch_entries();
-        assert_eq!(entries.len(), shared.len() + 1);
-        assert_eq!(&entries[..shared.len()], shared.as_slice());
-        let copilot = entries.last().unwrap();
-        assert_eq!(copilot.chord, "win+shift+f23");
-        assert_eq!(copilot.dir, "$HOME");
-        assert_eq!(copilot.label, "home");
-    }
-
-    #[test]
-    fn startup_lifecycle_paths_are_stable_for_upgrade_and_uninstall_cleanup() {
-        assert_eq!(
-            startup_shortcut_path()
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "jcode-hotkey.lnk"
-        );
-        assert_eq!(
-            hotkey_vbs_path()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "jcode-hotkey-launcher.vbs"
-        );
-        assert_eq!(
-            legacy_hotkey_ps1_path()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy(),
-            "jcode-hotkey.ps1"
-        );
-    }
-
-    #[test]
-    fn powershell_single_quote_escapes_embedded_quotes() {
-        assert_eq!(ps_single_quote(r"C:\O'Hara\jcode"), r"'C:\O''Hara\jcode'");
-    }
-
-    #[test]
-    fn listener_stop_sweep_excludes_jcode_and_powershell_processes_running_it() {
-        let script = render_stop_windows_hotkey_listeners_script(4242);
-        assert!(script.contains("($_.ProcessId -ne $current)"));
-        assert!(script.contains("($_.ProcessId -ne $PID)"));
-    }
-
-    #[test]
-    fn startup_shortcut_uses_native_listener_without_vbscript_or_bypass() {
-        let script = render_startup_shortcut_script(
-            Path::new(r"C:\Users\O'Hara\Startup\jcode-hotkey.lnk"),
-            Path::new(r"C:\Program Files\Jcode O'Hara\jcode.exe"),
-        );
-        assert!(script.contains("$shortcut.TargetPath = 'powershell.exe'"));
-        assert!(script.contains("-ExecutionPolicy RemoteSigned"));
-        assert!(script.contains("setup-hotkey --listen-windows-hotkey"));
-        assert!(script.contains("$shortcut.WindowStyle = 7\n$shortcut.Save()"));
-        assert!(!script.contains("ExecutionPolicy Bypass"));
-        assert!(!script.contains("wscript.exe"));
-        assert!(!script.contains(".vbs"));
-    }
-}
-
 pub(super) fn maybe_show_windows_setup_hints(
     state: &mut SetupHintsState,
     startup_hints: Option<StartupHints>,
 ) -> Option<StartupHints> {
-    if state.launch_count % 3 != 0 {
+    if !state.launch_count.is_multiple_of(3) {
         return startup_hints;
     }
 
@@ -1120,4 +1049,75 @@ Write-Output "OK"
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_windows_hotkeys_are_shared_defaults_plus_copilot_key() {
+        let entries = default_windows_launch_entries();
+        let shared = crate::launch_hotkeys::default_launch_entries();
+        assert_eq!(entries.len(), shared.len() + 1);
+        assert_eq!(&entries[..shared.len()], shared.as_slice());
+        let copilot = entries.last().unwrap();
+        assert_eq!(copilot.chord, "win+shift+f23");
+        assert_eq!(copilot.dir, "$HOME");
+        assert_eq!(copilot.label, "home");
+    }
+
+    #[test]
+    fn startup_lifecycle_paths_are_stable_for_upgrade_and_uninstall_cleanup() {
+        assert_eq!(
+            startup_shortcut_path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "jcode-hotkey.lnk"
+        );
+        assert_eq!(
+            hotkey_vbs_path()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "jcode-hotkey-launcher.vbs"
+        );
+        assert_eq!(
+            legacy_hotkey_ps1_path()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "jcode-hotkey.ps1"
+        );
+    }
+
+    #[test]
+    fn powershell_single_quote_escapes_embedded_quotes() {
+        assert_eq!(ps_single_quote(r"C:\O'Hara\jcode"), r"'C:\O''Hara\jcode'");
+    }
+
+    #[test]
+    fn listener_stop_sweep_excludes_jcode_and_powershell_processes_running_it() {
+        let script = render_stop_windows_hotkey_listeners_script(4242);
+        assert!(script.contains("($_.ProcessId -ne $current)"));
+        assert!(script.contains("($_.ProcessId -ne $PID)"));
+    }
+
+    #[test]
+    fn startup_shortcut_uses_native_listener_without_vbscript_or_bypass() {
+        let script = render_startup_shortcut_script(
+            Path::new(r"C:\Users\O'Hara\Startup\jcode-hotkey.lnk"),
+            Path::new(r"C:\Program Files\Jcode O'Hara\jcode.exe"),
+        );
+        assert!(script.contains("$shortcut.TargetPath = 'powershell.exe'"));
+        assert!(script.contains("-ExecutionPolicy RemoteSigned"));
+        assert!(script.contains("setup-hotkey --listen-windows-hotkey"));
+        assert!(script.contains("$shortcut.WindowStyle = 7\n$shortcut.Save()"));
+        assert!(!script.contains("ExecutionPolicy Bypass"));
+        assert!(!script.contains("wscript.exe"));
+        assert!(!script.contains(".vbs"));
+    }
 }

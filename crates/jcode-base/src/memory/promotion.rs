@@ -478,7 +478,7 @@ mod tests {
         let entry = MemoryEntry::new(MemoryCategory::Fact, "prefers rebase over merge");
 
         assert_eq!(
-            activate_memories_with_limits(session, &[entry.clone()], 7, 240),
+            activate_memories_with_limits(session, std::slice::from_ref(&entry), 7, 240),
             1
         );
         assert_eq!(

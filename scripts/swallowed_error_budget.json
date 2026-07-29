@@ -1,9 +1,9 @@
 {
-  "total": 3231,
+  "total": 3239,
   "totals_by_pattern": {
-    "dot_ok": 1189,
-    "let_underscore": 1189,
-    "unwrap_or_default": 853
+    "dot_ok": 1190,
+    "let_underscore": 1191,
+    "unwrap_or_default": 858
   },
   "tracked_files": {
     "crates/jcode-app-core/src/agent.rs": {
@@ -785,6 +785,11 @@
       "dot_ok": 2,
       "let_underscore": 0,
       "unwrap_or_default": 0
+    },
+    "crates/jcode-base/src/memory/working.rs": {
+      "dot_ok": 0,
+      "let_underscore": 2,
+      "unwrap_or_default": 3
     },
     "crates/jcode-base/src/memory_agent.rs": {
       "dot_ok": 0,
@@ -2136,6 +2141,11 @@
       "let_underscore": 1,
       "unwrap_or_default": 0
     },
+    "crates/jcode-tui/src/tui/app/terminal_setup_command.rs": {
+      "dot_ok": 1,
+      "let_underscore": 0,
+      "unwrap_or_default": 0
+    },
     "crates/jcode-tui/src/tui/app/todos_view.rs": {
       "dot_ok": 0,
       "let_underscore": 0,
@@ -2240,6 +2250,11 @@
       "dot_ok": 0,
       "let_underscore": 0,
       "unwrap_or_default": 1
+    },
+    "crates/jcode-tui/src/tui/terminal_setup.rs": {
+      "dot_ok": 0,
+      "let_underscore": 0,
+      "unwrap_or_default": 2
     },
     "crates/jcode-tui/src/tui/test_harness.rs": {
       "dot_ok": 0,
