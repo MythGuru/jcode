@@ -138,13 +138,15 @@ async function loadLiveSessions(errors) {
     if (!Array.isArray(list)) { sockErrors.push(`${serverChip.name}: malformed sessions`); continue; }
     for (const s of list) {
       let wm = null;
+      let stmReadAt = null;
       const wmRes = await sendDebug(pipe, 'tool:memory {"action":"working"}', s.session_id);
       if (wmRes.error) wm = null;
       else {
         const parsed = parseOutput(wmRes.output);
         wm = typeof parsed === 'string' ? parsed : (parsed && typeof parsed.output === 'string' ? parsed.output : JSON.stringify(parsed, null, 2));
+        stmReadAt = new Date().toISOString();
       }
-      sessions.push({ ...s, live: true, server: serverChip.name, working_memory: wm });
+      sessions.push({ ...s, live: true, server: serverChip.name, working_memory: wm, stm_read_at: stmReadAt });
     }
   }
   socketCache = { at: Date.now(), sessions, servers, errors: sockErrors };
@@ -158,8 +160,8 @@ async function state() {
   const seen = new Set(live.sessions.map(s => s.session_id));
   const sessions = [];
   for (const s of live.sessions) sessions.push({ ...s, ...await loadTodoBundle(s.session_id, errors) });
-  for (const id of await recentTodoIds(errors)) if (!seen.has(id)) sessions.push({ session_id: id, friendly_name: id, status: 'offline', live: false, working_memory: null, ...await loadTodoBundle(id, errors) });
-  return { generated_at: new Date().toISOString(), knowledge, sessions, initiatives, errors, staleness: { knowledge_mtime: await latestMtime(path.join(JC, 'knowledge', 'projects')), todos_mtime: await latestMtime(path.join(JC, 'todos')), goals_mtime: await latestMtime(path.join(JC, 'goals')) }, servers: live.servers };
+  for (const id of await recentTodoIds(errors)) if (!seen.has(id)) sessions.push({ session_id: id, friendly_name: id, status: 'offline', live: false, working_memory: null, stm_read_at: null, ...await loadTodoBundle(id, errors) });
+  return { generated_at: new Date().toISOString(), rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024 * 10) / 10, knowledge, sessions, initiatives, errors, staleness: { knowledge_mtime: await latestMtime(path.join(JC, 'knowledge', 'projects')), todos_mtime: await latestMtime(path.join(JC, 'todos')), goals_mtime: await latestMtime(path.join(JC, 'goals')) }, servers: live.servers };
 }
 
 const server = http.createServer(async (req, res) => {
