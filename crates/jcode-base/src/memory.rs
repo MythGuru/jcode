@@ -57,8 +57,8 @@ pub use pending::{
 use pending::{backdate_injected_memory_for_test, insert_pending_memory_for_test};
 use pending::{begin_memory_check, finish_memory_check};
 pub use promotion::{
-    PRUNE_PROTECTION_IMPORTANCE, PromotionOutcome, activate_memories, promote_item,
-    promote_on_session_end, rehearse_with_promotion,
+    PRUNE_PROTECTION_IMPORTANCE, PromotionOutcome, activate_memories, promote_exiting_items,
+    promote_item, promote_on_session_end, rehearse_with_promotion,
 };
 pub(crate) use prompt_support::format_context_for_extraction;
 pub use prompt_support::{
@@ -1936,6 +1936,28 @@ impl MemoryManager {
         if graph.memories.contains_key(memory_id) {
             graph.tag_memory(memory_id, tag);
             return self.save_global_graph(&graph);
+        }
+
+        Err(anyhow::anyhow!("Memory not found: {}", memory_id))
+    }
+
+    /// Set explicit importance on a memory in either graph (clamped 0-1).
+    /// Returns the clamped value actually stored.
+    pub fn set_memory_importance(&self, memory_id: &str, importance: f32) -> Result<f32> {
+        let mut graph = self.load_project_graph()?;
+        if let Some(entry) = graph.get_memory_mut(memory_id) {
+            entry.set_importance(importance);
+            let stored = entry.importance;
+            self.save_project_graph(&graph)?;
+            return Ok(stored);
+        }
+
+        let mut graph = self.load_global_graph()?;
+        if let Some(entry) = graph.get_memory_mut(memory_id) {
+            entry.set_importance(importance);
+            let stored = entry.importance;
+            self.save_global_graph(&graph)?;
+            return Ok(stored);
         }
 
         Err(anyhow::anyhow!("Memory not found: {}", memory_id))
