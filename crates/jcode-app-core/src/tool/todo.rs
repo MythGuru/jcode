@@ -1117,6 +1117,7 @@ mod tests {
     /// this is the exact case that previously returned two nudges and spent the
     /// turn re-justifying the plan instead of doing the work.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn a_moderate_first_write_returns_no_continuation_and_records_instead() {
         let _guard = crate::storage::lock_test_env();
         let previous_home = std::env::var_os("JCODE_HOME");
@@ -1225,7 +1226,7 @@ mod tests {
             ..before.clone()
         };
 
-        let changes = goal_changes(&[before.clone()], &[after.clone()]);
+        let changes = goal_changes(std::slice::from_ref(&before), std::slice::from_ref(&after));
 
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].before.as_ref(), Some(&before));

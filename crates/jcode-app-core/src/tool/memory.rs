@@ -672,6 +672,7 @@ mod tests {
     /// round-trip through the real (non-test-mode) manager when the tool
     /// context carries a working dir.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn project_scope_round_trips_with_working_dir() {
         let _guard = crate::storage::lock_test_env();
         let home = tempfile::tempdir().expect("home");
@@ -717,6 +718,7 @@ mod tests {
     /// flag toggled via env override (config is read live), then verifies the
     /// disabled path returns the friendly refusal instead of erroring.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn working_memory_actions_round_trip_when_enabled() {
         let _guard = crate::storage::lock_test_env();
         let home = tempfile::tempdir().expect("home");
@@ -725,6 +727,7 @@ mod tests {
         let prev_flag = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
         crate::env::set_var("JCODE_HOME", home.path());
         crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "1");
+        crate::config::invalidate_config_cache();
         crate::memory::clear_working_memory("test-session");
 
         let tool = MemoryTool::new();
@@ -808,6 +811,7 @@ mod tests {
 
         // Disabled path: flag off returns the refusal, not an error.
         crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "0");
+        crate::config::invalidate_config_cache();
         let refused = tool
             .execute(json!({ "action": "note", "content": "x" }), ctx())
             .await
@@ -819,6 +823,7 @@ mod tests {
             Some(v) => crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", v),
             None => crate::env::remove_var("JCODE_WORKING_MEMORY_ENABLED"),
         }
+        crate::config::invalidate_config_cache();
         match prev_home {
             Some(v) => crate::env::set_var("JCODE_HOME", v),
             None => crate::env::remove_var("JCODE_HOME"),

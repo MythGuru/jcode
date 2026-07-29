@@ -778,6 +778,7 @@ fn reload_starting_rejects_new_turn_without_spawning_processing_task() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attachments() {
     let _guard = crate::storage::lock_test_env();
     let _runtime = IsolatedRuntimeDir::new();

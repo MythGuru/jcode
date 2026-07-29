@@ -392,7 +392,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
         {
             return true;
         }
-        return copy_to_clipboard_osc52(text);
+        copy_to_clipboard_osc52(text)
     }
 
     // Same class of bug on macOS: Apple Terminal (Terminal.app) silently

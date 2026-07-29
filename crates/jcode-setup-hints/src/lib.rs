@@ -1332,7 +1332,7 @@ pub fn maybe_show_setup_hints() -> Option<StartupHints> {
     {
         let startup_hints =
             startup_hints.or_else(|| windows_setup::windows_launch_hotkeys_notice(&state));
-        return maybe_show_windows_setup_hints(&mut state, startup_hints);
+        maybe_show_windows_setup_hints(&mut state, startup_hints)
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -2453,7 +2453,7 @@ pub fn run_setup_launcher() -> Result<()> {
         match create_windows_desktop_shortcut(&mut state) {
             Ok(()) => {
                 eprintln!("  \x1b[32m✓\x1b[0m Created desktop shortcut: jcode.lnk");
-                return Ok(());
+                Ok(())
             }
             Err(e) => {
                 eprintln!("  \x1b[31m✗\x1b[0m Failed: {}", e);

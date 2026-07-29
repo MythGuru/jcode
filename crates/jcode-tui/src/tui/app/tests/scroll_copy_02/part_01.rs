@@ -13,6 +13,10 @@ fn test_local_error_copy_badge_shortcut_supported() {
 
     app.handle_key(KeyCode::Char('S'), KeyModifiers::ALT)
         .unwrap();
+    assert!(
+        clipboard.text().is_some_and(|text| !text.is_empty()),
+        "expected copied text to be captured"
+    );
 
     assert_eq!(app.status_notice(), Some("Copied error".to_string()));
 
@@ -39,6 +43,10 @@ fn test_local_tool_error_copy_badge_shortcut_supported() {
 
     app.handle_key(KeyCode::Char('S'), KeyModifiers::ALT)
         .unwrap();
+    assert!(
+        clipboard.text().is_some_and(|text| !text.is_empty()),
+        "expected copied text to be captured"
+    );
 
     assert_eq!(app.status_notice(), Some("Copied error".to_string()));
 
@@ -65,6 +73,10 @@ fn test_local_tool_failed_output_copy_badge_shortcut_supported() {
 
     app.handle_key(KeyCode::Char('S'), KeyModifiers::ALT)
         .unwrap();
+    assert!(
+        clipboard.text().is_some_and(|text| !text.is_empty()),
+        "expected copied text to be captured"
+    );
 
     assert_eq!(app.status_notice(), Some("Copied output".to_string()));
 
@@ -91,6 +103,10 @@ fn test_local_blockquote_copy_badge_shortcut_supported() {
 
     app.handle_key(KeyCode::Char('S'), KeyModifiers::ALT)
         .unwrap();
+    assert!(
+        clipboard.text().is_some_and(|text| !text.is_empty()),
+        "expected copied text to be captured"
+    );
 
     assert_eq!(app.status_notice(), Some("Copied quote".to_string()));
 
