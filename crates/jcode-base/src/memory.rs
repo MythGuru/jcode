@@ -1901,9 +1901,50 @@ impl MemoryManager {
         }
     }
 
+    /// One-time pre-STM snapshot of a graph file (P8 rollback insurance).
+    ///
+    /// The regular `.bak` rotates on every write, so by the time anyone wants
+    /// to roll back the STM/importance upgrade it already contains post-upgrade
+    /// data. This snapshot is taken once, the first time a graph file is about
+    /// to be rewritten while the new features are enabled, and never touched
+    /// again. Restoring it is a plain file copy.
+    ///
+    /// Serde defaults make rollback safe WITHOUT this snapshot (old binaries
+    /// simply ignore the new fields), so this is belt-and-suspenders for the
+    /// human who wants a byte-exact pre-upgrade copy.
+    fn snapshot_before_stm_write(&self, path: &std::path::Path) {
+        // Only worth snapshotting when the new features could actually change
+        // what gets written.
+        if self.test_mode || !(working_memory_enabled() || memory_importance_enabled()) {
+            return;
+        }
+        if !path.exists() {
+            return;
+        }
+        let file_name = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(stem) => format!("{stem}.pre-stm.json"),
+            None => return,
+        };
+        let snapshot = path.with_file_name(file_name);
+        if snapshot.exists() {
+            return; // one-time: never overwrite the original pre-upgrade state
+        }
+        match std::fs::copy(path, &snapshot) {
+            Ok(_) => crate::logging::info(&format!(
+                "Saved one-time pre-STM memory snapshot: {}",
+                snapshot.display()
+            )),
+            Err(err) => crate::logging::info(&format!(
+                "Failed to save pre-STM snapshot for {}: {err}",
+                path.display()
+            )),
+        }
+    }
+
     /// Save project memories as a MemoryGraph
     pub fn save_project_graph(&self, graph: &MemoryGraph) -> Result<()> {
         if let Some(path) = self.project_memory_path()? {
+            self.snapshot_before_stm_write(&path);
             storage::write_json(&path, graph)?;
             if !self.test_mode {
                 cache_graph(path, graph);
@@ -1915,6 +1956,7 @@ impl MemoryManager {
     /// Save global memories as a MemoryGraph
     pub fn save_global_graph(&self, graph: &MemoryGraph) -> Result<()> {
         let path = self.global_memory_path()?;
+        self.snapshot_before_stm_write(&path);
         storage::write_json(&path, graph)?;
         if !self.test_mode {
             cache_graph(path, graph);
