@@ -99,6 +99,11 @@ pub struct GoalStep {
     /// without one behave exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<String>,
+    /// Evidence recorded when the verification requirement was satisfied
+    /// (e.g. the passing command line, or "user confirmation: ..."). Written
+    /// only by the verification gate; caller-supplied values are overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_evidence: Option<String>,
     /// Whether ambient mode may pick this step up autonomously when it is
     /// ready. Deliberately opt-in per step: the default is false, so nothing
     /// is ever continued unattended unless explicitly marked safe.

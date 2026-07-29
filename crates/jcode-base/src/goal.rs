@@ -8,6 +8,8 @@ pub use jcode_task_types::{Goal, GoalMilestone, GoalScope, GoalStatus, GoalStep,
 
 /// Task-graph readiness computation over a goal's milestones/steps (T1).
 pub mod graph;
+/// Verification-gated step completion for the task graph (T2).
+pub mod verification;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalDisplayMode {
@@ -75,7 +77,21 @@ pub struct GoalDisplayResult {
     pub snapshot: crate::side_panel::SidePanelSnapshot,
 }
 
-pub fn create_goal(input: GoalCreateInput, working_dir: Option<&Path>) -> Result<Goal> {
+pub fn create_goal(
+    input: GoalCreateInput,
+    working_dir: Option<&Path>,
+) -> Result<Goal> {
+    create_goal_in_session(input, working_dir, None)
+}
+
+/// Session-aware form of [`create_goal`]: the session id keys the
+/// verification evidence consulted by the T2 completion gate. `None` means
+/// "no evidence available", so gated steps arrive as pending verification.
+pub fn create_goal_in_session(
+    input: GoalCreateInput,
+    working_dir: Option<&Path>,
+    session_id: Option<&str>,
+) -> Result<Goal> {
     if input.title.trim().is_empty() {
         anyhow::bail!("goal title cannot be empty");
     }
@@ -88,6 +104,14 @@ pub fn create_goal(input: GoalCreateInput, working_dir: Option<&Path>) -> Result
     goal.why = input.why.unwrap_or_default().trim().to_string();
     goal.success_criteria = trim_vec(input.success_criteria);
     goal.milestones = input.milestones;
+    // T2: verification-carrying steps cannot arrive completed without
+    // evidence. Flag-gated at the chokepoint so default behavior is unchanged.
+    if graph::task_graph_enabled()
+        && let Some(session_id) = session_id
+    {
+        let events = crate::knowledge::verification::session_events(session_id);
+        verification::gate_step_completions(&[], &mut goal.milestones, &events);
+    }
     goal.next_steps = trim_vec(input.next_steps);
     goal.blockers = trim_vec(input.blockers);
     goal.current_milestone_id = input.current_milestone_id;
@@ -103,6 +127,17 @@ pub fn update_goal(
     scope_hint: Option<GoalScope>,
     working_dir: Option<&Path>,
     update: GoalUpdateInput,
+) -> Result<Option<Goal>> {
+    update_goal_in_session(id, scope_hint, working_dir, update, None)
+}
+
+/// Session-aware form of [`update_goal`]; see [`create_goal_in_session`].
+pub fn update_goal_in_session(
+    id: &str,
+    scope_hint: Option<GoalScope>,
+    working_dir: Option<&Path>,
+    update: GoalUpdateInput,
+    session_id: Option<&str>,
 ) -> Result<Option<Goal>> {
     let Some(mut goal) = load_goal(id, scope_hint, working_dir)? else {
         return Ok(None);
@@ -129,7 +164,20 @@ pub fn update_goal(
         goal.success_criteria = trim_vec(criteria);
     }
     if let Some(milestones) = update.milestones {
+        let previous_milestones = goal.milestones.clone();
         goal.milestones = milestones;
+        // T2: newly arriving completions of verification-carrying steps
+        // require evidence; previously completed steps are grandfathered.
+        if graph::task_graph_enabled()
+            && let Some(session_id) = session_id
+        {
+            let events = crate::knowledge::verification::session_events(session_id);
+            verification::gate_step_completions(
+                &previous_milestones,
+                &mut goal.milestones,
+                &events,
+            );
+        }
     }
     if let Some(next_steps) = update.next_steps {
         goal.next_steps = trim_vec(next_steps);

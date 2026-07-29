@@ -65,7 +65,7 @@ pub struct GoalGraphSummary {
 /// Ready steps that are explicitly marked safe for ambient continuation.
 /// The safety flag lives on the step and defaults to false, so this list is
 /// empty unless someone deliberately opted steps in.
-pub fn ambient_safe_ready_steps<'goal>(goal: &'goal Goal) -> Vec<&'goal GoalStep> {
+pub fn ambient_safe_ready_steps(goal: &Goal) -> Vec<&GoalStep> {
     let summary = summarize_goal_graph(goal);
     all_steps(goal)
         .filter(|step| step.safe_for_ambient && summary.ready_step_ids.contains(&step.id))
@@ -159,6 +159,7 @@ mod tests {
             status: status.to_string(),
             blocked_by: blocked_by.iter().map(|dep| dep.to_string()).collect(),
             verification: None,
+            verification_evidence: None,
             safe_for_ambient: false,
         }
     }
@@ -256,6 +257,24 @@ mod tests {
             vec!["x".to_string(), "y".to_string()]
         );
         assert_eq!(summary.unknown_dependency_ids, vec!["ghost".to_string()]);
+    }
+
+    /// T2 contract: a step parked as done_pending_verification is not
+    /// completed, so its dependents must stay blocked until it is verified.
+    #[test]
+    fn done_pending_verification_keeps_dependents_blocked() {
+        let goal = goal_with(vec![milestone(
+            "m1",
+            vec![
+                step("gated", "done_pending_verification", &[]),
+                step("next", "pending", &["gated"]),
+            ],
+            &[],
+        )]);
+        let summary = summarize_goal_graph(&goal);
+        assert!(summary.ready_step_ids.is_empty());
+        assert_eq!(summary.blocked_step_ids, vec!["next".to_string()]);
+        assert!(summary.completed_step_ids.is_empty());
     }
 
     #[test]
