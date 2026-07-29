@@ -26,6 +26,8 @@ mod activity;
 mod cache;
 #[path = "memory/pending.rs"]
 mod pending;
+#[path = "memory/promotion.rs"]
+mod promotion;
 #[path = "memory_prompt.rs"]
 mod prompt_support;
 #[path = "memory/working.rs"]
@@ -54,6 +56,10 @@ pub use pending::{
 #[cfg(test)]
 use pending::{backdate_injected_memory_for_test, insert_pending_memory_for_test};
 use pending::{begin_memory_check, finish_memory_check};
+pub use promotion::{
+    PRUNE_PROTECTION_IMPORTANCE, PromotionOutcome, activate_memories, promote_item,
+    promote_on_session_end, rehearse_with_promotion,
+};
 pub(crate) use prompt_support::format_context_for_extraction;
 pub use prompt_support::{
     focus_query_text, format_context_for_relevance, format_focused_query_for_relevance,

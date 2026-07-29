@@ -238,6 +238,18 @@ pub fn rehearse(session_id: &str, item_id: &str) -> Option<WorkingMemoryItem> {
     })
 }
 
+/// Record the long-term memory an item corresponds to (set at activation time
+/// or after promotion), so later promotions reinforce instead of duplicating.
+pub fn set_source_memory_id(session_id: &str, item_id: &str, memory_id: &str) {
+    with_buffers(|map| {
+        if let Some(buffer) = map.get_mut(session_id)
+            && let Some(item) = buffer.iter_mut().find(|item| item.id == item_id)
+        {
+            item.source_memory_id = Some(memory_id.to_string());
+        }
+    });
+}
+
 /// Snapshot a session's working memory in insertion order.
 pub fn list(session_id: &str) -> Vec<WorkingMemoryItem> {
     with_buffers(|map| {
