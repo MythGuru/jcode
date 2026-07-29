@@ -16,6 +16,58 @@ A multi-layered memory system for cross-session learning that mimics how human m
 2. **Graph-based organization** - Memories form a connected graph with tags, clusters, and semantic links
 3. **Cascade retrieval** - Embedding hits trigger BFS traversal to find related memories
 4. **Hybrid grouping** - Combines explicit tags, automatic clusters, and semantic links
+5. **Two-store model** - A small per-session working (short-term) memory buffer complements the long-term graph (see below)
+
+---
+
+## Working (Short-Term) Memory
+
+> Flag-gated: `agents.working_memory_enabled` (default **off**), with
+> `working_memory_capacity` (default 7) and `working_memory_item_chars`
+> (default 240). Env overrides: `JCODE_WORKING_MEMORY_*`.
+
+A fixed-capacity, per-session buffer (`memory/working.rs`) holding what the
+agent is actively working on: goals, constraints, decisions, facts, and open
+threads. It is deliberately NOT the long-term graph:
+
+| | Working memory | Long-term graph |
+|---|---|---|
+| Lifetime | one session | until superseded/pruned |
+| Injection | re-stated EVERY turn (bypasses suppression) | once, then suppressed ~45 min |
+| Capacity | hard cap (default 7, ceiling 16) | unbounded |
+| Retrieval | always, no search | embedding + BM25 + LLM judge |
+
+**Injection** happens at the shared prompt chokepoint so both the TUI
+(system-prompt `dynamic_part`) and app-core (trailing user message) paths carry
+the same `# Working Memory` section from one implementation.
+
+**Rehearsal and promotion (P4):** items rehearsed 3+ times while resident are
+promoted into the long-term graph through the standard `remember_*` path
+(dedup/embedding/edges included), seeded with importance
+`clamp(0.5 + 0.1 x rehearsals, 0.5, 0.9)`. Items leaving the buffer (evicted or
+session end) promote at 2+ rehearsals. Never-rehearsed items evaporate at
+session end, by design. Judge-verified long-term hits are "activated" into free
+STM slots (never evicting) and are excluded from LTM retrieval candidates while
+resident.
+
+**Eviction** prefers the least-rehearsed item, oldest first, so rehearsal
+protects. Persistence is best-effort per session under `memory/working/`, a
+directory old binaries never read.
+
+**Importance (P1/P5/P6):** long-term entries carry `importance: f32` (serde
+default 0.5 = neutral no-op). When `agents.memory_importance_enabled` is on:
+- retrieval applies a bounded post-RRF nudge `x(1 + 0.30x(importance - 0.5))`
+  (max ±15%, breaks near-ties only),
+- the batched confidence updates drift importance +0.02 on judge-verified /
+  -0.01 on rejected (zero extra I/O),
+- ambient prune never removes entries with importance >= 0.8,
+- the `memory` tool exposes `working` / `note` / `rehearse` / `promote` /
+  `set_importance` actions.
+
+**Rollback (P8):** serde defaults make old files load unchanged and new files
+readable by old binaries. As one-time insurance, the first graph write with
+either flag enabled snapshots the pre-upgrade file to `*.pre-stm.json`
+(never rotated; restore is a plain copy).
 
 ---
 

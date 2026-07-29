@@ -277,6 +277,7 @@ development environment.
 - Unresolved contradictions: {count}
 - Memories without embeddings: {count}
 - Duplicate candidates (similarity > 0.95): {count}
+- Importance distribution: {high} high (>= 0.8, prune-protected), {low} low (<= 0.2)
 - Last consolidation: {timestamp}
 
 ## User Feedback History
