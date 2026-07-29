@@ -68,7 +68,7 @@ pub use working::{
     WorkingMemoryItem, WorkingMemoryKind, clear_all_working_memory, clear_working_memory,
     delete_working_memory_file, format_working_memory_for_prompt, list_working_memory,
     load_working_memory, push_working_memory, rehearse_working_memory, remove_working_memory,
-    restore_working_memory, save_working_memory, working_memory_is_empty,
+    resident_source_ids, restore_working_memory, save_working_memory, working_memory_is_empty,
 };
 
 const LEGACY_NOTE_CATEGORY: &str = "note";
@@ -199,6 +199,22 @@ pub fn working_memory_item_chars() -> usize {
 /// Whether long-term retrieval ranking applies the explicit importance signal.
 pub fn memory_importance_enabled() -> bool {
     crate::config::config().agents.memory_importance_enabled
+}
+
+/// Span of the bounded importance nudge applied to fused retrieval scores.
+///
+/// A memory's fused score is multiplied by
+/// `1 + IMPORTANCE_NUDGE_SPAN * (importance - 0.5)`, so the extremes move a
+/// score by at most ±15%. That is deliberately small: importance breaks
+/// near-ties between comparably relevant memories, but can never displace a
+/// clearly better relevance hit. Neutral importance (0.5) is an exact no-op.
+pub const IMPORTANCE_NUDGE_SPAN: f32 = 0.30;
+
+/// Multiplier the importance nudge applies to a fused retrieval score.
+/// Clamps importance defensively so a hand-edited file cannot exceed the
+/// ±15% bound the ranking design assumes.
+pub fn importance_nudge_factor(importance: f32) -> f32 {
+    1.0 + IMPORTANCE_NUDGE_SPAN * (importance.clamp(0.0, 1.0) - 0.5)
 }
 
 /// Whether the LLM precision-judge (sidecar) path can actually run right now:
@@ -750,6 +766,24 @@ impl MemoryManager {
         query_embedding: &[f32],
         limit: usize,
     ) -> Vec<(MemoryEntry, f32)> {
+        Self::hybrid_fuse_with_importance(
+            entries,
+            query_text,
+            query_embedding,
+            limit,
+            memory_importance_enabled(),
+        )
+    }
+
+    /// Flag-injected form of [`hybrid_fuse`] so tests can exercise the
+    /// importance nudge without mutating global config.
+    fn hybrid_fuse_with_importance(
+        entries: Vec<MemoryEntry>,
+        query_text: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        importance_enabled: bool,
+    ) -> Vec<(MemoryEntry, f32)> {
         let entries: Vec<MemoryEntry> = entries
             .into_iter()
             .filter(|e| e.embedding.is_some())
@@ -799,9 +833,23 @@ impl MemoryManager {
 
         let mut entries: Vec<Option<MemoryEntry>> = entries.into_iter().map(Some).collect();
         top_k_by_score(
-            fused
-                .into_iter()
-                .filter_map(|(idx, score)| entries[idx].take().map(|e| (e, score))),
+            fused.into_iter().filter_map(|(idx, score)| {
+                entries[idx].take().map(|e| {
+                    // Post-RRF bounded importance nudge (flag-gated, default
+                    // off). Applied AFTER fusion so it perturbs the final
+                    // ordering by at most ±15%: enough to break near-ties in
+                    // favor of what the user/promotion marked important, never
+                    // enough to displace a clearly more relevant hit. With the
+                    // flag off (or neutral 0.5 importance) the score is
+                    // untouched, keeping the legacy ordering byte-identical.
+                    let score = if importance_enabled {
+                        score * importance_nudge_factor(e.importance)
+                    } else {
+                        score
+                    };
+                    (e, score)
+                })
+            }),
             limit,
         )
     }

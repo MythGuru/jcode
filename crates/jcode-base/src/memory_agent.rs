@@ -673,6 +673,10 @@ impl MemoryAgent {
 
         // Filter out already-surfaced memories (per-session + global injection tracking)
         let total_before_filter = candidates.len();
+        // Also skip memories currently resident in working memory: a resident
+        // memory is re-stated every turn already, so retrieving it again as an
+        // LTM candidate would only duplicate context and waste a rerank slot.
+        let stm_resident = memory::resident_source_ids(session_id);
         let new_candidates: Vec<_> = {
             let ss = self.session_state(session_id);
             candidates
@@ -680,6 +684,7 @@ impl MemoryAgent {
                 .filter(|(entry, _)| {
                     !ss.surfaced_memories.contains(&entry.id)
                         && !memory::is_memory_injected(session_id, &entry.id)
+                        && !stm_resident.contains(&entry.id)
                 })
                 .collect()
         };

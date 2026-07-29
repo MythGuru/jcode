@@ -868,3 +868,133 @@ fn focus_query_text_falls_back_when_all_stripped() {
     // Nothing substantive survives -> fall back to raw rather than empty.
     assert_eq!(focused, raw);
 }
+
+// === P5: bounded importance nudge in retrieval ranking ===
+
+#[test]
+fn importance_nudge_factor_is_bounded_and_monotone() {
+    // Neutral importance is an exact no-op.
+    assert_eq!(importance_nudge_factor(0.5), 1.0);
+
+    // Extremes stay within the designed +/-15% envelope.
+    assert!((importance_nudge_factor(0.0) - 0.85).abs() < 1e-6);
+    assert!((importance_nudge_factor(1.0) - 1.15).abs() < 1e-6);
+
+    // Out-of-range values (hand-edited files) are clamped, not amplified.
+    assert_eq!(importance_nudge_factor(-5.0), importance_nudge_factor(0.0));
+    assert_eq!(importance_nudge_factor(9.0), importance_nudge_factor(1.0));
+
+    // State-space sweep: monotone in importance, always within bounds.
+    let mut prev = f32::MIN;
+    for step in 0..=100 {
+        let importance = step as f32 / 100.0;
+        let factor = importance_nudge_factor(importance);
+        assert!(
+            (0.85..=1.15).contains(&factor),
+            "factor out of bounds: {factor}"
+        );
+        assert!(factor >= prev, "factor must be monotone in importance");
+        prev = factor;
+    }
+}
+
+/// Build an entry with a controlled embedding so dense ranking among the test
+/// entries is fully determined by the vectors we choose.
+fn ranked_entry(content: &str, embedding: Vec<f32>, importance: f32) -> MemoryEntry {
+    let mut entry = MemoryEntry::new(MemoryCategory::Fact, content).with_importance(importance);
+    entry.embedding = Some(embedding);
+    entry.embedding_model = Some(crate::embedding_backend::active_model_id());
+    entry
+}
+
+#[test]
+fn importance_breaks_ties_between_equally_relevant_hits() {
+    // Two entries with IDENTICAL embeddings and equally query-irrelevant text:
+    // dense and BM25 signals tie, so fused scores tie exactly. Importance must
+    // decide the winner.
+    let query = vec![1.0f32, 0.0, 0.0];
+    let low = ranked_entry("alpha option", vec![1.0, 0.0, 0.0], 0.2);
+    let high = ranked_entry("beta option", vec![1.0, 0.0, 0.0], 0.9);
+
+    let ranked = MemoryManager::hybrid_fuse_with_importance(
+        vec![low, high],
+        "unrelated query text",
+        &query,
+        2,
+        true,
+    );
+    assert_eq!(ranked.len(), 2);
+    assert_eq!(
+        ranked[0].0.content, "beta option",
+        "the important memory must win an exact tie"
+    );
+}
+
+#[test]
+fn importance_cannot_displace_a_clearly_better_hit() {
+    // "matches the query" wins both retriever rankings outright (identical
+    // vector + exact lexical match). Even at the maximum importance
+    // disadvantage (0.0 vs 1.0), the +/-15% envelope must not flip a
+    // first-place-in-both-retrievers hit.
+    let query = vec![1.0f32, 0.0, 0.0];
+    let relevant = ranked_entry("matches the query", vec![1.0, 0.0, 0.0], 0.0);
+    let unrelated = ranked_entry("totally different topic", vec![0.0, 1.0, 0.0], 1.0);
+
+    let ranked = MemoryManager::hybrid_fuse_with_importance(
+        vec![relevant, unrelated],
+        "matches the query",
+        &query,
+        2,
+        true,
+    );
+    assert_eq!(
+        ranked[0].0.content, "matches the query",
+        "a clearly better hit must survive maximum importance disadvantage"
+    );
+}
+
+#[test]
+fn ranking_is_unchanged_when_importance_flag_is_off() {
+    let query = vec![1.0f32, 0.0, 0.0];
+    let entries = vec![
+        ranked_entry("first", vec![1.0, 0.0, 0.0], 0.9),
+        ranked_entry("second", vec![0.9, 0.1, 0.0], 0.1),
+    ];
+
+    // Flag off must reproduce the legacy fused scores exactly (regression
+    // guarantee), regardless of the importance values present, and repeated
+    // runs must be deterministic.
+    let with_flag_off =
+        MemoryManager::hybrid_fuse_with_importance(entries.clone(), "query", &query, 2, false);
+    let legacy_scores: Vec<f32> = with_flag_off.iter().map(|(_, s)| *s).collect();
+
+    let rerun = MemoryManager::hybrid_fuse_with_importance(entries, "query", &query, 2, false);
+    let rerun_scores: Vec<f32> = rerun.iter().map(|(_, s)| *s).collect();
+    assert_eq!(legacy_scores, rerun_scores);
+    assert_eq!(with_flag_off[0].0.content, "first");
+}
+
+#[test]
+fn resident_source_ids_reports_only_sourced_items() {
+    let session = "resident-ids-test";
+    crate::memory::clear_working_memory(session);
+
+    crate::memory::push_working_memory(
+        session,
+        "no source",
+        crate::memory::WorkingMemoryKind::Fact,
+    );
+    let (sourced, _) = crate::memory::push_working_memory(
+        session,
+        "from long-term",
+        crate::memory::WorkingMemoryKind::Fact,
+    );
+    working::set_source_memory_id(session, &sourced.id, "mem_original_123");
+
+    let ids = resident_source_ids(session);
+    assert_eq!(ids.len(), 1);
+    assert!(ids.contains("mem_original_123"));
+
+    crate::memory::clear_working_memory(session);
+    assert!(resident_source_ids(session).is_empty());
+}

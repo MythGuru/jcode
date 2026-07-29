@@ -250,6 +250,23 @@ pub fn set_source_memory_id(session_id: &str, item_id: &str, memory_id: &str) {
     });
 }
 
+/// IDs of the long-term memories currently resident in a session's working
+/// memory (via activation or promotion). Retrieval uses this to skip them as
+/// LTM candidates: a resident memory is already re-stated every turn, so
+/// surfacing it again through injection would be pure duplication.
+pub fn resident_source_ids(session_id: &str) -> std::collections::HashSet<String> {
+    with_buffers(|map| {
+        map.get(session_id)
+            .map(|buffer| {
+                buffer
+                    .iter()
+                    .filter_map(|item| item.source_memory_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
 /// Snapshot a session's working memory in insertion order.
 pub fn list(session_id: &str) -> Vec<WorkingMemoryItem> {
     with_buffers(|map| {
