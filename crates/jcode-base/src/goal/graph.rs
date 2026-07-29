@@ -147,6 +147,104 @@ pub fn summarize_goal_graph(goal: &Goal) -> GoalGraphSummary {
     }
 }
 
+/// The `# Active Plan` section to inject into this turn's prompt, if any.
+///
+/// Single gate, mirroring `project_knowledge_prompt_section`: returns `None`
+/// unless ALL of the following hold, so a caller cannot accidentally inject
+/// the section by forgetting a check:
+/// - the `task_graph_enabled` flag is on (default OFF),
+/// - a session id is known (attachment is per session),
+/// - the session has an attached or resumable initiative,
+/// - that initiative has at least one step.
+///
+/// Shows the frontier, not the whole graph: current goal and milestone,
+/// ready steps, blockers, and steps awaiting verification, truncated to the
+/// configured char budget by dropping whole lines from the end.
+pub fn active_plan_prompt_section(
+    session_id: Option<&str>,
+    working_dir: Option<&std::path::Path>,
+) -> Option<String> {
+    if !task_graph_enabled() {
+        return None;
+    }
+    let session_id = session_id?;
+    let goal = super::resume_goal(session_id, working_dir).ok().flatten()?;
+    if goal.milestones.iter().all(|m| m.steps.is_empty()) {
+        return None;
+    }
+    Some(render_budgeted_plan(&goal, task_graph_max_prompt_chars()))
+}
+
+/// Render the plan frontier within a char budget by dropping whole lines
+/// from the end. Ordering puts the most actionable content first (ready
+/// steps), so blockers and verification notes are the first to go.
+fn render_budgeted_plan(goal: &Goal, max_chars: usize) -> String {
+    let summary = summarize_goal_graph(goal);
+    let find_step = |step_id: &str| {
+        goal.milestones
+            .iter()
+            .flat_map(|milestone| milestone.steps.iter())
+            .find(|step| step.id == step_id)
+    };
+
+    let mut full = format!("# Active Plan{}{}", "\n", "\n");
+    full.push_str(&format!(
+        "Initiative: {} (`{}`), {} ready / {} blocked / {} completed.\n",
+        goal.title,
+        goal.id,
+        summary.ready_step_ids.len(),
+        summary.blocked_step_ids.len(),
+        summary.completed_step_ids.len()
+    ));
+    if let Some(milestone) = goal.current_milestone() {
+        full.push_str(&format!("Current milestone: {}\n", milestone.title));
+    }
+    if !summary.ready_step_ids.is_empty() {
+        full.push_str("Ready steps (use the initiative tool to update):\n");
+        for step_id in &summary.ready_step_ids {
+            if let Some(step) = find_step(step_id) {
+                let consult = if step.knowledge_ids.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (consult knowledge: {})", step.knowledge_ids.join(", "))
+                };
+                full.push_str(&format!("- `{}` {}{}\n", step.id, step.content, consult));
+            }
+        }
+    }
+    let pending: Vec<&str> = goal
+        .milestones
+        .iter()
+        .flat_map(|milestone| milestone.steps.iter())
+        .filter(|step| step.status == super::verification::STATUS_DONE_PENDING_VERIFICATION)
+        .map(|step| step.id.as_str())
+        .collect();
+    if !pending.is_empty() {
+        full.push_str(&format!(
+            "Awaiting verification: {}. After a passing build/test, use the initiative tool's verify_step action.\n",
+            pending.join(", ")
+        ));
+    }
+    if !goal.blockers.is_empty() {
+        full.push_str(&format!("Blockers: {}\n", goal.blockers.join("; ")));
+    }
+
+    let full = full.trim_end().to_string();
+    if full.chars().count() <= max_chars {
+        return full;
+    }
+    let mut out = String::new();
+    for line in full.lines() {
+        if out.chars().count() + line.chars().count() + 1 > max_chars.saturating_sub(24) {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("(truncated to budget)");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +409,138 @@ mod tests {
             .collect();
         // "unsafe" is ready but not opted in; "later" is opted in but blocked.
         assert_eq!(picked, vec!["safe"]);
+    }
+
+    struct PlanPromptEnv {
+        _home: tempfile::TempDir,
+        _guard: std::sync::MutexGuard<'static, ()>,
+        prev_home: Option<std::ffi::OsString>,
+        prev_flag: Option<std::ffi::OsString>,
+    }
+
+    fn setup_plan_prompt_env(flag: bool) -> PlanPromptEnv {
+        let guard = crate::storage::lock_test_env();
+        let home = tempfile::TempDir::new().expect("tempdir");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_flag = std::env::var_os("JCODE_TASK_GRAPH_ENABLED");
+        crate::env::set_var("JCODE_HOME", home.path());
+        if flag {
+            crate::env::set_var("JCODE_TASK_GRAPH_ENABLED", "true");
+        } else {
+            crate::env::remove_var("JCODE_TASK_GRAPH_ENABLED");
+        }
+        crate::config::invalidate_config_cache();
+        PlanPromptEnv {
+            _home: home,
+            _guard: guard,
+            prev_home,
+            prev_flag,
+        }
+    }
+
+    impl Drop for PlanPromptEnv {
+        fn drop(&mut self) {
+            match self.prev_home.take() {
+                Some(v) => crate::env::set_var("JCODE_HOME", v),
+                None => crate::env::remove_var("JCODE_HOME"),
+            }
+            match self.prev_flag.take() {
+                Some(v) => crate::env::set_var("JCODE_TASK_GRAPH_ENABLED", v),
+                None => crate::env::remove_var("JCODE_TASK_GRAPH_ENABLED"),
+            }
+            crate::config::invalidate_config_cache();
+        }
+    }
+
+    fn planful_goal(env: &PlanPromptEnv, session_id: &str) -> std::path::PathBuf {
+        let project = env._home.path().join("repo");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let mut ready = step("ready-step", "pending", &[]);
+        ready.knowledge_ids = vec!["pk_1".to_string()];
+        let goal = super::super::create_goal(
+            super::super::GoalCreateInput {
+                title: "Prompt demo".to_string(),
+                scope: GoalScope::Project,
+                milestones: vec![milestone(
+                    "m1",
+                    vec![
+                        ready,
+                        step("later", "pending", &["ready-step"]),
+                        {
+                            let mut parked = step("parked", "done_pending_verification", &[]);
+                            parked.verification = Some("cargo test".to_string());
+                            parked
+                        },
+                    ],
+                    &[],
+                )],
+                ..Default::default()
+            },
+            Some(&project),
+        )
+        .expect("create goal");
+        super::super::attach_goal_to_session(session_id, &goal, Some(&project))
+            .expect("attach");
+        project
+    }
+
+    #[test]
+    fn plan_prompt_section_requires_flag_session_and_steps() {
+        // Flag off: always None, even with a valid attached goal.
+        {
+            let env = setup_plan_prompt_env(false);
+            let project = planful_goal(&env, "ses_plan_off");
+            assert_eq!(
+                active_plan_prompt_section(Some("ses_plan_off"), Some(&project)),
+                None
+            );
+        }
+        // Flag on: no session id means None; empty-plan goals mean None.
+        let env = setup_plan_prompt_env(true);
+        let project = planful_goal(&env, "ses_plan_on");
+        assert_eq!(active_plan_prompt_section(None, Some(&project)), None);
+        assert!(
+            active_plan_prompt_section(Some("ses_plan_on"), Some(&project)).is_some()
+        );
+    }
+
+    #[test]
+    fn plan_prompt_section_shows_frontier_and_verification_state() {
+        let env = setup_plan_prompt_env(true);
+        let project = planful_goal(&env, "ses_plan_content");
+        let section = active_plan_prompt_section(Some("ses_plan_content"), Some(&project))
+            .expect("section");
+        assert!(section.starts_with("# Active Plan"));
+        assert!(section.contains("Prompt demo"));
+        // "later" is dependency-blocked; "parked" awaits verification, which
+        // is neither ready nor dependency-blocked, so it is counted in neither.
+        assert!(section.contains("1 ready / 1 blocked / 0 completed"));
+        assert!(section.contains("- `ready-step` step ready-step (consult knowledge: pk_1)"));
+        assert!(section.contains("Awaiting verification: parked"));
+        assert!(section.contains("verify_step"));
+        // Blocked steps are not listed line-by-line; the count covers them.
+        assert!(!section.contains("- `later`"));
+    }
+
+    #[test]
+    fn plan_prompt_section_truncates_to_budget() {
+        let goal = {
+            let mut goal = Goal::new("Big plan", GoalScope::Project);
+            goal.milestones = vec![milestone(
+                "m1",
+                (0..200)
+                    .map(|i| step(&format!("step-{i:03}"), "pending", &[]))
+                    .collect(),
+                &[],
+            )];
+            goal
+        };
+        let rendered = render_budgeted_plan(&goal, 600);
+        assert!(rendered.chars().count() <= 600);
+        assert!(rendered.ends_with("(truncated to budget)"));
+        // The header and the first ready steps survive; the tail is dropped.
+        assert!(rendered.starts_with("# Active Plan"));
+        assert!(rendered.contains("step-000"));
+        assert!(!rendered.contains("step-199"));
     }
 }

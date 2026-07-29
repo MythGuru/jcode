@@ -235,6 +235,9 @@ pub struct ContextInfo {
     /// re-sent while present, but it changes only when entries are proposed
     /// or verified, so it is budgeted separately (project_knowledge_max_chars).
     pub project_knowledge_chars: usize,
+    /// Active plan section size (chars). Budgeted separately
+    /// (task_graph_max_prompt_chars); zero while the task graph is off.
+    pub active_plan_chars: usize,
     /// Prompt overlay section size (chars)
     pub prompt_overlay_chars: usize,
     /// Preferred tools section size (chars)
@@ -316,6 +319,9 @@ impl ContextInfo {
         }
         if self.working_memory_chars > 0 {
             parts.push(("stm", self.working_memory_chars, "📌"));
+        }
+        if self.active_plan_chars > 0 {
+            parts.push(("plan", self.active_plan_chars, "🗺"));
         }
         if self.prompt_overlay_chars > 0 {
             parts.push(("overlay", self.prompt_overlay_chars, "🧩"));
@@ -573,6 +579,19 @@ pub fn build_system_prompt_split_with_capabilities(
     {
         info.project_knowledge_chars = project_knowledge.len();
         dynamic_parts.push(project_knowledge);
+    }
+
+    // Active plan: the durable task graph's frontier for this session's
+    // initiative. Dynamic for the same reason as project knowledge: steps
+    // complete and verify mid-session. Placed between the project-level map
+    // and session-local working memory, so context narrows toward the
+    // conversation. Yields `None` when the flag is off, keeping the
+    // flag-off prompt byte-identical.
+    if let Some(active_plan) =
+        crate::goal::graph::active_plan_prompt_section(session_id, working_dir)
+    {
+        info.active_plan_chars = active_plan.len();
+        dynamic_parts.push(active_plan);
     }
 
     // Working (short-term) memory: what this session is actively working on.
