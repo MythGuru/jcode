@@ -400,6 +400,49 @@ fn project_knowledge_config_omitted_from_toml_uses_defaults() {
 }
 
 #[test]
+fn task_graph_defaults_are_off_and_bounded() {
+    // Default OFF is deliberate: with the flags off, jcode must behave
+    // exactly as it did before the task graph existed.
+    let cfg = Config::default();
+    assert!(!cfg.agents.task_graph_enabled);
+    assert!(!cfg.agents.task_graph_ambient_continuation);
+    assert_eq!(cfg.agents.task_graph_max_prompt_chars, 2400);
+}
+
+#[test]
+fn test_env_override_task_graph() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_enabled = std::env::var_os("JCODE_TASK_GRAPH_ENABLED");
+    let prev_ambient = std::env::var_os("JCODE_TASK_GRAPH_AMBIENT_CONTINUATION");
+    let prev_chars = std::env::var_os("JCODE_TASK_GRAPH_MAX_PROMPT_CHARS");
+    crate::env::set_var("JCODE_TASK_GRAPH_ENABLED", "true");
+    crate::env::set_var("JCODE_TASK_GRAPH_AMBIENT_CONTINUATION", "true");
+    crate::env::set_var("JCODE_TASK_GRAPH_MAX_PROMPT_CHARS", "1800");
+
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+
+    assert!(cfg.agents.task_graph_enabled);
+    assert!(cfg.agents.task_graph_ambient_continuation);
+    assert_eq!(cfg.agents.task_graph_max_prompt_chars, 1800);
+
+    restore_env_var("JCODE_TASK_GRAPH_ENABLED", prev_enabled);
+    restore_env_var("JCODE_TASK_GRAPH_AMBIENT_CONTINUATION", prev_ambient);
+    restore_env_var("JCODE_TASK_GRAPH_MAX_PROMPT_CHARS", prev_chars);
+}
+
+#[test]
+fn task_graph_config_omitted_from_toml_uses_defaults() {
+    // Existing user config.toml files predate these keys. They must still
+    // parse and land on the safe defaults rather than enabling the feature.
+    let cfg: Config = toml::from_str("[agents]\nmemory_sidecar_enabled = true\n")
+        .expect("config without task-graph keys should parse");
+    assert!(!cfg.agents.task_graph_enabled);
+    assert!(!cfg.agents.task_graph_ambient_continuation);
+    assert_eq!(cfg.agents.task_graph_max_prompt_chars, 2400);
+}
+
+#[test]
 fn tool_config_defaults_to_full_toolset() {
     let selection = ToolConfig::default().selection();
     assert!(selection.allowed_tools.is_none());

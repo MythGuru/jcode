@@ -437,6 +437,16 @@ swarm_max_concurrent_agents = 32
 # Default off. Env: JCODE_PROJECT_KNOWLEDGE_ENABLED
 # project_knowledge_enabled = false
 # project_knowledge_max_chars = 4000
+#
+# Persistent hierarchical task graph. Keeps a durable plan (goals ->
+# milestones -> steps with dependencies) that survives sessions; step
+# completion can be gated on build/test verification evidence. The
+# ambient flag additionally allows ambient mode to continue ready steps
+# explicitly marked safe for autonomous work (both flags must be on).
+# Default off. Env: JCODE_TASK_GRAPH_ENABLED
+# task_graph_enabled = false
+# task_graph_ambient_continuation = false
+# task_graph_max_prompt_chars = 2400
 
 [terminal]
 # Without a hook, clients inside tmux automatically use a right-side pane.

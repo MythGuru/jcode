@@ -624,6 +624,28 @@ pub struct AgentsConfig {
     /// Env override: `JCODE_PROJECT_KNOWLEDGE_MAX_CHARS`.
     #[serde(default = "default_project_knowledge_max_chars")]
     pub project_knowledge_max_chars: usize,
+    /// Whether the persistent hierarchical task graph is active.
+    ///
+    /// When enabled, jcode keeps a durable plan (goals -> milestones -> steps
+    /// with dependencies) that survives sessions, and step completion can be
+    /// gated on verification evidence. Defaults to `false` so nothing changes
+    /// until the feature is deliberately turned on.
+    /// Env override: `JCODE_TASK_GRAPH_ENABLED`.
+    #[serde(default = "default_task_graph_enabled")]
+    pub task_graph_enabled: bool,
+    /// Whether ambient mode may pick up ready task-graph steps that are marked
+    /// safe for autonomous continuation. Independent of `task_graph_enabled`
+    /// (both must be on) so the graph can be used interactively long before
+    /// any autonomous work is allowed. Defaults to `false`.
+    /// Env override: `JCODE_TASK_GRAPH_AMBIENT_CONTINUATION`.
+    #[serde(default = "default_task_graph_ambient_continuation")]
+    pub task_graph_ambient_continuation: bool,
+    /// Character budget for the `# Active Plan` prompt section. The current
+    /// goal, milestone, ready steps, and blockers are injected within this
+    /// budget so the per-turn cost stays bounded no matter how large the plan
+    /// grows. Env override: `JCODE_TASK_GRAPH_MAX_PROMPT_CHARS`.
+    #[serde(default = "default_task_graph_max_prompt_chars")]
+    pub task_graph_max_prompt_chars: usize,
     /// Maximum number of live swarm worker agents in one swarm. This is the RAM
     /// safety budget for both recursive ad hoc spawning and deep-mode `run_plan`
     /// parallelism. Completed/stopped workers do not consume slots. Light mode
@@ -688,6 +710,21 @@ fn default_project_knowledge_max_chars() -> usize {
     4000
 }
 
+fn default_task_graph_enabled() -> bool {
+    false
+}
+
+fn default_task_graph_ambient_continuation() -> bool {
+    false
+}
+
+/// Default prompt budget for the active-plan section. Smaller than the
+/// project-knowledge budget: the plan section shows the current goal and its
+/// frontier (ready/blocked steps), not the whole graph.
+fn default_task_graph_max_prompt_chars() -> usize {
+    2400
+}
+
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
@@ -710,6 +747,9 @@ impl Default for AgentsConfig {
             memory_importance_enabled: default_memory_importance_enabled(),
             project_knowledge_enabled: default_project_knowledge_enabled(),
             project_knowledge_max_chars: default_project_knowledge_max_chars(),
+            task_graph_enabled: default_task_graph_enabled(),
+            task_graph_ambient_continuation: default_task_graph_ambient_continuation(),
+            task_graph_max_prompt_chars: default_task_graph_max_prompt_chars(),
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
         }
     }

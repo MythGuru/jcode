@@ -397,6 +397,21 @@ impl Config {
                 self.agents.project_knowledge_max_chars = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_TASK_GRAPH_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.agents.task_graph_enabled = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_TASK_GRAPH_AMBIENT_CONTINUATION") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.agents.task_graph_ambient_continuation = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_TASK_GRAPH_MAX_PROMPT_CHARS") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.agents.task_graph_max_prompt_chars = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_MEMORY_EMBEDDING_BACKEND") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
