@@ -16,6 +16,10 @@ pub struct MemoryGraphHealth {
     pub contradictions: usize,
     pub missing_embeddings: usize,
     pub duplicate_candidates: usize,
+    /// Active memories with importance >= 0.8 (protected from pruning).
+    pub high_importance: usize,
+    /// Active memories with importance <= 0.2 (curation candidates).
+    pub low_importance: usize,
     pub last_consolidation: Option<DateTime<Utc>>,
 }
 
@@ -37,6 +41,22 @@ pub struct ResourceBudget {
     pub window_resets_desc: String,
     pub user_usage_rate_desc: String,
     pub cycle_budget_desc: String,
+}
+
+/// Accumulate importance-distribution counters for one graph. Counters only;
+/// the actual importance nudging happens in the memory agent's batched
+/// confidence updates, so ambient just reports state for the gardener.
+fn importance_counters(graph: &crate::memory_graph::MemoryGraph, health: &mut MemoryGraphHealth) {
+    health.high_importance += graph
+        .memories
+        .values()
+        .filter(|m| m.active && m.importance >= 0.8)
+        .count();
+    health.low_importance += graph
+        .memories
+        .values()
+        .filter(|m| m.active && m.importance <= 0.2)
+        .count();
 }
 
 /// Gather memory graph health stats from the MemoryManager.
@@ -74,6 +94,7 @@ pub fn gather_memory_graph_health(
             .count();
 
         // Count contradiction edges
+        importance_counters(&graph, &mut health);
         for edges in graph.edges.values() {
             for edge in edges {
                 if matches!(edge.kind, crate::memory_graph::EdgeKind::Contradicts) {
@@ -96,7 +117,7 @@ pub fn gather_memory_graph_health(
     health.contradictions /= 2;
 
     // Duplicate candidates would require embedding similarity scan;
-    // placeholder for now — ambient agent will discover them during its cycle.
+    // placeholder for now â€” ambient agent will discover them during its cycle.
     health.duplicate_candidates = 0;
 
     health
@@ -136,7 +157,7 @@ pub fn gather_feedback_memories(memory_manager: &crate::memory::MemoryManager) -
                 let summary = transcript.summary.as_deref().unwrap_or("no summary");
                 let age = format_duration_rough(Utc::now() - transcript.started_at);
                 feedback.push(format!(
-                    "Past cycle ({} ago, {}): {} memories modified, {} compactions — {}",
+                    "Past cycle ({} ago, {}): {} memories modified, {} compactions â€” {}",
                     age,
                     status.to_lowercase(),
                     transcript.memories_modified,
@@ -400,6 +421,10 @@ pub fn build_ambient_system_prompt(
         "- Memories without embeddings: {}\n",
         graph_health.missing_embeddings,
     ));
+    prompt.push_str(&format!(
+        "- Importance distribution: {} high (>= 0.8, prune-protected), {} low (<= 0.2)\n",
+        graph_health.high_importance, graph_health.low_importance,
+    ));
     if graph_health.duplicate_candidates > 0 {
         prompt.push_str(&format!(
             "- Duplicate candidates (similarity > 0.95): {}\n",
@@ -467,14 +492,14 @@ pub fn build_ambient_system_prompt(
     prompt.push_str(
         "## Instructions\n\n\
          Use the tools that are already available to you in this session. Do \
-         not search for tools — there is no tool-search/discovery tool, and \
+         not search for tools â€” there is no tool-search/discovery tool, and \
          the tools you need are listed below and in your tool definitions.\n\n\
          Key tools for this cycle (use these exact names):\n\
-         - `todo` — plan and track what you'll do this cycle.\n\
-         - `end_ambient_cycle` — REQUIRED to finish the cycle (see below).\n\
-         - `schedule_ambient` — schedule your next wake time.\n\
-         - `request_permission` — get approval before any code change.\n\
-         - `send_message` — keep the user informed.\n\
+         - `todo` â€” plan and track what you'll do this cycle.\n\
+         - `end_ambient_cycle` â€” REQUIRED to finish the cycle (see below).\n\
+         - `schedule_ambient` â€” schedule your next wake time.\n\
+         - `request_permission` â€” get approval before any code change.\n\
+         - `send_message` â€” keep the user informed.\n\
          Standard tools (`bash`, `read`, `write`, `edit`, `memory`, etc.) are \
          also available.\n\n\
          Start by using the `todo` tool to plan what you'll do this cycle.\n\n\
@@ -489,6 +514,11 @@ pub fn build_ambient_system_prompt(
          For gardening: focus on highest-value maintenance first. Duplicates \
          and contradictions before pruning. Verify stale facts only if you \
          have budget left.\n\n\
+         Importance curation: memories carry an importance score (0-1, \
+         neutral 0.5). Use `memory` tool actions to raise importance on \
+         memories the user repeatedly relies on and lower it on ones that \
+         keep getting retrieved but never help. Never prune memories with \
+         importance >= 0.8; they are deliberately protected.\n\n\
          For proactive work: be conservative. A bad surprise is worse than \
          no surprise. Check the user feedback memories -- if they've rejected \
          similar work before, don't do it. Code changes must go on a worktree \
@@ -501,17 +531,17 @@ pub fn build_ambient_system_prompt(
          - context.planned_steps, context.files, context.commands (if known)\n\
          - context.risks and context.rollback_plan (if relevant)\n\n\
          Good sources for scouting proactive work:\n\
-         - Todoist (via MCP) — check for relevant tasks and deadlines\n\
-         - Canvas (via MCP) — check for upcoming assignments or deadlines\n\
-         - Git history — recent commits, open branches, stale PRs\n\
-         - Session history — patterns in what the user works on\n\n\
+         - Todoist (via MCP) â€” check for relevant tasks and deadlines\n\
+         - Canvas (via MCP) â€” check for upcoming assignments or deadlines\n\
+         - Git history â€” recent commits, open branches, stale PRs\n\
+         - Session history â€” patterns in what the user works on\n\n\
          When done, you MUST call end_ambient_cycle with a summary of \
          everything you did, including compaction count. Always schedule \
          your next wake time with context for what you plan to do next.\n\n\
          ## Messaging Check-ins\n\n\
          You have a `send_message` tool. Use it to keep the user informed \
          about what you're doing. Send a brief message when you start a cycle \
-         and when you finish significant work. Keep messages short and useful — \
+         and when you finish significant work. Keep messages short and useful â€” \
          the user should be able to glance at their messages and know what's happening \
          without opening jcode. You can optionally target a specific channel \
          (e.g. telegram, discord) or omit channel to send to all.\n",
@@ -573,7 +603,7 @@ pub(crate) fn format_duration_rough(d: chrono::Duration) -> String {
 }
 
 /// Format a number of minutes into a human-friendly string.
-/// E.g. 5 → "5m", 90 → "1h 30m", 370 → "6h 10m", 1500 → "1d 1h"
+/// E.g. 5 â†’ "5m", 90 â†’ "1h 30m", 370 â†’ "6h 10m", 1500 â†’ "1d 1h"
 pub fn format_minutes_human(mins: u32) -> String {
     if mins < 60 {
         format!("{}m", mins)

@@ -184,3 +184,96 @@ fn dynamic_gate_empty_input_returns_empty() {
     let out = dynamic_gate_select(Vec::new(), 5);
     assert!(out.is_empty());
 }
+
+#[test]
+fn importance_curation_nudges_only_when_flag_is_on() {
+    let _guard = crate::storage::lock_test_env();
+    let old = std::env::var("JCODE_HOME").ok();
+    let dir = std::env::temp_dir().join(format!(
+        "jcode-imp-cur-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    crate::env::set_var("JCODE_HOME", &dir);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let manager = crate::memory::MemoryManager::new().with_project_dir("/tmp/jcode-imp-cur");
+
+        let verified = manager
+            .remember_project(
+                MemoryEntry::new(MemoryCategory::Fact, "keeps proving relevant")
+                    .with_embedding(vec![1.0, 0.0]),
+            )
+            .unwrap();
+        let rejected = manager
+            .remember_project(
+                MemoryEntry::new(MemoryCategory::Fact, "keeps getting rejected")
+                    .with_embedding(vec![0.0, 1.0]),
+            )
+            .unwrap();
+
+        let importance_of = |id: &str| {
+            manager
+                .load_project_graph()
+                .unwrap()
+                .get_memory(id)
+                .unwrap()
+                .importance
+        };
+        assert_eq!(importance_of(&verified), 0.5, "starts neutral");
+        assert_eq!(importance_of(&rejected), 0.5, "starts neutral");
+
+        // Flag OFF: confidence updates land, importance must stay untouched.
+        apply_confidence_updates_inner(
+            &manager,
+            std::slice::from_ref(&verified),
+            std::slice::from_ref(&rejected),
+            false,
+        );
+        assert_eq!(importance_of(&verified), 0.5, "flag off must not curate");
+        assert_eq!(importance_of(&rejected), 0.5, "flag off must not curate");
+
+        // Flag ON: verified drifts up by 0.02, rejected down by 0.01.
+        apply_confidence_updates_inner(
+            &manager,
+            std::slice::from_ref(&verified),
+            std::slice::from_ref(&rejected),
+            true,
+        );
+        assert!(
+            (importance_of(&verified) - 0.52).abs() < 1e-6,
+            "verified importance should rise by the reward"
+        );
+        assert!(
+            (importance_of(&rejected) - 0.49).abs() < 1e-6,
+            "rejected importance should fall by the (smaller) discount"
+        );
+
+        // Repeated curation stays clamped inside [0, 1].
+        for _ in 0..100 {
+            apply_confidence_updates_inner(
+                &manager,
+                std::slice::from_ref(&verified),
+                std::slice::from_ref(&rejected),
+                true,
+            );
+        }
+        let v = importance_of(&verified);
+        let r = importance_of(&rejected);
+        assert!((0.0..=1.0).contains(&v), "verified importance clamped: {v}");
+        assert!((0.0..=1.0).contains(&r), "rejected importance clamped: {r}");
+        assert!(v > r, "curation must separate useful from useless");
+    }));
+
+    match old {
+        Some(v) => crate::env::set_var("JCODE_HOME", v),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(p) = result {
+        std::panic::resume_unwind(p);
+    }
+}
