@@ -171,6 +171,11 @@ pub struct Goal {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub updates: Vec<GoalUpdate>,
+    /// Project directory this goal was created in, recorded so ambient
+    /// continuation (T6) can run its steps in the right place. Absent on
+    /// legacy goals and on global-scope goals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
 }
 
 impl Goal {
@@ -193,6 +198,7 @@ impl Goal {
             created_at: now,
             updated_at: now,
             updates: Vec::new(),
+            working_dir: None,
         }
     }
 

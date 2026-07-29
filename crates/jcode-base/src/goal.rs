@@ -12,6 +12,8 @@ pub mod graph;
 pub mod verification;
 /// Links from the task graph to the project knowledge map (T4).
 pub mod knowledge_link;
+/// Ambient continuation of safe ready steps (T6).
+pub mod ambient_link;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalDisplayMode {
@@ -102,6 +104,11 @@ pub fn create_goal_in_session(
         goal.id = jcode_task_types::sanitize_goal_id(id);
     }
     goal.id = next_available_goal_id(&goal.id, goal.scope, working_dir)?;
+    // T6: record where a project goal lives so ambient continuation can
+    // run its steps in the right project. Global goals stay location-free.
+    if goal.scope == GoalScope::Project {
+        goal.working_dir = working_dir.map(|dir| dir.display().to_string());
+    }
     goal.description = input.description.unwrap_or_default().trim().to_string();
     goal.why = input.why.unwrap_or_default().trim().to_string();
     goal.success_criteria = trim_vec(input.success_criteria);
