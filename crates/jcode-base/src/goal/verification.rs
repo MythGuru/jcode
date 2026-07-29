@@ -248,7 +248,14 @@ pub fn verify_goal_step_with_events(
     let mut goal = super::load_goal(goal_id, scope_hint, working_dir)
         .map_err(|err| StepVerifyError::Storage(err.to_string()))?
         .ok_or(StepVerifyError::UnknownGoal)?;
+    let previous = goal.milestones.clone();
     let evidence = verify_step_with_events(&mut goal, step_id, events)?;
+    // T4: a step verified into completion may teach its declared lesson.
+    super::knowledge_link::propose_for_completed_steps(
+        working_dir,
+        &previous,
+        &goal.milestones,
+    );
     finish_step_verification(&mut goal, working_dir)?;
     Ok((goal, evidence))
 }
@@ -267,7 +274,13 @@ pub fn verify_goal_step_by_user(
     let mut goal = super::load_goal(goal_id, scope_hint, working_dir)
         .map_err(|err| StepVerifyError::Storage(err.to_string()))?
         .ok_or(StepVerifyError::UnknownGoal)?;
+    let previous = goal.milestones.clone();
     let provenance = verify_step_by_user(&mut goal, step_id, note)?;
+    super::knowledge_link::propose_for_completed_steps(
+        working_dir,
+        &previous,
+        &goal.milestones,
+    );
     finish_step_verification(&mut goal, working_dir)?;
     Ok((goal, provenance))
 }
@@ -312,6 +325,11 @@ pub fn checkpoint_goal_step(
         .find(|step| step.id == step_id)
         .map(|step| step.status.clone())
         .unwrap_or_default();
+    super::knowledge_link::propose_for_completed_steps(
+        working_dir,
+        &previous,
+        &goal.milestones,
+    );
     finish_step_verification(&mut goal, working_dir)?;
     Ok(status)
 }
@@ -340,10 +358,8 @@ mod tests {
             id: id.to_string(),
             content: format!("step {id}"),
             status: status.to_string(),
-            blocked_by: Vec::new(),
             verification: verification.map(str::to_string),
-            verification_evidence: None,
-            safe_for_ambient: false,
+            ..Default::default()
         }
     }
 

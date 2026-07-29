@@ -104,6 +104,17 @@ pub struct GoalStep {
     /// only by the verification gate; caller-supplied values are overwritten.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_evidence: Option<String>,
+    /// Lesson this step's completion should propose into the project
+    /// knowledge map, optionally prefixed with a section
+    /// (`"rule: use cargo only"`). Proposed only: verification stays with
+    /// the knowledge gate. Ignored unless the task graph and project
+    /// knowledge are both enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propose_knowledge: Option<String>,
+    /// Knowledge entry ids this step's work should respect. Surfaced in
+    /// the ready listing so the agent consults the map before starting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub knowledge_ids: Vec<String>,
     /// Whether ambient mode may pick this step up autonomously when it is
     /// ready. Deliberately opt-in per step: the default is false, so nothing
     /// is ever continued unattended unless explicitly marked safe.

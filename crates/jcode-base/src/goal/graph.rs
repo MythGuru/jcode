@@ -158,9 +158,7 @@ mod tests {
             content: format!("step {id}"),
             status: status.to_string(),
             blocked_by: blocked_by.iter().map(|dep| dep.to_string()).collect(),
-            verification: None,
-            verification_evidence: None,
-            safe_for_ambient: false,
+            ..Default::default()
         }
     }
 

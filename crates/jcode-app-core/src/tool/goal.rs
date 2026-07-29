@@ -390,7 +390,15 @@ impl Tool for InitiativeTool {
                     for step_id in &summary.ready_step_ids {
                         if let Some(step) = find_step(step_id) {
                             let ambient = if step.safe_for_ambient { " [ambient-safe]" } else { "" };
-                            out.push_str(&format!("- `{}` {}{}\n", step.id, step.content, ambient));
+                            let consult = if step.knowledge_ids.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (consult knowledge: {})", step.knowledge_ids.join(", "))
+                            };
+                            out.push_str(&format!(
+                                "- `{}` {}{}{}\n",
+                                step.id, step.content, ambient, consult
+                            ));
                         }
                     }
                 }

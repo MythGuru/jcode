@@ -10,6 +10,8 @@ pub use jcode_task_types::{Goal, GoalMilestone, GoalScope, GoalStatus, GoalStep,
 pub mod graph;
 /// Verification-gated step completion for the task graph (T2).
 pub mod verification;
+/// Links from the task graph to the project knowledge map (T4).
+pub mod knowledge_link;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalDisplayMode {
@@ -111,6 +113,8 @@ pub fn create_goal_in_session(
     {
         let events = crate::knowledge::verification::session_events(session_id);
         verification::gate_step_completions(&[], &mut goal.milestones, &events);
+        // T4: steps that arrive completed may teach a declared lesson.
+        knowledge_link::propose_for_completed_steps(working_dir, &[], &goal.milestones);
     }
     goal.next_steps = trim_vec(input.next_steps);
     goal.blockers = trim_vec(input.blockers);
@@ -176,6 +180,12 @@ pub fn update_goal_in_session(
                 &previous_milestones,
                 &mut goal.milestones,
                 &events,
+            );
+            // T4: steps that newly completed may teach a declared lesson.
+            knowledge_link::propose_for_completed_steps(
+                working_dir,
+                &previous_milestones,
+                &goal.milestones,
             );
         }
     }
@@ -755,6 +765,24 @@ fn goal_memory_content(goal: &Goal) -> String {
         out.push_str("\nBlockers:");
         for blocker in goal.blockers.iter().take(3) {
             out.push_str(&format!("\n- {}", blocker));
+        }
+    }
+    // T4: when the task graph is on, recall should show the plan frontier.
+    if graph::task_graph_enabled()
+        && goal.milestones.iter().any(|m| !m.steps.is_empty())
+    {
+        let summary = graph::summarize_goal_graph(goal);
+        out.push_str(&format!(
+            "\nPlan: {} ready, {} blocked, {} completed",
+            summary.ready_step_ids.len(),
+            summary.blocked_step_ids.len(),
+            summary.completed_step_ids.len()
+        ));
+        if !summary.ready_step_ids.is_empty() {
+            out.push_str(&format!(
+                "\nReady steps: {}",
+                summary.ready_step_ids.join(", ")
+            ));
         }
     }
     out
