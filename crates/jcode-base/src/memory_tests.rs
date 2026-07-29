@@ -998,3 +998,70 @@ fn resident_source_ids_reports_only_sourced_items() {
     crate::memory::clear_working_memory(session);
     assert!(resident_source_ids(session).is_empty());
 }
+
+// === P8: one-time pre-STM snapshot ===
+
+/// The pre-STM snapshot must be created exactly once when the new flags are
+/// on, never rotate afterwards, and never be created with the flags off.
+#[test]
+fn pre_stm_snapshot_is_one_time_and_flag_gated() {
+    with_temp_home(|_home| {
+        let prev_flag = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
+        // Non-test-mode manager writing to the sandboxed temp home. The global
+        // graph path lives under JCODE_HOME, so this is fully isolated.
+        let manager = MemoryManager::new();
+
+        // Flags off: saving must NOT create a snapshot.
+        crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "0");
+        let entry = MemoryEntry::new(MemoryCategory::Fact, "pre-existing memory");
+        manager.remember_global(entry).expect("remember");
+        let graph_path = manager.global_memory_path().expect("path");
+        let snapshot_path = graph_path.with_file_name("global.pre-stm.json");
+        assert!(graph_path.exists(), "graph file should exist");
+        assert!(
+            !snapshot_path.exists(),
+            "no snapshot may be created while the flags are off"
+        );
+
+        // Flag on: the NEXT write snapshots the pre-upgrade bytes first.
+        let before_upgrade = std::fs::read_to_string(&graph_path).expect("read graph");
+        crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "1");
+        manager
+            .remember_global(MemoryEntry::new(
+                MemoryCategory::Fact,
+                "first post-upgrade memory",
+            ))
+            .expect("remember");
+        assert!(
+            snapshot_path.exists(),
+            "first flag-on write must create the snapshot"
+        );
+        let snapshot_contents = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
+        assert_eq!(
+            snapshot_contents, before_upgrade,
+            "snapshot must be the byte-exact pre-upgrade file"
+        );
+        assert!(
+            !snapshot_contents.contains("first post-upgrade memory"),
+            "snapshot must predate the flag-on write"
+        );
+
+        // Further writes must NOT rotate the snapshot.
+        manager
+            .remember_global(MemoryEntry::new(
+                MemoryCategory::Fact,
+                "second post-upgrade memory",
+            ))
+            .expect("remember");
+        let after_second = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
+        assert_eq!(
+            after_second, before_upgrade,
+            "snapshot is one-time and must never be overwritten"
+        );
+
+        match prev_flag {
+            Some(v) => crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", v),
+            None => crate::env::remove_var("JCODE_WORKING_MEMORY_ENABLED"),
+        }
+    });
+}
