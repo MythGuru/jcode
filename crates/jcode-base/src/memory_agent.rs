@@ -828,6 +828,16 @@ impl MemoryAgent {
         // Step 4: Format and store for main agent
         if !relevant.is_empty() {
             let ids: Vec<String> = relevant.iter().map(|e| e.id.clone()).collect();
+            // Judge-verified hits are, by definition, relevant to the active
+            // work, so activate them into free working-memory slots (flag-gated,
+            // never evicting). Once resident they are re-stated every turn
+            // instead of injected once and suppressed for 45 minutes.
+            let activated = memory::activate_memories(session_id, &relevant);
+            if activated > 0 {
+                crate::logging::info(&format!(
+                    "[{session_id}] Activated {activated} verified memories into working memory"
+                ));
+            }
             {
                 let ss = self.session_state(session_id);
                 for entry in &relevant {
@@ -1494,7 +1504,13 @@ fn prune_low_confidence(manager: &MemoryManager) -> Result<usize> {
             .iter()
             .filter(|(_, entry)| {
                 let age_hours = (now - entry.created_at).num_hours();
-                age_hours >= min_age_hours && entry.confidence < min_confidence
+                age_hours >= min_age_hours
+                    && entry.confidence < min_confidence
+                    // High-importance entries are exempt: importance is an
+                    // explicit "this matters" signal (user-set or earned via
+                    // working-memory promotion), and confidence decay must not
+                    // quietly erase something that was deliberately kept.
+                    && entry.importance < memory::PRUNE_PROTECTION_IMPORTANCE
             })
             .map(|(id, _)| id.clone())
             .collect();
