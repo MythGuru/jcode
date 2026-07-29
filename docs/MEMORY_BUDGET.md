@@ -83,7 +83,28 @@ Required review action if violated:
 - verify eviction still works
 - verify no unbounded growth path was introduced
 
+### Working (short-term) memory budget
+
+Source: `crates/jcode-base/src/memory.rs`, `crates/jcode-base/src/memory/working.rs`
+
+Working memory is re-injected into EVERY turn's prompt, so its size is a
+per-request cost rather than a one-off. Config values are clamped by absolute
+ceilings in code, so a misconfigured value cannot silently inflate every
+prompt.
+
+| Metric | Budget | Why |
+|---|---:|---|
+| `working_memory_capacity` | `<= 16` (`WORKING_MEMORY_MAX_CAPACITY`) | Hard slot ceiling regardless of config (default 7) |
+| `working_memory_item_chars` | `<= 1024` (`WORKING_MEMORY_MAX_ITEM_CHARS`) | Per-item char ceiling (default 240) |
+| Worst-case STM payload | ~16 KiB (ceilings), ~1.7 KiB (defaults) | capacity x item_chars bound on the injected section |
+| Persisted files | one JSON per session under `memory/working/` | bounded by capacity; deleted at session end |
+
+Required review action if violated:
+- explain why the ceiling changed and the new per-request cost
+- update `docs/MEMORY_ARCHITECTURE.md` and this doc together
+
 ## Ratchet expectations
+
 
 ### Session and transcript memory
 
