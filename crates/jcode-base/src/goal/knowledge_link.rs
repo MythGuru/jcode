@@ -137,7 +137,10 @@ mod tests {
         );
         assert_eq!(
             parse_knowledge_spec("we ship behind flags"),
-            (KnowledgeSection::Decision, "we ship behind flags".to_string())
+            (
+                KnowledgeSection::Decision,
+                "we ship behind flags".to_string()
+            )
         );
         // An unknown prefix is content, not a section.
         assert_eq!(
@@ -156,7 +159,11 @@ mod tests {
         let current = vec![milestone(vec![
             step("old", "completed", Some("rule: already known")),
             step("fresh", "completed", Some("decision: new lesson")),
-            step("parked", "done_pending_verification", Some("rule: unverified lesson")),
+            step(
+                "parked",
+                "done_pending_verification",
+                Some("rule: unverified lesson"),
+            ),
             step("plain", "completed", None),
         ])];
 

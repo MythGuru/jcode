@@ -473,8 +473,7 @@ pub fn build_ambient_system_prompt(
     // absent) unless BOTH task-graph flags are on and a user plan has
     // explicitly opted steps in, so pre-T6 prompts are unchanged.
     let continuations = crate::goal::ambient_link::gather_ambient_continuations();
-    if let Some(section) = crate::goal::ambient_link::render_ambient_section(&continuations)
-    {
+    if let Some(section) = crate::goal::ambient_link::render_ambient_section(&continuations) {
         prompt.push_str(&section);
         prompt.push('\n');
     }

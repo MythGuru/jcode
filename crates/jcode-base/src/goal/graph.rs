@@ -391,15 +391,11 @@ mod tests {
         safe.safe_for_ambient = true;
         let goal = goal_with(vec![milestone(
             "m1",
-            vec![
-                safe,
-                step("unsafe", "pending", &[]),
-                {
-                    let mut blocked = step("later", "pending", &["unsafe"]);
-                    blocked.safe_for_ambient = true;
-                    blocked
-                },
-            ],
+            vec![safe, step("unsafe", "pending", &[]), {
+                let mut blocked = step("later", "pending", &["unsafe"]);
+                blocked.safe_for_ambient = true;
+                blocked
+            }],
             &[],
         )]);
 
@@ -463,15 +459,11 @@ mod tests {
                 scope: GoalScope::Project,
                 milestones: vec![milestone(
                     "m1",
-                    vec![
-                        ready,
-                        step("later", "pending", &["ready-step"]),
-                        {
-                            let mut parked = step("parked", "done_pending_verification", &[]);
-                            parked.verification = Some("cargo test".to_string());
-                            parked
-                        },
-                    ],
+                    vec![ready, step("later", "pending", &["ready-step"]), {
+                        let mut parked = step("parked", "done_pending_verification", &[]);
+                        parked.verification = Some("cargo test".to_string());
+                        parked
+                    }],
                     &[],
                 )],
                 ..Default::default()
@@ -479,8 +471,7 @@ mod tests {
             Some(&project),
         )
         .expect("create goal");
-        super::super::attach_goal_to_session(session_id, &goal, Some(&project))
-            .expect("attach");
+        super::super::attach_goal_to_session(session_id, &goal, Some(&project)).expect("attach");
         project
     }
 
@@ -499,17 +490,15 @@ mod tests {
         let env = setup_plan_prompt_env(true);
         let project = planful_goal(&env, "ses_plan_on");
         assert_eq!(active_plan_prompt_section(None, Some(&project)), None);
-        assert!(
-            active_plan_prompt_section(Some("ses_plan_on"), Some(&project)).is_some()
-        );
+        assert!(active_plan_prompt_section(Some("ses_plan_on"), Some(&project)).is_some());
     }
 
     #[test]
     fn plan_prompt_section_shows_frontier_and_verification_state() {
         let env = setup_plan_prompt_env(true);
         let project = planful_goal(&env, "ses_plan_content");
-        let section = active_plan_prompt_section(Some("ses_plan_content"), Some(&project))
-            .expect("section");
+        let section =
+            active_plan_prompt_section(Some("ses_plan_content"), Some(&project)).expect("section");
         assert!(section.starts_with("# Active Plan"));
         assert!(section.contains("Prompt demo"));
         // "later" is dependency-blocked; "parked" awaits verification, which

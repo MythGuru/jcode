@@ -251,11 +251,7 @@ pub fn verify_goal_step_with_events(
     let previous = goal.milestones.clone();
     let evidence = verify_step_with_events(&mut goal, step_id, events)?;
     // T4: a step verified into completion may teach its declared lesson.
-    super::knowledge_link::propose_for_completed_steps(
-        working_dir,
-        &previous,
-        &goal.milestones,
-    );
+    super::knowledge_link::propose_for_completed_steps(working_dir, &previous, &goal.milestones);
     finish_step_verification(&mut goal, working_dir)?;
     Ok((goal, evidence))
 }
@@ -276,11 +272,7 @@ pub fn verify_goal_step_by_user(
         .ok_or(StepVerifyError::UnknownGoal)?;
     let previous = goal.milestones.clone();
     let provenance = verify_step_by_user(&mut goal, step_id, note)?;
-    super::knowledge_link::propose_for_completed_steps(
-        working_dir,
-        &previous,
-        &goal.milestones,
-    );
+    super::knowledge_link::propose_for_completed_steps(working_dir, &previous, &goal.milestones);
     finish_step_verification(&mut goal, working_dir)?;
     Ok((goal, provenance))
 }
@@ -325,11 +317,7 @@ pub fn checkpoint_goal_step(
         .find(|step| step.id == step_id)
         .map(|step| step.status.clone())
         .unwrap_or_default();
-    super::knowledge_link::propose_for_completed_steps(
-        working_dir,
-        &previous,
-        &goal.milestones,
-    );
+    super::knowledge_link::propose_for_completed_steps(working_dir, &previous, &goal.milestones);
     finish_step_verification(&mut goal, working_dir)?;
     Ok(status)
 }
@@ -421,7 +409,10 @@ mod tests {
         )];
         let report = gate_step_completions(&[], &mut incoming, &[]);
 
-        assert_eq!(incoming[0].steps[0].status, STATUS_DONE_PENDING_VERIFICATION);
+        assert_eq!(
+            incoming[0].steps[0].status,
+            STATUS_DONE_PENDING_VERIFICATION
+        );
         assert_eq!(incoming[0].steps[0].verification_evidence, None);
         assert_eq!(report.deferred, vec!["tested".to_string()]);
     }
@@ -436,7 +427,10 @@ mod tests {
         let events = vec![event(true, 10), event(false, 2)];
         let report = gate_step_completions(&[], &mut incoming, &events);
 
-        assert_eq!(incoming[0].steps[0].status, STATUS_DONE_PENDING_VERIFICATION);
+        assert_eq!(
+            incoming[0].steps[0].status,
+            STATUS_DONE_PENDING_VERIFICATION
+        );
         assert_eq!(report.deferred, vec!["tested".to_string()]);
     }
 

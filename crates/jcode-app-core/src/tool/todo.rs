@@ -719,8 +719,7 @@ impl Tool for TodoTool {
                 let concise_plan_change = assessment_only
                     .then(|| plan_change(&stored_plan, &plan))
                     .flatten();
-                let graph_notes =
-                    checkpoint_linked_graph_steps(&ctx, &previous, &todos, &goals);
+                let graph_notes = checkpoint_linked_graph_steps(&ctx, &previous, &todos, &goals);
                 save_todos(&ctx.session_id, &todos)?;
                 save_goals(&ctx.session_id, &goals)?;
                 save_plan(&ctx.session_id, &plan)?;
@@ -1675,21 +1674,22 @@ mod tests {
 
         let project = home.path().join("repo");
         std::fs::create_dir_all(&project).expect("project dir");
-        let goal = crate::goal::create_goal(
-            crate::goal::GoalCreateInput {
-                title: "Bridge demo".to_string(),
-                scope: crate::goal::GoalScope::Project,
-                milestones: vec![serde_json::from_value(serde_json::json!({
+        let goal =
+            crate::goal::create_goal(
+                crate::goal::GoalCreateInput {
+                    title: "Bridge demo".to_string(),
+                    scope: crate::goal::GoalScope::Project,
+                    milestones: vec![serde_json::from_value(serde_json::json!({
                     "id": "m1",
                     "title": "milestone",
                     "steps": [{"id": "step1", "content": "durable step", "status": "pending"}]
                 }))
                 .expect("milestone")],
-                ..Default::default()
-            },
-            Some(&project),
-        )
-        .expect("create goal");
+                    ..Default::default()
+                },
+                Some(&project),
+            )
+            .expect("create goal");
 
         let tool = TodoTool::new();
         let ctx = ToolContext {

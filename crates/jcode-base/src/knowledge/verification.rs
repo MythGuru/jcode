@@ -224,9 +224,7 @@ fn qualifying_evidence(
 /// failure after it. Used by consumers (e.g. task-graph step verification in
 /// T2) whose claims carry no `edited_at`; "did the most recent relevant run
 /// succeed" is exactly the right question for them.
-pub fn latest_qualifying_evidence(
-    events: &[VerificationEvent],
-) -> Result<String, VerifyError> {
+pub fn latest_qualifying_evidence(events: &[VerificationEvent]) -> Result<String, VerifyError> {
     qualifying_evidence(events, DateTime::<Utc>::MIN_UTC)
 }
 

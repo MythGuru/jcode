@@ -6,14 +6,14 @@ use std::path::{Path, PathBuf};
 
 pub use jcode_task_types::{Goal, GoalMilestone, GoalScope, GoalStatus, GoalStep, GoalUpdate};
 
-/// Task-graph readiness computation over a goal's milestones/steps (T1).
-pub mod graph;
-/// Verification-gated step completion for the task graph (T2).
-pub mod verification;
-/// Links from the task graph to the project knowledge map (T4).
-pub mod knowledge_link;
 /// Ambient continuation of safe ready steps (T6).
 pub mod ambient_link;
+/// Task-graph readiness computation over a goal's milestones/steps (T1).
+pub mod graph;
+/// Links from the task graph to the project knowledge map (T4).
+pub mod knowledge_link;
+/// Verification-gated step completion for the task graph (T2).
+pub mod verification;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalDisplayMode {
@@ -81,10 +81,7 @@ pub struct GoalDisplayResult {
     pub snapshot: crate::side_panel::SidePanelSnapshot,
 }
 
-pub fn create_goal(
-    input: GoalCreateInput,
-    working_dir: Option<&Path>,
-) -> Result<Goal> {
+pub fn create_goal(input: GoalCreateInput, working_dir: Option<&Path>) -> Result<Goal> {
     create_goal_in_session(input, working_dir, None)
 }
 
@@ -775,9 +772,7 @@ fn goal_memory_content(goal: &Goal) -> String {
         }
     }
     // T4: when the task graph is on, recall should show the plan frontier.
-    if graph::task_graph_enabled()
-        && goal.milestones.iter().any(|m| !m.steps.is_empty())
-    {
+    if graph::task_graph_enabled() && goal.milestones.iter().any(|m| !m.steps.is_empty()) {
         let summary = graph::summarize_goal_graph(goal);
         out.push_str(&format!(
             "\nPlan: {} ready, {} blocked, {} completed",

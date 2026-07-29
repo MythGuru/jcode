@@ -214,7 +214,6 @@ fn test_initiative_schema_omits_public_enums_for_scope_and_status() {
     assert!(schema["properties"]["status"]["enum"].is_null());
 }
 
-
 struct TaskGraphEnv {
     _home: tempfile::TempDir,
     _env: std::sync::MutexGuard<'static, ()>,
@@ -290,7 +289,10 @@ async fn ready_action_is_flag_gated_and_lists_frontier() {
         let tool = InitiativeTool::new();
         let temp = tempfile::tempdir().expect("tempdir");
         let out = tool
-            .execute(json!({"action": "ready"}), graph_ctx("ses_tg_off", temp.path()))
+            .execute(
+                json!({"action": "ready"}),
+                graph_ctx("ses_tg_off", temp.path()),
+            )
             .await
             .expect("ready while disabled");
         assert!(out.output.contains("disabled"));
@@ -320,7 +322,11 @@ async fn ready_action_is_flag_gated_and_lists_frontier() {
         .execute(json!({"action": "ready", "id": "graph-demo"}), ctx)
         .await
         .expect("ready");
-    assert!(ready.output.contains("`test` test it"), "test step ready: {}", ready.output);
+    assert!(
+        ready.output.contains("`test` test it"),
+        "test step ready: {}",
+        ready.output
+    );
     assert!(ready.output.contains("`ship` ship it (blocked by test)"));
     let meta = ready.metadata.expect("metadata");
     assert_eq!(meta["ready"], json!(["test"]));
@@ -368,7 +374,10 @@ async fn verify_step_upgrades_gated_completion_with_evidence() {
     let stored = crate::goal::load_goal("graph-demo", None, Some(&project))
         .expect("load")
         .expect("goal");
-    assert_eq!(stored.milestones[0].steps[1].status, "done_pending_verification");
+    assert_eq!(
+        stored.milestones[0].steps[1].status,
+        "done_pending_verification"
+    );
 
     // verify_step without evidence: friendly refusal, not an error.
     let refused = tool
@@ -378,14 +387,14 @@ async fn verify_step_upgrades_gated_completion_with_evidence() {
         )
         .await
         .expect("verify without evidence");
-    assert!(refused.output.contains("Could not verify"), "{}", refused.output);
+    assert!(
+        refused.output.contains("Could not verify"),
+        "{}",
+        refused.output
+    );
 
     // With fresh session evidence the step completes with provenance.
-    crate::knowledge::verification::record_command(
-        "ses_tg_verify",
-        "cargo test -p demo",
-        Some(0),
-    );
+    crate::knowledge::verification::record_command("ses_tg_verify", "cargo test -p demo", Some(0));
     let verified = tool
         .execute(
             json!({"action": "verify_step", "id": "graph-demo", "step_id": "test"}),
@@ -405,5 +414,9 @@ async fn verify_step_upgrades_gated_completion_with_evidence() {
         .execute(json!({"action": "ready", "id": "graph-demo"}), ctx)
         .await
         .expect("ready after verify");
-    assert!(ready.output.contains("`ship` ship it [ambient-safe]"), "{}", ready.output);
+    assert!(
+        ready.output.contains("`ship` ship it [ambient-safe]"),
+        "{}",
+        ready.output
+    );
 }
