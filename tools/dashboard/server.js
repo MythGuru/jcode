@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.PORT || 7333);
@@ -12,9 +13,11 @@ const JC = path.join(os.homedir(), '.jcode');
 const ROOT = __dirname;
 const HTML = path.join(ROOT, 'dashboard.html');
 const SECTION_ORDER = ['structure', 'decision', 'rule', 'problem', 'responsibility'];
+const ALLOWED_ORIGINS = new Set([`http://${HOST}:${PORT}`, `http://localhost:${PORT}`]);
 let socketCache = { at: 0, sessions: [], servers: [], errors: [] };
 
 async function exists(p) { try { await fsp.access(p, fs.constants.R_OK); return true; } catch { return false; } }
+async function isDirectory(p) { try { return (await fsp.stat(p)).isDirectory(); } catch { return false; } }
 async function readJson(file, errors) {
   try { return JSON.parse(await fsp.readFile(file, { encoding: 'utf8', flag: 'r' })); }
   catch (e) { if (e.code !== 'ENOENT') errors.push(`bad json ${file}: ${e.message}`); return null; }
@@ -63,7 +66,8 @@ async function recentTodoIds(errors) {
   for (const ent of await safeDir(dir, errors)) {
     if (!ent.isFile() || !/^session_[^-]+_\d+_[0-9a-f]+\.json$/i.test(ent.name)) continue;
     const file = path.join(dir, ent.name);
-    if ((await statMtime(file)) >= cutoff) ids.push(path.basename(ent.name, '.json'));
+    const mtime = await statMtime(file);
+    if (mtime >= cutoff) ids.push({ id: path.basename(ent.name, '.json'), mtime });
   }
   return ids;
 }
@@ -153,6 +157,63 @@ async function loadLiveSessions(errors) {
   return socketCache;
 }
 
+function rejectBadOrigin(req, res) {
+  if (req.method === 'GET' || req.method === 'HEAD') return false;
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: false, error: 'Blocked: this action can only be started from this dashboard.' }));
+    return true;
+  }
+  return false;
+}
+
+function readBody(req, limit = 65536) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > limit) reject(new Error('Request is too large.'));
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+async function loadRegistryProjectDirs(errors) {
+  const reg = await readJson(path.join(JC, 'servers.json'), errors) || {};
+  const dirs = [];
+  for (const srv of Object.values(reg)) {
+    if (srv && typeof srv.working_dir === 'string') dirs.push(srv.working_dir);
+    if (srv && Array.isArray(srv.sessions)) {
+      for (const s of srv.sessions) if (s && typeof s.working_dir === 'string') dirs.push(s.working_dir);
+    }
+  }
+  return dirs;
+}
+
+async function projectDirs() {
+  const errors = [];
+  const live = await loadLiveSessions(errors);
+  const candidates = [
+    ...live.sessions.map(s => s.working_dir).filter(Boolean),
+    ...await loadRegistryProjectDirs(errors),
+    path.join(os.homedir(), 'dev', 'jcode'),
+    path.join(os.homedir(), 'Developer', 'healthview-app'),
+    path.join(os.homedir(), 'Developer', 'healthview-platform'),
+  ];
+  const seen = new Set();
+  const projects = [];
+  for (const dir of candidates) {
+    const full = path.resolve(String(dir));
+    const key = full.toLowerCase();
+    if (seen.has(key) || !(await isDirectory(full))) continue;
+    seen.add(key);
+    projects.push({ name: path.basename(full), dir: full });
+  }
+  return { ok: true, projects, errors };
+}
+
 async function state() {
   const errors = [];
   const [knowledge, live, initiatives] = await Promise.all([loadKnowledge(errors), loadLiveSessions(errors), loadInitiatives(errors)]);
@@ -160,22 +221,44 @@ async function state() {
   const seen = new Set(live.sessions.map(s => s.session_id));
   const sessions = [];
   for (const s of live.sessions) sessions.push({ ...s, ...await loadTodoBundle(s.session_id, errors) });
-  for (const id of await recentTodoIds(errors)) if (!seen.has(id)) sessions.push({ session_id: id, friendly_name: id, status: 'offline', live: false, working_memory: null, stm_read_at: null, ...await loadTodoBundle(id, errors) });
+  for (const rec of await recentTodoIds(errors)) if (!seen.has(rec.id)) sessions.push({ session_id: rec.id, friendly_name: rec.id, status: 'offline', live: false, working_memory: null, stm_read_at: null, todos_mtime: rec.mtime, ...await loadTodoBundle(rec.id, errors) });
   return { generated_at: new Date().toISOString(), rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024 * 10) / 10, knowledge, sessions, initiatives, errors, staleness: { knowledge_mtime: await latestMtime(path.join(JC, 'knowledge', 'projects')), todos_mtime: await latestMtime(path.join(JC, 'todos')), goals_mtime: await latestMtime(path.join(JC, 'goals')) }, servers: live.servers };
 }
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    if (req.method !== 'GET') { res.writeHead(405); return res.end('method not allowed'); }
+    if (rejectBadOrigin(req, res)) return;
     if (url.pathname === '/') {
+      if (req.method !== 'GET') { res.writeHead(405); return res.end('method not allowed'); }
       const html = await fsp.readFile(HTML, { encoding: 'utf8', flag: 'r' });
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(html);
     }
     if (url.pathname === '/api/state') {
+      if (req.method !== 'GET') { res.writeHead(405); return res.end('method not allowed'); }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify(await state()));
+    }
+    if (url.pathname === '/api/projects') {
+      if (req.method !== 'GET') { res.writeHead(405); return res.end('method not allowed'); }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(await projectDirs()));
+    }
+    if (url.pathname === '/api/session/new') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('method not allowed'); }
+      let body;
+      try { body = JSON.parse(await readBody(req) || '{}'); }
+      catch { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); return res.end(JSON.stringify({ ok: false, error: 'Please choose a valid project folder.' })); }
+      const dir = typeof body.dir === 'string' ? path.resolve(body.dir) : '';
+      if (!dir || !(await isDirectory(dir))) {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ ok: false, error: 'That folder does not exist on this computer.' }));
+      }
+      const name = path.basename(dir).replace(/[&|<>^"%]/g, '').slice(0, 60) || 'jcode';
+      spawn('cmd.exe', ['/c', 'start', `jcode in ${name}`, 'cmd', '/k', 'jcode'], { cwd: dir, detached: true, stdio: 'ignore' }).unref();
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ ok: true }));
     }
     res.writeHead(404); res.end('not found');
   } catch (e) { res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: e.message })); }
