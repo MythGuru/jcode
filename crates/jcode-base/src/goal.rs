@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 pub use jcode_task_types::{Goal, GoalMilestone, GoalScope, GoalStatus, GoalStep, GoalUpdate};
 
+/// Task-graph readiness computation over a goal's milestones/steps (T1).
+pub mod graph;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalDisplayMode {
     Auto,

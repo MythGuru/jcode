@@ -88,6 +88,22 @@ pub struct GoalStep {
     pub content: String,
     #[serde(default = "default_pending_status")]
     pub status: String,
+    /// Step ids (within the same goal) that must complete before this step
+    /// is ready. Task-graph feature (T1): absent on legacy goals, ignored by
+    /// older binaries, and empty means the step is never dependency-blocked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+    /// What observable evidence proves this step done (e.g. a command and
+    /// its expected outcome). Steps carrying a verification requirement may
+    /// only be marked completed with fresh evidence (enforced in T2); steps
+    /// without one behave exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<String>,
+    /// Whether ambient mode may pick this step up autonomously when it is
+    /// ready. Deliberately opt-in per step: the default is false, so nothing
+    /// is ever continued unattended unless explicitly marked safe.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub safe_for_ambient: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -98,6 +114,11 @@ pub struct GoalMilestone {
     pub status: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<GoalStep>,
+    /// Milestone ids (within the same goal) that must complete before any
+    /// step in this milestone is ready. Task-graph feature (T1): absent on
+    /// legacy goals and ignored by older binaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
