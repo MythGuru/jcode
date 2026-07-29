@@ -251,6 +251,9 @@ pub fn try_verify_with_events(
     let evidence = qualifying_evidence(events, entry.updated_at)?;
     knowledge.mark_verified(entry_id, &evidence);
     save(project_dir, &knowledge);
+    if let Some(entry) = knowledge.get(entry_id) {
+        super::bridge::bridge_best_effort(project_dir, entry);
+    }
     Ok(evidence)
 }
 
@@ -277,6 +280,9 @@ pub fn verify_by_user(
     };
     knowledge.mark_verified(entry_id, &provenance);
     save(project_dir, &knowledge);
+    if let Some(entry) = knowledge.get(entry_id) {
+        super::bridge::bridge_best_effort(project_dir, entry);
+    }
     Ok(provenance)
 }
 

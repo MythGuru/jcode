@@ -21,6 +21,7 @@
 //! - a rendered `<hash>.md` sibling is written on every save so the user can
 //!   always open a plain readable map.
 
+pub mod bridge;
 pub mod verification;
 
 use chrono::{DateTime, Utc};
