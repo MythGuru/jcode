@@ -425,6 +425,33 @@ pub fn build_ambient_system_prompt(
         "- Importance distribution: {} high (>= 0.8, prune-protected), {} low (<= 0.2)\n",
         graph_health.high_importance, graph_health.low_importance,
     ));
+
+    // --- Project Knowledge Health (K6) ---
+    // Read-only awareness: the gardener may SUGGEST cleanup of stale proposed
+    // entries to the user, but ambient must never propose, verify, or remove
+    // knowledge entries itself. Skipped entirely while the feature is off or
+    // no project has a map, so pre-K6 prompts are unchanged.
+    if crate::knowledge::project_knowledge_enabled() {
+        let knowledge_health = crate::knowledge::gather_knowledge_health();
+        if knowledge_health.projects > 0 {
+            prompt.push_str("\n## Project Knowledge Health\n");
+            prompt.push_str(&format!(
+                "- Maps: {} project(s), {} verified, {} proposed entries\n",
+                knowledge_health.projects,
+                knowledge_health.verified_entries,
+                knowledge_health.proposed_entries,
+            ));
+            prompt.push_str(&format!(
+                "- Stale proposed entries (older than {} days, never verified): {}\n",
+                crate::knowledge::STALE_PROPOSED_DAYS,
+                knowledge_health.stale_proposed,
+            ));
+            prompt.push_str(
+                "- You may suggest cleanup of stale proposed entries to the user, \
+                 but never modify the knowledge map yourself.\n",
+            );
+        }
+    }
     if graph_health.duplicate_candidates > 0 {
         prompt.push_str(&format!(
             "- Duplicate candidates (similarity > 0.95): {}\n",

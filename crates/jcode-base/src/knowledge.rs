@@ -290,6 +290,64 @@ impl ProjectKnowledge {
     }
 }
 
+// === Health summary (K6) ===
+
+/// Aggregate health counters over every project knowledge map on this machine.
+/// Read-only: ambient reports these to the gardener, which may then suggest
+/// cleanup to the user. Ambient never proposes, verifies, or removes entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KnowledgeHealth {
+    /// Number of project maps found.
+    pub projects: usize,
+    pub verified_entries: usize,
+    pub proposed_entries: usize,
+    /// Proposed entries older than [`STALE_PROPOSED_DAYS`]: claims that were
+    /// never backed by evidence and are probably wrong or forgotten.
+    pub stale_proposed: usize,
+}
+
+/// A proposed entry older than this is counted as stale.
+pub const STALE_PROPOSED_DAYS: i64 = 14;
+
+/// Scan `~/.jcode/knowledge/projects/*.json` and accumulate counters.
+/// Unreadable or foreign files are skipped, never fatal.
+pub fn gather_knowledge_health() -> KnowledgeHealth {
+    let mut health = KnowledgeHealth::default();
+    let Ok(dir) = crate::storage::jcode_dir().map(|d| d.join("knowledge").join("projects")) else {
+        return health;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return health;
+    };
+
+    let stale_before = Utc::now() - chrono::Duration::days(STALE_PROPOSED_DAYS);
+    for file in entries.flatten() {
+        let path = file.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(knowledge) = crate::storage::read_json::<ProjectKnowledge>(&path) else {
+            continue;
+        };
+        if knowledge.version != KNOWLEDGE_FILE_VERSION {
+            continue;
+        }
+        health.projects += 1;
+        for entry in &knowledge.entries {
+            match entry.status {
+                KnowledgeStatus::Verified => health.verified_entries += 1,
+                KnowledgeStatus::Proposed => {
+                    health.proposed_entries += 1;
+                    if entry.updated_at < stale_before {
+                        health.stale_proposed += 1;
+                    }
+                }
+            }
+        }
+    }
+    health
+}
+
 // === Prompt injection (K5) ===
 
 /// The `# Project Knowledge` section to inject into this turn's prompt, if any.
@@ -658,6 +716,40 @@ mod tests {
             tight.contains("the verified keeper rule"),
             "verified entry must survive the budget:\n{tight}"
         );
+    }
+
+    #[test]
+    fn health_counts_verified_proposed_and_stale() {
+        let _home = setup();
+        let a = std::path::Path::new("C:/health/a");
+        let b = std::path::Path::new("C:/health/b");
+
+        let mut ka = ProjectKnowledge::default();
+        let v = ka.propose(KnowledgeSection::Rule, "verified rule");
+        ka.mark_verified(&v, "cargo test (exit 0)");
+        ka.propose(KnowledgeSection::Problem, "fresh proposal");
+        // A stale proposal: backdate updated_at past the threshold.
+        let stale_id = ka.propose(KnowledgeSection::Decision, "stale proposal");
+        if let Some(entry) = ka.entries.iter_mut().find(|e| e.id == stale_id) {
+            entry.updated_at = Utc::now() - chrono::Duration::days(STALE_PROPOSED_DAYS + 1);
+        }
+        save(a, &ka);
+
+        let mut kb = ProjectKnowledge::default();
+        kb.propose(KnowledgeSection::Structure, "another project");
+        save(b, &kb);
+
+        let health = gather_knowledge_health();
+        assert_eq!(health.projects, 2);
+        assert_eq!(health.verified_entries, 1);
+        assert_eq!(health.proposed_entries, 3);
+        assert_eq!(health.stale_proposed, 1);
+    }
+
+    #[test]
+    fn health_is_empty_when_no_maps_exist() {
+        let _home = setup();
+        assert_eq!(gather_knowledge_health(), KnowledgeHealth::default());
     }
 
     #[test]
