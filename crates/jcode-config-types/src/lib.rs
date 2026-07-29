@@ -608,6 +608,22 @@ pub struct AgentsConfig {
     /// Env override: `JCODE_MEMORY_IMPORTANCE_ENABLED`.
     #[serde(default = "default_memory_importance_enabled")]
     pub memory_importance_enabled: bool,
+    /// Whether the verification-gated living project knowledge model is active.
+    ///
+    /// When enabled, jcode maintains a readable per-project map (structure,
+    /// decisions, rules, known problems, responsibilities). Entries only become
+    /// "verified" after a successful build/test verification event or explicit
+    /// user confirmation. Defaults to `false` so nothing changes until the
+    /// feature is deliberately turned on.
+    /// Env override: `JCODE_PROJECT_KNOWLEDGE_ENABLED`.
+    #[serde(default = "default_project_knowledge_enabled")]
+    pub project_knowledge_enabled: bool,
+    /// Character budget for the `# Project Knowledge` prompt section. Verified
+    /// entries are injected first; the section is truncated at this budget so
+    /// the per-turn cost stays bounded no matter how large the map grows.
+    /// Env override: `JCODE_PROJECT_KNOWLEDGE_MAX_CHARS`.
+    #[serde(default = "default_project_knowledge_max_chars")]
+    pub project_knowledge_max_chars: usize,
     /// Maximum number of live swarm worker agents in one swarm. This is the RAM
     /// safety budget for both recursive ad hoc spawning and deep-mode `run_plan`
     /// parallelism. Completed/stopped workers do not consume slots. Light mode
@@ -661,6 +677,17 @@ fn default_memory_importance_enabled() -> bool {
     false
 }
 
+fn default_project_knowledge_enabled() -> bool {
+    false
+}
+
+/// Default prompt budget for the project-knowledge section. Roughly 60-80
+/// lines of rendered map: enough for a real project overview, small enough
+/// that the per-turn cost stays modest.
+fn default_project_knowledge_max_chars() -> usize {
+    4000
+}
+
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
@@ -681,6 +708,8 @@ impl Default for AgentsConfig {
             working_memory_capacity: default_working_memory_capacity(),
             working_memory_item_chars: default_working_memory_item_chars(),
             memory_importance_enabled: default_memory_importance_enabled(),
+            project_knowledge_enabled: default_project_knowledge_enabled(),
+            project_knowledge_max_chars: default_project_knowledge_max_chars(),
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
         }
     }

@@ -363,6 +363,43 @@ fn working_memory_config_omitted_from_toml_uses_defaults() {
 }
 
 #[test]
+fn project_knowledge_defaults_are_off_and_bounded() {
+    // Default OFF is deliberate: with the flag off, jcode must behave exactly
+    // as it did before the project knowledge model existed.
+    let cfg = Config::default();
+    assert!(!cfg.agents.project_knowledge_enabled);
+    assert_eq!(cfg.agents.project_knowledge_max_chars, 4000);
+}
+
+#[test]
+fn test_env_override_project_knowledge() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_enabled = std::env::var_os("JCODE_PROJECT_KNOWLEDGE_ENABLED");
+    let prev_chars = std::env::var_os("JCODE_PROJECT_KNOWLEDGE_MAX_CHARS");
+    crate::env::set_var("JCODE_PROJECT_KNOWLEDGE_ENABLED", "true");
+    crate::env::set_var("JCODE_PROJECT_KNOWLEDGE_MAX_CHARS", "2500");
+
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+
+    assert!(cfg.agents.project_knowledge_enabled);
+    assert_eq!(cfg.agents.project_knowledge_max_chars, 2500);
+
+    restore_env_var("JCODE_PROJECT_KNOWLEDGE_ENABLED", prev_enabled);
+    restore_env_var("JCODE_PROJECT_KNOWLEDGE_MAX_CHARS", prev_chars);
+}
+
+#[test]
+fn project_knowledge_config_omitted_from_toml_uses_defaults() {
+    // Existing user config.toml files predate these keys. They must still parse
+    // and land on the safe defaults rather than enabling the feature.
+    let cfg: Config = toml::from_str("[agents]\nmemory_sidecar_enabled = true\n")
+        .expect("config without project-knowledge keys should parse");
+    assert!(!cfg.agents.project_knowledge_enabled);
+    assert_eq!(cfg.agents.project_knowledge_max_chars, 4000);
+}
+
+#[test]
 fn tool_config_defaults_to_full_toolset() {
     let selection = ToolConfig::default().selection();
     assert!(selection.allowed_tools.is_none());

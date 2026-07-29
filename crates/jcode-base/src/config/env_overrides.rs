@@ -387,6 +387,16 @@ impl Config {
                 self.agents.memory_importance_enabled = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_PROJECT_KNOWLEDGE_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.agents.project_knowledge_enabled = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_PROJECT_KNOWLEDGE_MAX_CHARS") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.agents.project_knowledge_max_chars = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_MEMORY_EMBEDDING_BACKEND") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {

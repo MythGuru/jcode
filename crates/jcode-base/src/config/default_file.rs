@@ -428,6 +428,15 @@ swarm_max_concurrent_agents = 32
 # Bounded: importance only breaks near-ties, it can never displace a clearly
 # better semantic match. Default off. Env: JCODE_MEMORY_IMPORTANCE_ENABLED
 # memory_importance_enabled = false
+#
+# Verification-gated living project knowledge model. Keeps a readable
+# per-project map (structure, decisions, rules, known problems,
+# responsibilities). Entries become "verified" only after a successful
+# build/test verification event or explicit user confirmation; verified
+# entries are injected into the prompt within the char budget below.
+# Default off. Env: JCODE_PROJECT_KNOWLEDGE_ENABLED
+# project_knowledge_enabled = false
+# project_knowledge_max_chars = 4000
 
 [terminal]
 # Without a hook, clients inside tmux automatically use a right-side pane.
