@@ -1,4 +1,4 @@
-//! Persistent Memory Agent
+﻿//! Persistent Memory Agent
 //!
 //! A dedicated Haiku-powered agent for memory management that runs alongside
 //! the main agent. It has access to memory-specific tools only (no code execution).
@@ -1318,7 +1318,7 @@ impl MemoryAgent {
             memory::pipeline_update(|p| {
                 p.maintain = StepStatus::Done;
                 p.maintain_result = Some(StepResult {
-                    summary: format!("{}L {}↑ {}↓ {}P", links, boosted, decayed, pruned),
+                    summary: format!("{}L {}â†‘ {}â†“ {}P", links, boosted, decayed, pruned),
                     latency_ms,
                 });
             });
@@ -1735,8 +1735,31 @@ fn apply_confidence_updates(
     verified_ids: &[String],
     rejected_ids: &[String],
 ) -> (usize, usize) {
+    apply_confidence_updates_inner(
+        manager,
+        verified_ids,
+        rejected_ids,
+        memory::memory_importance_enabled(),
+    )
+}
+
+/// Flag-injected core of [`apply_confidence_updates`] so tests can exercise
+/// importance curation without mutating global config.
+fn apply_confidence_updates_inner(
+    manager: &MemoryManager,
+    verified_ids: &[String],
+    rejected_ids: &[String],
+    importance_enabled: bool,
+) -> (usize, usize) {
     const BOOST: f32 = 0.05;
     const DECAY: f32 = 0.02;
+    // Importance drifts more slowly than confidence, and asymmetrically:
+    // being verified-relevant is strong evidence a memory matters (+0.02), but
+    // being rejected by the judge only means "not relevant to THIS turn", so
+    // the discount is half that (-0.01). Piggybacked on the same graph
+    // load/save as the confidence batch, so curation costs zero extra I/O.
+    const IMPORTANCE_REWARD: f32 = 0.02;
+    const IMPORTANCE_DISCOUNT: f32 = -0.01;
 
     if verified_ids.is_empty() && rejected_ids.is_empty() {
         return (0, 0);
@@ -1767,6 +1790,9 @@ fn apply_confidence_updates(
         for id in verified_ids {
             if let Some(entry) = graph.get_memory_mut(id) {
                 entry.boost_confidence(BOOST);
+                if importance_enabled {
+                    entry.adjust_importance(IMPORTANCE_REWARD);
+                }
                 boosted += 1;
                 changed = true;
             }
@@ -1774,6 +1800,9 @@ fn apply_confidence_updates(
         for id in rejected_ids {
             if let Some(entry) = graph.get_memory_mut(id) {
                 entry.decay_confidence(DECAY);
+                if importance_enabled {
+                    entry.adjust_importance(IMPORTANCE_DISCOUNT);
+                }
                 decayed += 1;
                 changed = true;
             }

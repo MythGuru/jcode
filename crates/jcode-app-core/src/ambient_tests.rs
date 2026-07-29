@@ -381,6 +381,8 @@ fn test_build_ambient_system_prompt_with_data() {
         contradictions: 1,
         missing_embeddings: 5,
         duplicate_candidates: 0,
+        high_importance: 6,
+        low_importance: 2,
         last_consolidation: Some(Utc::now() - Duration::hours(2)),
     };
 
@@ -418,6 +420,12 @@ fn test_build_ambient_system_prompt_with_data() {
     assert!(prompt.contains("confidence < 0.1: 3"));
     assert!(prompt.contains("contradictions: 1"));
     assert!(prompt.contains("without embeddings: 5"));
+    assert!(
+        prompt
+            .contains("Importance distribution: 6 high (>= 0.8, prune-protected), 2 low (<= 0.2)")
+    );
+    assert!(prompt.contains("Importance curation"));
+    assert!(prompt.contains("Never prune memories with importance >= 0.8"));
     assert!(prompt.contains("Fix auth bug"));
     assert!(prompt.contains("approved ambient fixing typos"));
     assert!(prompt.contains("rejected ambient refactoring"));
