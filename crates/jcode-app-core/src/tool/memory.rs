@@ -86,6 +86,12 @@ struct MemoryInput {
     /// For recall action: retrieval mode
     #[serde(default)]
     mode: Option<String>,
+    /// For note action: working-memory kind (goal, constraint, fact, decision, open)
+    #[serde(default)]
+    kind: Option<String>,
+    /// For set_importance action: explicit importance (0.0-1.0)
+    #[serde(default)]
+    importance: Option<f32>,
 }
 
 #[async_trait]
@@ -105,7 +111,7 @@ impl Tool for MemoryTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["remember", "recall", "search", "list", "forget", "tag", "link", "related"],
+                    "enum": ["remember", "recall", "search", "list", "forget", "tag", "link", "related", "working", "note", "rehearse", "promote", "set_importance"],
                     "description": "Action."
                 },
                 "content": { "type": "string" },
@@ -119,7 +125,16 @@ impl Tool for MemoryTool {
                 "scope": { "type": "string", "enum": ["project", "global", "all"] },
                 "from_id": { "type": "string" },
                 "to_id": { "type": "string" },
-                "limit": { "type": "integer", "description": "Max results." }
+                "limit": { "type": "integer", "description": "Max results." },
+                "kind": {
+                    "type": "string",
+                    "enum": ["goal", "constraint", "fact", "decision", "open"],
+                    "description": "Working-memory item kind (note action)."
+                },
+                "importance": {
+                    "type": "number",
+                    "description": "Importance 0.0-1.0 (set_importance action)."
+                }
             },
             "required": ["action"]
         })
@@ -436,6 +451,149 @@ impl Tool for MemoryTool {
                     Ok(ToolOutput::new(out))
                 }
             }
+            "working" => {
+                if !memory::working_memory_enabled() {
+                    return Ok(ToolOutput::new(
+                        "Working memory is disabled (agents.working_memory_enabled = false).",
+                    ));
+                }
+                let items = memory::list_working_memory(&session_id);
+                memory::set_state(MemoryState::ToolAction {
+                    action: "working".into(),
+                    detail: format!("{} items", items.len()),
+                });
+                memory::set_state(MemoryState::Idle);
+                if items.is_empty() {
+                    Ok(ToolOutput::new(
+                        "Working memory is empty. Use action=note to add items.",
+                    ))
+                } else {
+                    let mut out = format!("Working memory ({} items):\n\n", items.len());
+                    for item in items {
+                        out.push_str(&format!(
+                            "- [{}] {} (rehearsals: {}, id: {})\n",
+                            item.kind, item.content, item.rehearsals, item.id
+                        ));
+                    }
+                    Ok(ToolOutput::new(out))
+                }
+            }
+            "note" => {
+                if !memory::working_memory_enabled() {
+                    return Ok(ToolOutput::new(
+                        "Working memory is disabled (agents.working_memory_enabled = false).",
+                    ));
+                }
+                let content = input
+                    .content
+                    .ok_or_else(|| anyhow::anyhow!("content required"))?;
+                let kind = memory::WorkingMemoryKind::parse(input.kind.as_deref().unwrap_or(""));
+                memory::set_state(MemoryState::ToolAction {
+                    action: "note".into(),
+                    detail: truncate_for_widget(&content, 40),
+                });
+                let (item, evicted) = memory::push_working_memory(&session_id, &content, kind);
+                // Items squeezed out under pressure still earn promotion when
+                // they were rehearsed enough (P4 exit rule).
+                let promoted = memory::promote_exiting_items(&manager, &evicted);
+                memory::set_state(MemoryState::Idle);
+                let mut out = format!("Noted [{}]: \"{}\" (id: {})", item.kind, item.content, item.id);
+                if !evicted.is_empty() {
+                    out.push_str(&format!(
+                        "\nEvicted {} item(s) to make room ({} promoted to long-term).",
+                        evicted.len(),
+                        promoted
+                    ));
+                }
+                Ok(ToolOutput::new(out))
+            }
+            "rehearse" => {
+                if !memory::working_memory_enabled() {
+                    return Ok(ToolOutput::new(
+                        "Working memory is disabled (agents.working_memory_enabled = false).",
+                    ));
+                }
+                let id = input.id.ok_or_else(|| anyhow::anyhow!("id required"))?;
+                memory::set_state(MemoryState::ToolAction {
+                    action: "rehearse".into(),
+                    detail: truncate_for_widget(&id, 30),
+                });
+                let result = memory::rehearse_with_promotion(&manager, &session_id, &id);
+                memory::set_state(MemoryState::Idle);
+                match result {
+                    Some((item, Some(outcome))) => Ok(ToolOutput::new(format!(
+                        "Rehearsed \"{}\" (rehearsals: {}). Promoted to long-term memory [id: {}].",
+                        item.content,
+                        item.rehearsals,
+                        outcome.memory_id()
+                    ))),
+                    Some((item, None)) => Ok(ToolOutput::new(format!(
+                        "Rehearsed \"{}\" (rehearsals: {}).",
+                        item.content, item.rehearsals
+                    ))),
+                    None => Ok(ToolOutput::new(format!(
+                        "No working-memory item with id {} in this session.",
+                        id
+                    ))),
+                }
+            }
+            "promote" => {
+                if !memory::working_memory_enabled() {
+                    return Ok(ToolOutput::new(
+                        "Working memory is disabled (agents.working_memory_enabled = false).",
+                    ));
+                }
+                let id = input.id.ok_or_else(|| anyhow::anyhow!("id required"))?;
+                memory::set_state(MemoryState::ToolAction {
+                    action: "promote".into(),
+                    detail: truncate_for_widget(&id, 30),
+                });
+                let item = memory::list_working_memory(&session_id)
+                    .into_iter()
+                    .find(|item| item.id == id);
+                let result = match item {
+                    Some(item) => {
+                        let outcome = memory::promote_item(&manager, &item)?;
+                        memory::mark_memories_known(
+                            &session_id,
+                            std::slice::from_ref(&outcome.memory_id().to_string()),
+                            "promoted via memory tool in this session",
+                        );
+                        Ok(ToolOutput::new(format!(
+                            "Promoted \"{}\" to long-term memory [id: {}].",
+                            item.content,
+                            outcome.memory_id()
+                        )))
+                    }
+                    None => Ok(ToolOutput::new(format!(
+                        "No working-memory item with id {} in this session.",
+                        id
+                    ))),
+                };
+                memory::set_state(MemoryState::Idle);
+                result
+            }
+            "set_importance" => {
+                let id = input.id.ok_or_else(|| anyhow::anyhow!("id required"))?;
+                let importance = input
+                    .importance
+                    .ok_or_else(|| anyhow::anyhow!("importance required (0.0-1.0)"))?;
+                memory::set_state(MemoryState::ToolAction {
+                    action: "set_importance".into(),
+                    detail: format!("{} -> {:.2}", truncate_for_widget(&id, 20), importance),
+                });
+                let stored = manager.set_memory_importance(&id, importance)?;
+                memory::set_state(MemoryState::Idle);
+                let note = if stored >= 0.8 {
+                    " This memory is now protected from pruning."
+                } else {
+                    ""
+                };
+                Ok(ToolOutput::new(format!(
+                    "Set importance of {} to {:.2}.{}",
+                    id, stored, note
+                )))
+            }
             other => Err(anyhow::anyhow!("Unknown action: {}", other)),
         }
         .map_err(|err| {
@@ -451,7 +609,7 @@ impl Tool for MemoryTool {
 fn truncate_for_widget(s: &str, max: usize) -> String {
     if s.chars().count() > max {
         let truncated: String = s.chars().take(max).collect();
-        format!("{}…", truncated)
+        format!("{}â€¦", truncated)
     } else {
         s.to_string()
     }
@@ -478,9 +636,24 @@ mod tests {
         assert!(props.contains_key("from_id"));
         assert!(props.contains_key("to_id"));
         assert!(props.contains_key("limit"));
+        assert!(props.contains_key("kind"));
+        assert!(props.contains_key("importance"));
         assert!(!props.contains_key("weight"));
         assert!(!props.contains_key("depth"));
         assert!(!props.contains_key("mode"));
+
+        let actions: Vec<&str> = schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        for action in ["working", "note", "rehearse", "promote", "set_importance"] {
+            assert!(
+                actions.contains(&action),
+                "schema must advertise the {action} action"
+            );
+        }
     }
 
     fn test_ctx(working_dir: Option<std::path::PathBuf>) -> ToolContext {
@@ -537,6 +710,118 @@ mod tests {
             crate::env::set_var("JCODE_HOME", prev_home);
         } else {
             crate::env::remove_var("JCODE_HOME");
+        }
+    }
+
+    /// The five working-memory/importance actions added in P7. Runs with the
+    /// flag toggled via env override (config is read live), then verifies the
+    /// disabled path returns the friendly refusal instead of erroring.
+    #[tokio::test]
+    async fn working_memory_actions_round_trip_when_enabled() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("home");
+        let project = tempfile::tempdir().expect("project");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_flag = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "1");
+        crate::memory::clear_working_memory("test-session");
+
+        let tool = MemoryTool::new();
+        let ctx = || test_ctx(Some(project.path().to_path_buf()));
+
+        // note: adds an item and reports its id.
+        let noted = tool
+            .execute(
+                json!({ "action": "note", "content": "ship the P7 actions", "kind": "goal" }),
+                ctx(),
+            )
+            .await
+            .expect("note should succeed");
+        assert!(noted.output.contains("Noted [goal]"), "{}", noted.output);
+        let id = noted
+            .output
+            .split("(id: ")
+            .nth(1)
+            .and_then(|s| s.split(')').next())
+            .expect("note output should contain the item id")
+            .to_string();
+
+        // working: lists the item.
+        let listing = tool
+            .execute(json!({ "action": "working" }), ctx())
+            .await
+            .expect("working should succeed");
+        assert!(
+            listing.output.contains("ship the P7 actions"),
+            "{}",
+            listing.output
+        );
+
+        // rehearse below threshold: no promotion yet.
+        let rehearsed = tool
+            .execute(json!({ "action": "rehearse", "id": id }), ctx())
+            .await
+            .expect("rehearse should succeed");
+        assert!(
+            rehearsed.output.contains("rehearsals: 1") && !rehearsed.output.contains("Promoted"),
+            "{}",
+            rehearsed.output
+        );
+
+        // promote: explicit promotion to long-term.
+        let promoted = tool
+            .execute(json!({ "action": "promote", "id": id }), ctx())
+            .await
+            .expect("promote should succeed");
+        assert!(promoted.output.contains("Promoted"), "{}", promoted.output);
+        let ltm_id = promoted
+            .output
+            .split("[id: ")
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .expect("promote output should contain the long-term id")
+            .to_string();
+
+        // set_importance: valid id updates and reports protection at >= 0.8.
+        let set = tool
+            .execute(
+                json!({ "action": "set_importance", "id": ltm_id, "importance": 0.9 }),
+                ctx(),
+            )
+            .await
+            .expect("set_importance should succeed");
+        assert!(
+            set.output.contains("0.90") && set.output.contains("protected from pruning"),
+            "{}",
+            set.output
+        );
+
+        // set_importance on a missing id must error.
+        let missing = tool
+            .execute(
+                json!({ "action": "set_importance", "id": "mem_missing", "importance": 0.5 }),
+                ctx(),
+            )
+            .await;
+        assert!(missing.is_err(), "missing id must be an error");
+
+        // Disabled path: flag off returns the refusal, not an error.
+        crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "0");
+        let refused = tool
+            .execute(json!({ "action": "note", "content": "x" }), ctx())
+            .await
+            .expect("disabled note should not error");
+        assert!(refused.output.contains("disabled"), "{}", refused.output);
+
+        crate::memory::clear_working_memory("test-session");
+        match prev_flag {
+            Some(v) => crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", v),
+            None => crate::env::remove_var("JCODE_WORKING_MEMORY_ENABLED"),
+        }
+        match prev_home {
+            Some(v) => crate::env::set_var("JCODE_HOME", v),
+            None => crate::env::remove_var("JCODE_HOME"),
         }
     }
 }
