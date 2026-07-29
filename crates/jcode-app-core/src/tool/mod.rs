@@ -15,6 +15,7 @@ mod edit;
 mod gmail;
 mod goal;
 mod invalid;
+mod knowledge;
 mod ls;
 pub mod mcp;
 mod memory;
@@ -223,6 +224,12 @@ impl Registry {
                 session_search::SessionSearchTool::new,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "memory", memory::MemoryTool::new);
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "knowledge",
+                knowledge::KnowledgeTool::new,
+            );
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,
