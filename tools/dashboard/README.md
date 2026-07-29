@@ -18,3 +18,13 @@ Optional port override:
 ```bash
 PORT=7334 node server.js
 ```
+
+## Notes
+
+- Live Working Memory needs a running jcode server with debug control enabled.
+  The marker file `~/.jcode/debug_control` enables it without a restart
+  (delete the file to disable). Without it, the STM panel shows sessions as
+  offline while the knowledge and task-graph panels still work from files.
+- A session that is mid-turn (`is_processing`) may time out its STM read;
+  the panel shows "STM unavailable" and recovers on a later poll.
+
