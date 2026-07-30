@@ -1,8 +1,43 @@
 use super::*;
 use tokio_tungstenite::tungstenite::handshake::server::Request;
 
+/// Registry mutators (generate_pairing_code, pair_device) persist to
+/// jcode_dir()/devices.json as a side effect. Tests that call them must
+/// hold the shared env lock and point JCODE_HOME at a private temp dir, or
+/// they clobber the devices.json of whichever env-locked test is running
+/// concurrently.
+struct RegistryHome {
+    _temp: tempfile::TempDir,
+    _guard: std::sync::MutexGuard<'static, ()>,
+    prev: Option<std::ffi::OsString>,
+}
+
+impl RegistryHome {
+    fn new() -> Self {
+        let guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("temp home");
+        let prev = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+        Self {
+            _temp: temp,
+            _guard: guard,
+            prev,
+        }
+    }
+}
+
+impl Drop for RegistryHome {
+    fn drop(&mut self) {
+        match self.prev.take() {
+            Some(v) => crate::env::set_var("JCODE_HOME", v),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+    }
+}
+
 #[test]
 fn test_device_registry_pairing() {
+    let _home = RegistryHome::new();
     let mut registry = DeviceRegistry::default();
 
     // Generate pairing code
@@ -20,6 +55,7 @@ fn test_device_registry_pairing() {
 
 #[test]
 fn test_device_registry_token_auth() {
+    let _home = RegistryHome::new();
     let mut registry = DeviceRegistry::default();
 
     // Pair a device
@@ -40,6 +76,7 @@ fn test_device_registry_token_auth() {
 
 #[test]
 fn test_device_re_pairing() {
+    let _home = RegistryHome::new();
     let mut registry = DeviceRegistry::default();
 
     // Pair same device twice
@@ -136,6 +173,7 @@ fn test_find_header_end() {
 
 #[test]
 fn test_authorize_ws_device_valid_token() {
+    let _home = RegistryHome::new();
     let mut registry = DeviceRegistry::default();
     let token = registry.pair_device("dev-1".to_string(), "iPhone".to_string(), None);
 
@@ -146,6 +184,7 @@ fn test_authorize_ws_device_valid_token() {
 
 #[test]
 fn test_authorize_ws_device_rejects_unknown_and_revoked_with_401() {
+    let _home = RegistryHome::new();
     let mut registry = DeviceRegistry::default();
     let token = registry.pair_device("dev-1".to_string(), "iPhone".to_string(), None);
 

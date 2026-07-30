@@ -34,7 +34,14 @@ fn test_rewrite_command_with_full_path() {
 
 #[test]
 fn test_paths() {
+    // Pin JCODE_HOME to a known value while holding the env lock: the paths
+    // under test derive from it, and asserting against ambient env makes the
+    // test's outcome depend on which test ran before it.
     let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("temp home");
+    let home = temp.path().join(".jcode");
+    let prev = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", &home);
 
     let bdir = browser_dir();
     assert!(bdir.to_string_lossy().contains(".jcode"));
@@ -45,6 +52,11 @@ fn test_paths() {
 
     let xpi = xpi_path();
     assert!(xpi.to_string_lossy().ends_with(".xpi"));
+
+    match prev {
+        Some(v) => crate::env::set_var("JCODE_HOME", v),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
 }
 
 #[test]

@@ -92,7 +92,15 @@ fn parse_ppid_from_proc_status() {
 
 #[tokio::test]
 async fn run_command_trims_trailing_newlines() {
-    let text = run_command("printf 'hello from test\\n'", 5)
+    // shell_command uses cmd /C on Windows and sh -lc elsewhere, so the
+    // test command must match the platform shell. Both emit a trailing newline
+    // (cmd's echo emits CRLF), which is exactly what run_command must trim.
+    #[cfg(windows)]
+    let command = "echo hello from test";
+    #[cfg(not(windows))]
+    let command = "printf 'hello from test\\n'";
+
+    let text = run_command(command, 5)
         .await
         .expect("dictation command should succeed");
     assert_eq!(text, "hello from test");

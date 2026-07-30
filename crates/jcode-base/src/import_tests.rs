@@ -610,7 +610,10 @@ fn test_list_claude_code_sessions_uses_live_transcripts_when_index_is_stale() {
         .iter()
         .find(|session| session.session_id == "live-session-1")
         .expect("indexed live transcript should be discovered");
-    assert_eq!(indexed.full_path, indexed_session_path.to_string_lossy());
+    assert_eq!(
+        std::path::Path::new(&indexed.full_path),
+        indexed_session_path
+    );
     assert_eq!(
         indexed.summary.as_deref(),
         Some("Investigate the login bug")
@@ -621,7 +624,7 @@ fn test_list_claude_code_sessions_uses_live_transcripts_when_index_is_stale() {
         .iter()
         .find(|session| session.session_id == "orphan-session-2")
         .expect("orphan live transcript should be discovered");
-    assert_eq!(orphan.full_path, orphan_session_path.to_string_lossy());
+    assert_eq!(std::path::Path::new(&orphan.full_path), orphan_session_path);
     assert_eq!(orphan.first_prompt, "Summarize the deployment issue");
     assert_eq!(orphan.message_count, 2);
 }
@@ -653,7 +656,7 @@ fn test_list_claude_code_sessions_uses_index_metadata_without_parsing_transcript
                 "\"projectPath\":\"/tmp/demo-project\"",
                 "}}]}}"
             ),
-            transcript_path.display()
+            transcript_path.to_string_lossy().replace('\\', "\\\\")
         ),
     )
     .unwrap();
@@ -700,7 +703,7 @@ fn test_list_claude_code_sessions_skips_empty_index_entries_without_messages() {
                 "\"messageCount\":0",
                 "}}]}}"
             ),
-            transcript_path.display()
+            transcript_path.to_string_lossy().replace('\\', "\\\\")
         ),
     )
     .unwrap();

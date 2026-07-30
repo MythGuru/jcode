@@ -118,6 +118,7 @@ mod tests {
         let home = tempfile::tempdir().expect("home");
         let prev = std::env::var_os("JCODE_HOME");
         crate::env::set_var("JCODE_HOME", home.path());
+        crate::config::invalidate_config_cache();
         TestHome {
             _home: home,
             _env: env,

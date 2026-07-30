@@ -265,7 +265,13 @@ pub fn is_process_running(pid: u32) -> bool {
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle.is_null() {
-                return false;
+                // Access denied means the process exists but is protected
+                // (e.g. the System process or another user's process). Only a
+                // nonexistent PID means "not running"; treating access-denied
+                // as dead would falsely orphan live foreign-owned tasks.
+                let err = std::io::Error::last_os_error();
+                return err.raw_os_error()
+                    == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32);
             }
             let mut exit_code = 0u32;
             let ok = GetExitCodeProcess(handle, &mut exit_code);

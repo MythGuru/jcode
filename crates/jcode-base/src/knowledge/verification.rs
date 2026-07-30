@@ -319,6 +319,10 @@ mod tests {
         let home = tempfile::tempdir().expect("home");
         let prev = std::env::var_os("JCODE_HOME");
         crate::env::set_var("JCODE_HOME", home.path());
+        // Reload config from the empty temp home. Without this, a cached
+        // config from the developer's real home (where the feature may be
+        // enabled) leaks into "default config" assertions.
+        crate::config::invalidate_config_cache();
         TestHome {
             _home: home,
             _env: env,
@@ -334,6 +338,7 @@ mod tests {
                 Some(v) => crate::env::set_var("JCODE_HOME", v),
                 None => crate::env::remove_var("JCODE_HOME"),
             }
+            crate::config::invalidate_config_cache();
         }
     }
 

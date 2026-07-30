@@ -63,7 +63,11 @@ async fn update_delivery_applies_to_running_task_completion() -> Result<()> {
             false,
             false,
             |output_path| async move {
-                sleep(Duration::from_millis(25)).await;
+                // Long enough that update_delivery below always lands while
+                // the task is still running; a short sleep raced completion
+                // on loaded parallel runs and the completion write clobbered
+                // the delivery update.
+                sleep(Duration::from_millis(500)).await;
                 tokio::fs::write(&output_path, "hello").await?;
                 Ok(TaskResult::completed(Some(0)))
             },
@@ -78,7 +82,7 @@ async fn update_delivery_applies_to_running_task_completion() -> Result<()> {
     assert!(updated.notify);
     assert!(updated.wake);
 
-    for _ in 0..40 {
+    for _ in 0..200 {
         let status = manager
             .status(&info.task_id)
             .await
@@ -89,7 +93,7 @@ async fn update_delivery_applies_to_running_task_completion() -> Result<()> {
             assert_eq!(status.status, BackgroundTaskStatus::Completed);
             return Ok(());
         }
-        sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(25)).await;
     }
 
     Err(anyhow!("background task did not complete in time"))
@@ -199,7 +203,9 @@ async fn wait_returns_on_progress_checkpoint() -> Result<()> {
             false,
             false,
             |_output_path| async move {
-                sleep(Duration::from_secs(2)).await;
+                // Long enough that completion can never race the progress
+                // checkpoint below, even on a loaded parallel test runner.
+                sleep(Duration::from_secs(30)).await;
                 Ok(TaskResult::completed(Some(0)))
             },
         )
@@ -217,7 +223,7 @@ async fn wait_returns_on_progress_checkpoint() -> Result<()> {
         source: BackgroundTaskProgressSource::Reported,
     };
 
-    let waiter = manager.wait(&info.task_id, Duration::from_secs(2), true);
+    let waiter = manager.wait(&info.task_id, Duration::from_secs(10), true);
     let updater = async {
         sleep(Duration::from_millis(25)).await;
         manager
@@ -376,8 +382,17 @@ async fn reconcile_marks_orphan_from_dead_process_failed() -> Result<()> {
     let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
 
     // A child process that has already exited and been reaped gives us a PID
-    // that is provably not running.
-    let mut child = std::process::Command::new("true")
+    // that is provably not running. 	rue does not exist on Windows, so use
+    // the platform shell for a trivially-exiting child.
+    #[cfg(windows)]
+    let mut command = {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "exit 0"]);
+        cmd
+    };
+    #[cfg(not(windows))]
+    let mut command = std::process::Command::new("true");
+    let mut child = command
         .spawn()
         .map_err(|err| anyhow!("spawn child: {err}"))?;
     let dead_pid = child.id();
@@ -413,9 +428,14 @@ async fn reconcile_leaves_non_orphans_alone() -> Result<()> {
     let legacy = running_status_fixture("keep2bbbb", "session-keep");
     write_status_fixture(&manager, &legacy).await;
 
-    // Owned by a live foreign process (PID 1 is always alive on Unix).
+    // Owned by a live foreign process. PID 1 (init) is always alive on Unix;
+    // on Windows PID 4 is the System process, alive for the machine's lifetime.
+    #[cfg(windows)]
+    let live_foreign_pid = 4u32;
+    #[cfg(not(windows))]
+    let live_foreign_pid = 1u32;
     let mut foreign = running_status_fixture("keep3cccc", "session-keep");
-    foreign.owner_pid = Some(1);
+    foreign.owner_pid = Some(live_foreign_pid);
     foreign.owner_instance = Some("init-instance".to_string());
     write_status_fixture(&manager, &foreign).await;
 

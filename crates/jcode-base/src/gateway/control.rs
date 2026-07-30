@@ -430,7 +430,12 @@ mod tests {
     }
 
     /// Environment-mutating tests must not run concurrently with each other.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// This must be the crate-wide shared lock: JCODE_HOME is process-global
+    /// state, and a module-local mutex would still race every other test file
+    /// that reads or writes it under crate::storage::lock_test_env().
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::storage::lock_test_env()
+    }
 
     struct HomeGuard {
         previous: Option<std::ffi::OsString>,
@@ -470,7 +475,7 @@ mod tests {
     /// value survives the round trip.
     #[test]
     fn enabling_the_gateway_preserves_unrelated_config() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let home = HomeGuard::new(
             "[gateway]\nenabled = false\nport = 7643\nbind_addr = \"0.0.0.0\"\n\n\
              [compaction]\nlookahead_turns = 9\n",
@@ -496,7 +501,7 @@ mod tests {
     /// A no-op toggle should not claim a restart is needed.
     #[test]
     fn toggling_to_the_current_value_reports_unchanged() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let _home = HomeGuard::new("[gateway]\nenabled = false\nport = 7643\n");
 
         assert_eq!(
@@ -508,7 +513,7 @@ mod tests {
     /// Revoking must remove only the requested device and persist the result.
     #[test]
     fn revoke_removes_only_the_named_device() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = env_lock();
         let _home = HomeGuard::new("[gateway]\nenabled = true\n");
 
         registry(vec![
