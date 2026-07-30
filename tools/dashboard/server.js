@@ -262,6 +262,40 @@ async function saveDashboardFile(body, errors) {
   return { ok: true, path: full };
 }
 
+function activityForSession(s) {
+  if (!s.live) return { state: 'offline', headline: 'Offline - saved from an earlier session' };
+  if (s.is_processing) {
+    const todo = (s.todos || []).find(t => String(t.status).toLowerCase() === 'in_progress');
+    return { state: 'working', headline: `Working: ${todo?.content || s.detail || 'thinking'}` };
+  }
+  return { state: 'idle', headline: 'Idle - waiting for input' };
+}
+
+function textFromMessage(m) {
+  const c = m.content;
+  if (Array.isArray(c)) return c.map(x => typeof x === 'string' ? x : (x && typeof x.text === 'string' ? x.text : '')).join(' ');
+  if (typeof c === 'string') return c;
+  if (m.name) return `[used tool: ${m.name}]`;
+  return typeof m.text === 'string' ? m.text : '';
+}
+function reduceHistory(raw) {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr.slice(-6).map(m => {
+    if (m && (m.role === 'tool' || m.type === 'tool_call' || m.type === 'tool_result' || m.tool_name)) return { role: 'tool', text: `[used tool: ${m.name || m.tool_name || 'tool'}]` };
+    let text = textFromMessage(m || {}).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+    if (text.length > 600) text = text.slice(0, 599) + '…';
+    return { role: m.role || 'agent', text };
+  }).filter(m => m.text);
+}
+async function sessionHistory(sessionId, errors) {
+  if (!validateSessionId(sessionId)) return { ok: false, status: 400, error: 'Please choose a valid live terminal.' };
+  const target = await findLiveSession(sessionId, errors);
+  if (!target) return { ok: false, status: 404, error: 'That terminal is not connected right now.' };
+  const res = await sendDebug(target.pipe, 'history', sessionId);
+  if (res.error) return { ok: false, status: 502, error: 'Could not read that conversation right now.' };
+  return { ok: true, messages: reduceHistory(parseOutput(res.output)) };
+}
+
 async function loadRegistryProjectDirs(errors) {
   const reg = await readJson(path.join(JC, 'servers.json'), errors) || {};
   const dirs = [];
@@ -302,8 +336,14 @@ async function state() {
   errors.push(...live.errors.map(e => `debug ${e}`));
   const seen = new Set(live.sessions.map(s => s.session_id));
   const sessions = [];
-  for (const s of live.sessions) sessions.push({ ...s, ...await loadTodoBundle(s.session_id, errors) });
-  for (const rec of await recentTodoIds(errors)) if (!seen.has(rec.id)) sessions.push({ session_id: rec.id, friendly_name: rec.id, status: 'offline', live: false, working_memory: null, stm_read_at: null, todos_mtime: rec.mtime, ...await loadTodoBundle(rec.id, errors) });
+  for (const s of live.sessions) {
+    const full = { ...s, ...await loadTodoBundle(s.session_id, errors) };
+    sessions.push({ ...full, activity: activityForSession(full) });
+  }
+  for (const rec of await recentTodoIds(errors)) if (!seen.has(rec.id)) {
+    const full = { session_id: rec.id, friendly_name: rec.id, status: 'offline', live: false, working_memory: null, stm_read_at: null, todos_mtime: rec.mtime, ...await loadTodoBundle(rec.id, errors) };
+    sessions.push({ ...full, activity: activityForSession(full) });
+  }
   return { generated_at: new Date().toISOString(), rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024 * 10) / 10, knowledge, sessions, initiatives, errors, staleness: { knowledge_mtime: await latestMtime(path.join(JC, 'knowledge', 'projects')), todos_mtime: await latestMtime(path.join(JC, 'todos')), goals_mtime: await latestMtime(path.join(JC, 'goals')) }, servers: live.servers };
 }
 
@@ -340,6 +380,14 @@ const server = http.createServer(async (req, res) => {
       const body = await parseJsonBody(req, res, 16 * 1024 * 1024);
       if (!body) return;
       const result = await saveDashboardFile(body, []);
+      if (!result.ok) return plainError(res, result.status || 400, result.error);
+      return json(res, 200, result);
+    }
+    if (url.pathname === '/api/session/history') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('method not allowed'); }
+      const body = await parseJsonBody(req, res, 4096);
+      if (!body) return;
+      const result = await sessionHistory(body.session_id, []);
       if (!result.ok) return plainError(res, result.status || 400, result.error);
       return json(res, 200, result);
     }
