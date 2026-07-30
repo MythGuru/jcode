@@ -633,3 +633,111 @@ fn project_knowledge_absent_from_prompt_when_flag_off() {
     assert!(!split.static_part.contains("# Project Knowledge"));
     assert!(!split.dynamic_part.contains("# Project Knowledge"));
 }
+
+// === Knowledge promotion nudge at the prompt chokepoint ===
+//
+// The nudge only exists when BOTH opt-in flags are on; these tests pin the
+// chokepoint behavior (injection, one-shot semantics, flag-off byte identity).
+
+struct ProjectKnowledgeFlag {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ProjectKnowledgeFlag {
+    fn set(enabled: bool) -> Self {
+        let previous = std::env::var_os("JCODE_PROJECT_KNOWLEDGE_ENABLED");
+        crate::env::set_var(
+            "JCODE_PROJECT_KNOWLEDGE_ENABLED",
+            if enabled { "true" } else { "false" },
+        );
+        crate::config::invalidate_config_cache();
+        Self { previous }
+    }
+}
+
+impl Drop for ProjectKnowledgeFlag {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => crate::env::set_var("JCODE_PROJECT_KNOWLEDGE_ENABLED", value),
+            None => crate::env::remove_var("JCODE_PROJECT_KNOWLEDGE_ENABLED"),
+        }
+        crate::config::invalidate_config_cache();
+    }
+}
+
+#[test]
+fn knowledge_nudge_appears_once_then_never_repeats() {
+    let _guard = crate::storage::lock_test_env();
+    let _stm = WorkingMemoryFlag::set(true);
+    let _pk = ProjectKnowledgeFlag::set(true);
+    let session = "prompt-nudge-once";
+    let project = std::path::Path::new("C:/prompt-nudge/project");
+    crate::memory::clear_working_memory(session);
+    crate::knowledge::promotion::clear_nudged(session);
+    crate::memory::push_working_memory(
+        session,
+        "we standardized on cursor pagination",
+        crate::memory::WorkingMemoryKind::Decision,
+    );
+
+    let (first, info) =
+        build_system_prompt_split(None, &[], false, None, Some(project), Some(session));
+    assert!(
+        first.dynamic_part.contains("# Knowledge Promotion Check"),
+        "a durable decision must trigger the nudge"
+    );
+    assert!(first.dynamic_part.contains("cursor pagination"));
+    assert!(info.knowledge_nudge_chars > 0);
+    assert!(
+        !first.static_part.contains("# Knowledge Promotion Check"),
+        "the nudge is per-turn state and must stay out of the cacheable prefix"
+    );
+
+    // Second build: the same item must not nudge again.
+    let (second, info2) =
+        build_system_prompt_split(None, &[], false, None, Some(project), Some(session));
+    assert!(
+        !second.dynamic_part.contains("# Knowledge Promotion Check"),
+        "a nudge must be one-shot per item"
+    );
+    assert_eq!(info2.knowledge_nudge_chars, 0);
+
+    crate::memory::clear_working_memory(session);
+    crate::knowledge::promotion::clear_nudged(session);
+}
+
+#[test]
+fn knowledge_nudge_absent_when_either_flag_is_off() {
+    let _guard = crate::storage::lock_test_env();
+    let session = "prompt-nudge-flags";
+    let project = std::path::Path::new("C:/prompt-nudge/flags");
+    crate::memory::clear_working_memory(session);
+    crate::knowledge::promotion::clear_nudged(session);
+
+    {
+        // STM on, knowledge off.
+        let _stm = WorkingMemoryFlag::set(true);
+        let _pk = ProjectKnowledgeFlag::set(false);
+        crate::memory::push_working_memory(
+            session,
+            "a decision that must stay un-nudged",
+            crate::memory::WorkingMemoryKind::Decision,
+        );
+        let (split, info) =
+            build_system_prompt_split(None, &[], false, None, Some(project), Some(session));
+        assert!(!split.dynamic_part.contains("# Knowledge Promotion Check"));
+        assert_eq!(info.knowledge_nudge_chars, 0);
+    }
+    {
+        // Knowledge on, STM off.
+        let _stm = WorkingMemoryFlag::set(false);
+        let _pk = ProjectKnowledgeFlag::set(true);
+        let (split, info) =
+            build_system_prompt_split(None, &[], false, None, Some(project), Some(session));
+        assert!(!split.dynamic_part.contains("# Knowledge Promotion Check"));
+        assert_eq!(info.knowledge_nudge_chars, 0);
+    }
+
+    crate::memory::clear_working_memory(session);
+    crate::knowledge::promotion::clear_nudged(session);
+}

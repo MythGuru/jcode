@@ -22,6 +22,7 @@
 //!   always open a plain readable map.
 
 pub mod bridge;
+pub mod promotion;
 pub mod verification;
 
 use chrono::{DateTime, Utc};
@@ -762,9 +763,22 @@ mod tests {
     #[test]
     fn config_accessors_default_off_and_clamped() {
         // Defaults come from K0: disabled, 4000-char budget. The clamp must
-        // hold even though the raw config value is user-controlled.
+        // hold even though the raw config value is user-controlled. Hold the
+        // env lock and pin the override: other tests toggle this flag via
+        // env, and reading live config without the lock races with them.
+        let _guard = crate::storage::lock_test_env();
+        let prev = std::env::var_os("JCODE_PROJECT_KNOWLEDGE_ENABLED");
+        crate::env::set_var("JCODE_PROJECT_KNOWLEDGE_ENABLED", "false");
+        crate::config::invalidate_config_cache();
+
         assert!(!project_knowledge_enabled());
         let budget = project_knowledge_max_chars();
         assert!((256..=16_000).contains(&budget));
+
+        match prev {
+            Some(v) => crate::env::set_var("JCODE_PROJECT_KNOWLEDGE_ENABLED", v),
+            None => crate::env::remove_var("JCODE_PROJECT_KNOWLEDGE_ENABLED"),
+        }
+        crate::config::invalidate_config_cache();
     }
 }

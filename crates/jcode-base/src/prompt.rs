@@ -235,6 +235,9 @@ pub struct ContextInfo {
     /// re-sent while present, but it changes only when entries are proposed
     /// or verified, so it is budgeted separately (project_knowledge_max_chars).
     pub project_knowledge_chars: usize,
+    /// Knowledge promotion nudge section size (chars). Nonzero only on turns
+    /// where durable-looking working-memory items trigger a one-shot ask.
+    pub knowledge_nudge_chars: usize,
     /// Active plan section size (chars). Budgeted separately
     /// (task_graph_max_prompt_chars); zero while the task graph is off.
     pub active_plan_chars: usize,
@@ -607,6 +610,18 @@ pub fn build_system_prompt_split_with_capabilities(
     if let Some(working) = crate::memory::working_memory_prompt_section(session_id) {
         info.working_memory_chars = working.len();
         dynamic_parts.push(working);
+    }
+
+    // Knowledge promotion nudge: a one-shot per-item prompt asking the agent
+    // to consider saving durable working-memory items as project knowledge.
+    // Placed after working memory because it refers to those items. Yields
+    // `None` unless BOTH the working-memory and project-knowledge flags are
+    // on, so flag-off prompts stay byte-identical.
+    if let Some(nudge) =
+        crate::knowledge::promotion::knowledge_nudge_prompt_section(session_id, working_dir)
+    {
+        info.knowledge_nudge_chars = nudge.len();
+        dynamic_parts.push(nudge);
     }
 
     // Active skill prompt (changes per skill invocation)

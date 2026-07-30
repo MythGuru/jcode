@@ -175,6 +175,9 @@ pub fn promote_exiting_items(manager: &MemoryManager, items: &[WorkingMemoryItem
 pub fn promote_on_session_end(manager: &MemoryManager, session_id: &str) -> usize {
     let drained = working::clear(session_id);
     working::delete_working_memory_file(session_id);
+    // The knowledge-nudge bookkeeping tracks these items; a finished session
+    // should not leave its nudge history behind either.
+    crate::knowledge::promotion::clear_nudged(session_id);
     if drained.is_empty() {
         return 0;
     }
