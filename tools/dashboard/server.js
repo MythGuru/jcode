@@ -222,6 +222,46 @@ async function queueDashboardMessage(sessionId, text, urgent, errors) {
   return { ok: true, queued: true, urgent: Boolean(urgent) };
 }
 
+function sanitizeFilename(name) {
+  const base = path.basename(String(name || '')).replace(/[^A-Za-z0-9._ -]/g, '_').slice(0, 100).trim();
+  return base || null;
+}
+
+async function uniqueInboxPath(filename) {
+  const day = new Date().toISOString().slice(0, 10);
+  const dir = path.join(JC, 'dashboard-inbox', day);
+  await fsp.mkdir(dir, { recursive: true });
+  const ext = path.extname(filename);
+  const stem = path.basename(filename, ext) || 'file';
+  for (let i = 1; i < 1000; i++) {
+    const name = i === 1 ? filename : `${stem}-${i}${ext}`;
+    const full = path.join(dir, name);
+    if (!(await exists(full))) return full;
+  }
+  throw new Error('Could not save the file with a unique name.');
+}
+
+async function saveDashboardFile(body, errors) {
+  if (!validateSessionId(body.session_id)) return { ok: false, status: 400, error: 'Please choose a valid live terminal.' };
+  const filename = sanitizeFilename(body.filename);
+  if (!filename) return { ok: false, status: 400, error: 'Please choose a file with a usable name.' };
+  if (typeof body.content_base64 !== 'string') return { ok: false, status: 400, error: 'Please choose a file to share.' };
+  const clean64 = body.content_base64.replace(/^data:[^,]*,/, '');
+  let data;
+  try { data = Buffer.from(clean64, 'base64'); }
+  catch { return { ok: false, status: 400, error: 'The file could not be read.' }; }
+  if (data.length > 10 * 1024 * 1024) return { ok: false, status: 413, error: 'Please choose a file smaller than 10 MB.' };
+  const target = await findLiveSession(body.session_id, errors);
+  if (!target) return { ok: false, status: 404, error: 'That terminal is not connected right now.' };
+  const full = await uniqueInboxPath(filename);
+  await fsp.writeFile(full, data);
+  const note = typeof body.note === 'string' && body.note.trim() ? ` ${body.note.trim().slice(0, 1000)}.` : '';
+  const msg = `I shared a file with you: ${full}.${note} Please read it and take it into account.`;
+  const queued = await queueDashboardMessage(body.session_id, msg, body.urgent, errors);
+  if (!queued.ok) return queued;
+  return { ok: true, path: full };
+}
+
 async function loadRegistryProjectDirs(errors) {
   const reg = await readJson(path.join(JC, 'servers.json'), errors) || {};
   const dirs = [];
@@ -292,6 +332,14 @@ const server = http.createServer(async (req, res) => {
       const body = await parseJsonBody(req, res, 16384);
       if (!body) return;
       const result = await queueDashboardMessage(body.session_id, body.text, body.urgent, []);
+      if (!result.ok) return plainError(res, result.status || 400, result.error);
+      return json(res, 200, result);
+    }
+    if (url.pathname === '/api/session/file') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('method not allowed'); }
+      const body = await parseJsonBody(req, res, 16 * 1024 * 1024);
+      if (!body) return;
+      const result = await saveDashboardFile(body, []);
       if (!result.ok) return plainError(res, result.status || 400, result.error);
       return json(res, 200, result);
     }
