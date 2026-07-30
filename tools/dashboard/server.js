@@ -105,16 +105,15 @@ function pipeNameFromSocket(p) {
   const hash = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
   return `\\\\.\\pipe\\${stem}-${hash}`;
 }
-function sendDebug(pipe, command, sessionId) {
+function sendPipeRequest(pipe, request, matchResponse) {
   return new Promise((resolve) => {
     const sock = net.connect({ path: pipe });
     let buf = '', done = false;
-    const id = Math.floor(Math.random() * 1e9);
     const finish = (v) => { if (done) return; done = true; clearTimeout(timer); sock.destroy(); resolve(v); };
     const timer = setTimeout(() => finish({ error: 'timeout' }), 5000);
     sock.setTimeout(3000, () => finish({ error: 'offline' }));
     sock.on('error', () => finish({ error: 'offline' }));
-    sock.on('connect', () => sock.write(JSON.stringify({ type: 'debug_command', id, command, ...(sessionId ? { session_id: sessionId } : {}) }) + '\n'));
+    sock.on('connect', () => sock.write(JSON.stringify(request) + '\n'));
     sock.on('data', (d) => {
       buf += d.toString('utf8');
       while (buf.includes('\n')) {
@@ -124,12 +123,33 @@ function sendDebug(pipe, command, sessionId) {
         if (!line) continue;
         try {
           const msg = JSON.parse(line);
-          if (msg.id === id) finish(msg.ok ? { output: msg.output } : { error: msg.error || 'failed' });
+          const result = matchResponse(msg);
+          if (result) finish(result);
         } catch (e) { finish({ error: e.message }); }
         if (done) return;
       }
     });
   });
+}
+function sendDebug(pipe, command, sessionId) {
+  const id = Math.floor(Math.random() * 1e9);
+  return sendPipeRequest(pipe,
+    { type: 'debug_command', id, command, ...(sessionId ? { session_id: sessionId } : {}) },
+    (msg) => msg.id === id ? (msg.ok ? { output: msg.output } : { error: msg.error || 'failed' }) : null);
+}
+// Types text into a live terminal as if the user typed it and pressed Enter.
+// This starts a turn immediately, which is what an IDLE session needs; the
+// queue_interrupt path only drains once a turn is already running.
+function sendTranscript(pipe, text, sessionId) {
+  const id = Math.floor(Math.random() * 1e9);
+  return sendPipeRequest(pipe,
+    { type: 'transcript', id, text, mode: 'send', session_id: sessionId },
+    (msg) => {
+      if (msg.id !== id && msg.type !== 'error') return null;
+      if (msg.type === 'done') return { ok: true };
+      if (msg.type === 'error') return { error: msg.message || 'failed' };
+      return null;
+    });
 }
 function parseOutput(v) {
   if (typeof v !== 'string') return v;
@@ -216,10 +236,19 @@ async function queueDashboardMessage(sessionId, text, urgent, errors) {
   if (trimmed.length > 8000) return { ok: false, status: 400, error: 'Please shorten the message to 8,000 characters or less.' };
   const target = await findLiveSession(sessionId, errors);
   if (!target) return { ok: false, status: 404, error: 'That terminal is not connected right now.' };
-  const command = (urgent ? 'queue_interrupt_urgent' : 'queue_interrupt') + ':[From Michael via dashboard] ' + trimmed;
+  const message = '[From Michael via dashboard] ' + trimmed;
+  // Idle terminal: type the message in directly so the agent starts replying
+  // now. Busy terminal: queue it so it is injected at the next safe point in
+  // the ongoing work (typing into a busy terminal would also just queue).
+  if (!target.session.is_processing && !urgent) {
+    const typed = await sendTranscript(target.pipe, message, sessionId);
+    if (typed.ok) return { ok: true, delivered: 'typed', urgent: false };
+    // Fall through to the queue if the terminal client is not attached.
+  }
+  const command = (urgent ? 'queue_interrupt_urgent' : 'queue_interrupt') + ':' + message;
   const result = await sendDebug(target.pipe, command, sessionId);
   if (result.error) return { ok: false, status: 502, error: 'That terminal did not accept the message. Please try again.' };
-  return { ok: true, queued: true, urgent: Boolean(urgent) };
+  return { ok: true, delivered: 'queued', urgent: Boolean(urgent) };
 }
 
 function sanitizeFilename(name) {
