@@ -15,6 +15,14 @@ const HTML = path.join(ROOT, 'dashboard.html');
 const SECTION_ORDER = ['structure', 'decision', 'rule', 'problem', 'responsibility'];
 const ALLOWED_ORIGINS = new Set([`http://${HOST}:${PORT}`, `http://localhost:${PORT}`]);
 let socketCache = { at: 0, sessions: [], servers: [], errors: [] };
+const SESSION_ID_RE = /^session_[a-z0-9]+_\d+_[0-9a-f]+$/i;
+
+function json(res, status, obj) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(obj));
+}
+function plainError(res, status, error) { return json(res, status, { ok: false, error }); }
+function validateSessionId(sessionId) { return typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId); }
 
 async function exists(p) { try { await fsp.access(p, fs.constants.R_OK); return true; } catch { return false; } }
 async function isDirectory(p) { try { return (await fsp.stat(p)).isDirectory(); } catch { return false; } }
@@ -171,13 +179,47 @@ function rejectBadOrigin(req, res) {
 function readBody(req, limit = 65536) {
   return new Promise((resolve, reject) => {
     let body = '';
+    let rejected = false;
     req.on('data', chunk => {
       body += chunk;
-      if (body.length > limit) reject(new Error('Request is too large.'));
+      if (!rejected && body.length > limit) { rejected = true; reject(new Error('Request is too large.')); }
     });
-    req.on('end', () => resolve(body));
+    req.on('end', () => { if (!rejected) resolve(body); });
     req.on('error', reject);
   });
+}
+
+async function parseJsonBody(req, res, limit) {
+  try { return JSON.parse(await readBody(req, limit) || '{}'); }
+  catch (e) {
+    plainError(res, e.message === 'Request is too large.' ? 413 : 400, e.message === 'Request is too large.' ? 'Request is too large.' : 'Please send valid dashboard data.');
+    return null;
+  }
+}
+
+async function findLiveSession(sessionId, errors) {
+  const live = await loadLiveSessions(errors);
+  const session = live.sessions.find(s => s.session_id === sessionId);
+  if (!session) return null;
+  const reg = await readJson(path.join(JC, 'servers.json'), errors) || {};
+  for (const srv of Object.values(reg)) {
+    if (!srv || !srv.debug_socket) continue;
+    if ((srv.name || 'server') === session.server) return { session, pipe: pipeNameFromSocket(srv.debug_socket) };
+  }
+  return null;
+}
+
+async function queueDashboardMessage(sessionId, text, urgent, errors) {
+  if (!validateSessionId(sessionId)) return { ok: false, status: 400, error: 'Please choose a valid live terminal.' };
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (!trimmed) return { ok: false, status: 400, error: 'Please type a message before sending.' };
+  if (trimmed.length > 8000) return { ok: false, status: 400, error: 'Please shorten the message to 8,000 characters or less.' };
+  const target = await findLiveSession(sessionId, errors);
+  if (!target) return { ok: false, status: 404, error: 'That terminal is not connected right now.' };
+  const command = (urgent ? 'queue_interrupt_urgent' : 'queue_interrupt') + ':[From Michael via dashboard] ' + trimmed;
+  const result = await sendDebug(target.pipe, command, sessionId);
+  if (result.error) return { ok: false, status: 502, error: 'That terminal did not accept the message. Please try again.' };
+  return { ok: true, queued: true, urgent: Boolean(urgent) };
 }
 
 async function loadRegistryProjectDirs(errors) {
@@ -244,6 +286,14 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== 'GET') { res.writeHead(405); return res.end('method not allowed'); }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(JSON.stringify(await projectDirs()));
+    }
+    if (url.pathname === '/api/session/message') {
+      if (req.method !== 'POST') { res.writeHead(405); return res.end('method not allowed'); }
+      const body = await parseJsonBody(req, res, 16384);
+      if (!body) return;
+      const result = await queueDashboardMessage(body.session_id, body.text, body.urgent, []);
+      if (!result.ok) return plainError(res, result.status || 400, result.error);
+      return json(res, 200, result);
     }
     if (url.pathname === '/api/session/new') {
       if (req.method !== 'POST') { res.writeHead(405); return res.end('method not allowed'); }
