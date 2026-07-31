@@ -424,6 +424,12 @@ swarm_max_concurrent_agents = 32
 # working_memory_capacity = 7
 # working_memory_item_chars = 240
 #
+# Global core memory. Durable user-level memories tagged "core" in the global
+# memory graph, injected only when explicitly enabled and bounded by the budget.
+# Default off. Env override: JCODE_CORE_MEMORY_ENABLED
+# core_memory_enabled = false
+# core_memory_budget_chars = 2000
+#
 # Use the explicit per-memory importance signal when ranking long-term recall.
 # Bounded: importance only breaks near-ties, it can never displace a clearly
 # better semantic match. Default off. Env: JCODE_MEMORY_IMPORTANCE_ENABLED

@@ -24,6 +24,8 @@ use std::time::Instant;
 #[path = "memory/activity.rs"]
 mod activity;
 mod cache;
+#[path = "memory/core.rs"]
+mod core;
 #[path = "memory/pending.rs"]
 mod pending;
 #[path = "memory/promotion.rs"]
@@ -46,6 +48,7 @@ pub use activity::{
     get_activity, pipeline_start, pipeline_update, record_injected_prompt, set_state,
 };
 use cache::{cache_graph, cached_graph};
+pub use core::{core_memory_prompt_section, list_core_memories};
 pub use pending::{
     PendingMemory, clear_all_injected_memories, clear_all_pending_memory, clear_injected_memories,
     clear_pending_memory, has_any_pending_memory, has_pending_memory, is_memory_injected,

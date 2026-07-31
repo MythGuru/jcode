@@ -382,6 +382,16 @@ impl Config {
                 self.agents.working_memory_item_chars = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_CORE_MEMORY_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.agents.core_memory_enabled = parsed;
+            }
+        }
+        if let Ok(v) = std::env::var("JCODE_CORE_MEMORY_BUDGET_CHARS") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.agents.core_memory_budget_chars = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_MEMORY_IMPORTANCE_ENABLED") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.agents.memory_importance_enabled = parsed;

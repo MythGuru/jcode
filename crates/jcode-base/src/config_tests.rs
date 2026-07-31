@@ -314,6 +314,33 @@ fn test_env_override_memory_sidecar() {
 }
 
 #[test]
+fn core_memory_defaults_are_off_and_bounded() {
+    // Default OFF is deliberate: core memory contains high-stakes user-level
+    // relationship/context memory and must not affect prompts until opted in.
+    let cfg = Config::default();
+    assert!(!cfg.agents.core_memory_enabled);
+    assert_eq!(cfg.agents.core_memory_budget_chars, 2000);
+}
+
+#[test]
+fn test_env_override_core_memory() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_enabled = std::env::var_os("JCODE_CORE_MEMORY_ENABLED");
+    let prev_budget = std::env::var_os("JCODE_CORE_MEMORY_BUDGET_CHARS");
+    crate::env::set_var("JCODE_CORE_MEMORY_ENABLED", "true");
+    crate::env::set_var("JCODE_CORE_MEMORY_BUDGET_CHARS", "1234");
+
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+
+    assert!(cfg.agents.core_memory_enabled);
+    assert_eq!(cfg.agents.core_memory_budget_chars, 1234);
+
+    restore_env_var("JCODE_CORE_MEMORY_ENABLED", prev_enabled);
+    restore_env_var("JCODE_CORE_MEMORY_BUDGET_CHARS", prev_budget);
+}
+
+#[test]
 fn working_memory_defaults_are_off_and_bounded() {
     // Default OFF is deliberate: with both new flags off the memory system must
     // behave exactly as it did before working memory existed.

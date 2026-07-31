@@ -599,6 +599,22 @@ pub struct AgentsConfig {
     /// Env override: `JCODE_WORKING_MEMORY_ITEM_CHARS`.
     #[serde(default = "default_working_memory_item_chars")]
     pub working_memory_item_chars: usize,
+    /// Whether global core memory injection is active.
+    ///
+    /// Core memories are durable user-level memories tagged as `core` in the
+    /// global memory graph. They are injected as a compact standing context only
+    /// when deliberately enabled. Defaults to `false` so existing memory behavior
+    /// and prompts are unchanged until the feature is opted into.
+    /// Env override: `JCODE_CORE_MEMORY_ENABLED`.
+    #[serde(default = "default_core_memory_enabled")]
+    pub core_memory_enabled: bool,
+    /// Character budget for the `# Core Memory` prompt section.
+    ///
+    /// Core memory is re-injected when enabled, so this keeps the per-turn cost
+    /// bounded even if the global memory graph contains many core-tagged entries.
+    /// Env override: `JCODE_CORE_MEMORY_BUDGET_CHARS`.
+    #[serde(default = "default_core_memory_budget_chars")]
+    pub core_memory_budget_chars: usize,
     /// Whether long-term memory retrieval applies the explicit importance signal.
     ///
     /// When enabled, hybrid retrieval scores are nudged by each memory's
@@ -695,6 +711,14 @@ fn default_working_memory_item_chars() -> usize {
     240
 }
 
+fn default_core_memory_enabled() -> bool {
+    false
+}
+
+fn default_core_memory_budget_chars() -> usize {
+    2000
+}
+
 fn default_memory_importance_enabled() -> bool {
     false
 }
@@ -744,6 +768,8 @@ impl Default for AgentsConfig {
             working_memory_enabled: default_working_memory_enabled(),
             working_memory_capacity: default_working_memory_capacity(),
             working_memory_item_chars: default_working_memory_item_chars(),
+            core_memory_enabled: default_core_memory_enabled(),
+            core_memory_budget_chars: default_core_memory_budget_chars(),
             memory_importance_enabled: default_memory_importance_enabled(),
             project_knowledge_enabled: default_project_knowledge_enabled(),
             project_knowledge_max_chars: default_project_knowledge_max_chars(),
