@@ -48,7 +48,10 @@ pub use activity::{
     get_activity, pipeline_start, pipeline_update, record_injected_prompt, set_state,
 };
 use cache::{cache_graph, cached_graph};
-pub use core::{core_memory_prompt_section, list_core_memories};
+pub use core::{
+    CoreConfirmation, CoreProposal, confirm_core_proposal, core_memory_prompt_section,
+    is_core_memory, list_core_memories, stage_core_proposal,
+};
 pub use pending::{
     PendingMemory, clear_all_injected_memories, clear_all_pending_memory, clear_injected_memories,
     clear_pending_memory, has_any_pending_memory, has_pending_memory, is_memory_injected,

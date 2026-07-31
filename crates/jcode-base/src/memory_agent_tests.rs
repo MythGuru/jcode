@@ -117,6 +117,49 @@ fn apply_confidence_updates_batches_boost_and_decay() {
 }
 
 #[test]
+fn prune_low_confidence_never_prunes_core_entries_at_full_importance() {
+    let _guard = crate::storage::lock_test_env();
+    let home = tempfile::tempdir().expect("home");
+    let previous_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", home.path());
+
+    let manager = crate::memory::MemoryManager::new().with_project_dir(home.path().join("project"));
+    let mut graph = manager.load_global_graph().expect("global graph");
+
+    let mut core = MemoryEntry::new(MemoryCategory::Fact, "durable core memory");
+    core.tags.push("core".to_string());
+    core.importance = 1.0;
+    core.confidence = 0.01;
+    core.created_at = Utc::now() - chrono::Duration::hours(48);
+    let core_id = graph.add_memory(core);
+
+    let mut disposable = MemoryEntry::new(MemoryCategory::Fact, "disposable memory");
+    disposable.importance = 0.0;
+    disposable.confidence = 0.01;
+    disposable.created_at = Utc::now() - chrono::Duration::hours(48);
+    let disposable_id = graph.add_memory(disposable);
+    manager
+        .save_global_graph(&graph)
+        .expect("save global graph");
+
+    assert_eq!(prune_low_confidence(&manager).expect("prune"), 1);
+    let graph = manager.load_global_graph().expect("pruned graph");
+    assert!(
+        graph.get_memory(&core_id).is_some(),
+        "core memory must survive"
+    );
+    assert!(
+        graph.get_memory(&disposable_id).is_none(),
+        "control memory should be pruned"
+    );
+
+    match previous_home {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+}
+
+#[test]
 fn should_run_rerank_cadence_and_overrides() {
     // First rerank of a session always fires.
     assert!(should_run_rerank(0, None, 3, false));

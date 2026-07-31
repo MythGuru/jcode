@@ -1,7 +1,34 @@
-use super::{MemoryEntry, MemoryManager};
+use super::{MemoryCategory, MemoryEntry, MemoryManager};
+use anyhow::{Result, bail};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 const CORE_TAG: &str = "core";
 const CORE_MEMORY_HEADING: &str = "# Core Memory\n";
+const CORE_PROPOSALS_FILE: &str = "core_proposals.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreProposalPayload {
+    pub content: String,
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreProposal {
+    pub proposal_id: String,
+    pub timestamp: DateTime<Utc>,
+    payload: CoreProposalPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreConfirmation {
+    pub entry_id: String,
+    pub updated: bool,
+}
 
 /// Return active core memories from the global memory graph.
 ///
@@ -29,6 +56,105 @@ pub fn list_core_memories() -> Vec<MemoryEntry> {
             .then_with(|| left.id.cmp(&right.id))
     });
     entries
+}
+
+/// Stage a core-memory change without mutating the live memory graph.
+pub fn stage_core_proposal(
+    content: &str,
+    tags: Option<Vec<String>>,
+    target_id: Option<String>,
+) -> Result<CoreProposal> {
+    let content = content.trim();
+    if content.is_empty() {
+        bail!("content required");
+    }
+
+    if let Some(target_id) = target_id.as_deref() {
+        let graph = MemoryManager::new().load_global_graph()?;
+        if !graph.memories.contains_key(target_id) {
+            bail!("Global memory not found: {target_id}");
+        }
+    }
+
+    let proposal = CoreProposal {
+        proposal_id: format!("core-proposal-{}", uuid::Uuid::new_v4().simple()),
+        timestamp: Utc::now(),
+        payload: CoreProposalPayload {
+            content: content.to_string(),
+            tags: normalize_core_tags(tags.unwrap_or_default()),
+            id: target_id,
+        },
+    };
+    let mut proposals = load_core_proposals()?;
+    proposals.push(proposal.clone());
+    save_core_proposals(&proposals)?;
+    Ok(proposal)
+}
+
+/// Apply one explicitly selected staged proposal to the global graph.
+pub fn confirm_core_proposal(proposal_id: &str) -> Result<CoreConfirmation> {
+    let proposal_id = proposal_id.trim();
+    if proposal_id.is_empty() {
+        bail!("proposal id required");
+    }
+
+    let mut proposals = load_core_proposals()?;
+    let Some(index) = proposals
+        .iter()
+        .position(|proposal| proposal.proposal_id == proposal_id)
+    else {
+        bail!("Core proposal not found: {proposal_id}");
+    };
+    let proposal = proposals[index].clone();
+
+    let manager = MemoryManager::new();
+    let mut graph = manager.load_global_graph()?;
+    let (entry_id, updated) = if let Some(target_id) = proposal.payload.id.as_deref() {
+        let existing_tags: BTreeSet<String> = graph
+            .get_memory(target_id)
+            .ok_or_else(|| anyhow::anyhow!("Global memory not found: {target_id}"))?
+            .tags
+            .iter()
+            .cloned()
+            .collect();
+        let proposed_tags: BTreeSet<String> = proposal.payload.tags.iter().cloned().collect();
+        for tag in existing_tags.difference(&proposed_tags) {
+            graph.untag_memory(target_id, tag);
+        }
+        for tag in proposed_tags.difference(&existing_tags) {
+            graph.tag_memory(target_id, tag);
+        }
+        let Some(entry) = graph.get_memory_mut(target_id) else {
+            bail!("Global memory not found: {target_id}");
+        };
+        let content_changed = entry.content != proposal.payload.content;
+        entry.content = proposal.payload.content.clone();
+        entry.tags = proposal.payload.tags.clone();
+        entry.active = true;
+        entry.superseded_by = None;
+        if content_changed {
+            entry.embedding = None;
+            entry.embedding_model = None;
+        }
+        entry.set_importance(1.0);
+        entry.refresh_search_text();
+        (target_id.to_string(), true)
+    } else {
+        let mut entry = MemoryEntry::new(MemoryCategory::Fact, proposal.payload.content.clone())
+            .with_tags(proposal.payload.tags.clone());
+        entry.set_importance(1.0);
+        let entry_id = graph.add_memory(entry);
+        (entry_id, false)
+    };
+
+    manager.save_global_graph(&graph)?;
+    proposals.remove(index);
+    save_core_proposals(&proposals)?;
+    Ok(CoreConfirmation { entry_id, updated })
+}
+
+pub fn is_core_memory(entry: &MemoryEntry) -> bool {
+    entry.tags.iter().any(|tag| tag == CORE_TAG)
 }
 
 /// The `# Core Memory` section to inject into this turn's prompt, if any.
@@ -68,6 +194,34 @@ fn core_tag_rank(entry: &MemoryEntry) -> u8 {
         .iter()
         .position(|ordered| entry.tags.iter().any(|tag| tag == ordered))
         .map_or(ORDERED_TAGS.len() as u8, |rank| rank as u8)
+}
+
+fn normalize_core_tags(tags: Vec<String>) -> Vec<String> {
+    let mut normalized: BTreeSet<String> = tags
+        .into_iter()
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+    normalized.insert(CORE_TAG.to_string());
+    normalized.into_iter().collect()
+}
+
+fn core_proposals_path() -> Result<PathBuf> {
+    Ok(crate::storage::jcode_dir()?
+        .join("memory")
+        .join(CORE_PROPOSALS_FILE))
+}
+
+fn load_core_proposals() -> Result<Vec<CoreProposal>> {
+    let path = core_proposals_path()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    crate::storage::read_json(&path)
+}
+
+fn save_core_proposals(proposals: &[CoreProposal]) -> Result<()> {
+    crate::storage::write_json(&core_proposals_path()?, &proposals)
 }
 
 #[cfg(test)]

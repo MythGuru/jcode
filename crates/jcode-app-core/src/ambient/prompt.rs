@@ -555,7 +555,8 @@ pub fn build_ambient_system_prompt(
          neutral 0.5). Use `memory` tool actions to raise importance on \
          memories the user repeatedly relies on and lower it on ones that \
          keep getting retrieved but never help. Never prune memories with \
-         importance >= 0.8; they are deliberately protected.\n\n\
+         importance >= 0.8; they are deliberately protected. Never modify, \
+         re-tag, or lower the importance of core-tagged memories.\n\n\
          For proactive work: be conservative. A bad surprise is worse than \
          no surprise. Check the user feedback memories -- if they've rejected \
          similar work before, don't do it. Code changes must go on a worktree \

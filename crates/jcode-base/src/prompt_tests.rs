@@ -634,6 +634,134 @@ fn project_knowledge_absent_from_prompt_when_flag_off() {
     assert!(!split.dynamic_part.contains("# Project Knowledge"));
 }
 
+struct CoreMemoryPromptEnv {
+    _home: tempfile::TempDir,
+    previous_home: Option<std::ffi::OsString>,
+    previous_flag: Option<std::ffi::OsString>,
+}
+
+impl CoreMemoryPromptEnv {
+    fn set(enabled: bool) -> (crate::memory::MemoryManager, Self) {
+        let home = tempfile::tempdir().expect("home");
+        let previous_home = std::env::var_os("JCODE_HOME");
+        let previous_flag = std::env::var_os("JCODE_CORE_MEMORY_ENABLED");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var(
+            "JCODE_CORE_MEMORY_ENABLED",
+            if enabled { "true" } else { "false" },
+        );
+        crate::config::invalidate_config_cache();
+        (
+            crate::memory::MemoryManager::new(),
+            Self {
+                _home: home,
+                previous_home,
+                previous_flag,
+            },
+        )
+    }
+}
+
+impl Drop for CoreMemoryPromptEnv {
+    fn drop(&mut self) {
+        match self.previous_flag.take() {
+            Some(value) => crate::env::set_var("JCODE_CORE_MEMORY_ENABLED", value),
+            None => crate::env::remove_var("JCODE_CORE_MEMORY_ENABLED"),
+        }
+        match self.previous_home.take() {
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        crate::config::invalidate_config_cache();
+    }
+}
+
+fn save_core_prompt_entry(manager: &crate::memory::MemoryManager, content: &str) {
+    let mut graph = manager.load_global_graph().expect("global graph");
+    let mut entry = crate::memory::MemoryEntry::new(crate::memory::MemoryCategory::Fact, content);
+    entry.tags.push("core".to_string());
+    entry.set_importance(1.0);
+    graph.add_memory(entry);
+    manager.save_global_graph(&graph).expect("save core memory");
+}
+
+#[test]
+fn core_memory_is_injected_into_the_dynamic_part_when_enabled() {
+    let _guard = crate::storage::lock_test_env();
+    let (manager, _env) = CoreMemoryPromptEnv::set(true);
+    save_core_prompt_entry(&manager, "Keep the user's durable rule visible.");
+
+    let (split, info) = build_system_prompt_split(None, &[], false, None, None, None);
+
+    assert!(split.dynamic_part.contains("# Core Memory"));
+    assert!(
+        split
+            .dynamic_part
+            .contains("Keep the user's durable rule visible.")
+    );
+    assert!(!split.static_part.contains("# Core Memory"));
+    assert!(info.core_memory_chars > 0);
+}
+
+#[test]
+fn core_memory_is_not_injected_when_the_flag_is_off() {
+    let _guard = crate::storage::lock_test_env();
+    let (manager, _env) = CoreMemoryPromptEnv::set(false);
+    save_core_prompt_entry(&manager, "Disabled core memory must stay invisible.");
+
+    let (split, info) = build_system_prompt_split(None, &[], false, None, None, None);
+
+    assert!(!split.dynamic_part.contains("# Core Memory"));
+    assert!(
+        !split
+            .dynamic_part
+            .contains("Disabled core memory must stay invisible.")
+    );
+    assert_eq!(info.core_memory_chars, 0);
+}
+
+#[test]
+fn core_memory_section_is_skipped_when_the_graph_is_empty() {
+    let _guard = crate::storage::lock_test_env();
+    let (_manager, _env) = CoreMemoryPromptEnv::set(true);
+
+    let (split, info) = build_system_prompt_split(None, &[], false, None, None, None);
+
+    assert!(!split.dynamic_part.contains("# Core Memory"));
+    assert_eq!(info.core_memory_chars, 0);
+}
+
+#[test]
+fn core_memory_is_ordered_before_project_knowledge() {
+    let _guard = crate::storage::lock_test_env();
+    let (manager, _env) = CoreMemoryPromptEnv::set(true);
+    let _knowledge_flag = ProjectKnowledgeFlag::set(true);
+    save_core_prompt_entry(&manager, "Core ordering marker.");
+
+    let project = std::path::Path::new("C:/prompt-core-order/project");
+    let mut knowledge = crate::knowledge::ProjectKnowledge::default();
+    let id = knowledge.propose(
+        crate::knowledge::KnowledgeSection::Decision,
+        "Project ordering marker.",
+    );
+    assert!(knowledge.mark_verified(&id, "prompt test"));
+    crate::knowledge::save(project, &knowledge);
+
+    let (split, _) = build_system_prompt_split(None, &[], false, None, Some(project), None);
+    let core_at = split
+        .dynamic_part
+        .find("# Core Memory")
+        .expect("core section");
+    let project_at = split
+        .dynamic_part
+        .find("# Project Knowledge")
+        .expect("project knowledge section");
+    assert!(
+        core_at < project_at,
+        "core memory must precede project knowledge"
+    );
+}
+
 // === Knowledge promotion nudge at the prompt chokepoint ===
 //
 // The nudge only exists when BOTH opt-in flags are on; these tests pin the

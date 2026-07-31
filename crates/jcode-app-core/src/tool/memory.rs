@@ -51,6 +51,17 @@ impl MemoryTool {
             _ => self.manager.clone(),
         }
     }
+
+    fn target_is_core(manager: &MemoryManager, memory_id: &str) -> Result<bool> {
+        let project = manager.load_project_graph()?;
+        if let Some(entry) = project.get_memory(memory_id) {
+            return Ok(crate::memory::is_core_memory(entry));
+        }
+        let global = manager.load_global_graph()?;
+        Ok(global
+            .get_memory(memory_id)
+            .is_some_and(crate::memory::is_core_memory))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,17 +122,27 @@ impl Tool for MemoryTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["remember", "recall", "search", "list", "forget", "tag", "link", "related", "working", "note", "rehearse", "promote", "set_importance"],
-                    "description": "Action."
+                    "enum": ["remember", "recall", "search", "list", "forget", "tag", "link", "related", "working", "note", "rehearse", "promote", "set_importance", "core_show", "core_recall", "core_propose", "core_confirm"],
+                    "description": "Action. Core actions remain available even when core-memory prompt injection is disabled."
                 },
-                "content": { "type": "string" },
+                "content": {
+                    "type": "string",
+                    "description": "Memory content. Required for remember, note, and core_propose."
+                },
                 "category": {
                     "type": "string",
                     "enum": ["fact", "preference", "entity", "correction"]
                 },
                 "query": { "type": "string" },
-                "id": { "type": "string" },
-                "tags": { "type": "array", "items": { "type": "string" } },
+                "id": {
+                    "type": "string",
+                    "description": "Memory id, or proposal id for core_confirm. For core_propose, optionally targets an existing global entry."
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Tags. core_propose defaults to [core] and always forces core into the set."
+                },
                 "scope": { "type": "string", "enum": ["project", "global", "all"] },
                 "from_id": { "type": "string" },
                 "to_id": { "type": "string" },
@@ -150,6 +171,69 @@ impl Tool for MemoryTool {
         let manager = self.scoped_manager(&ctx);
 
         match input.action.as_str() {
+            // These explicit review actions stay available regardless of
+            // core_memory_enabled. That flag gates prompt injection only.
+            "core_show" => {
+                let entries = crate::memory::list_core_memories();
+                if entries.is_empty() {
+                    return Ok(ToolOutput::new("No core memories stored."));
+                }
+                let mut out = format!("Core memory ({}):\n\n", entries.len());
+                for entry in entries {
+                    out.push_str(&format!(
+                        "- {}\n  id: {}\n  tags: {}\n\n",
+                        entry.content,
+                        entry.id,
+                        entry.tags.join(", ")
+                    ));
+                }
+                Ok(ToolOutput::new(out))
+            }
+            "core_recall" => {
+                let entries = crate::memory::list_core_memories();
+                if entries.is_empty() {
+                    return Ok(ToolOutput::new("No core memories stored."));
+                }
+                let mut out = format!("Core memory details ({}):\n\n", entries.len());
+                for entry in entries {
+                    out.push_str(&format!(
+                        "id: {}\ntags: {}\ncategory: {}\nimportance: {:.2}\ncreated_at: {}\ncontent:\n{}\n\n",
+                        entry.id,
+                        entry.tags.join(", "),
+                        entry.category,
+                        entry.importance,
+                        entry.created_at.to_rfc3339(),
+                        entry.content
+                    ));
+                }
+                Ok(ToolOutput::new(out))
+            }
+            "core_propose" => {
+                let content = input
+                    .content
+                    .ok_or_else(|| anyhow::anyhow!("content required"))?;
+                let proposal =
+                    crate::memory::stage_core_proposal(&content, input.tags, input.id)?;
+                Ok(ToolOutput::new(format!(
+                    "Staged core memory proposal.\nproposal id: {}\nUse core_confirm with this proposal id to apply it.",
+                    proposal.proposal_id
+                )))
+            }
+            "core_confirm" => {
+                let proposal_id = input
+                    .id
+                    .ok_or_else(|| anyhow::anyhow!("proposal id required"))?;
+                let confirmation = crate::memory::confirm_core_proposal(&proposal_id)?;
+                let operation = if confirmation.updated {
+                    "updated"
+                } else {
+                    "created"
+                };
+                Ok(ToolOutput::new(format!(
+                    "Confirmed core proposal {}: {} global memory {}.",
+                    proposal_id, operation, confirmation.entry_id
+                )))
+            }
             "remember" => {
                 let content = input
                     .content
@@ -347,6 +431,11 @@ impl Tool for MemoryTool {
             }
             "forget" => {
                 let id = input.id.ok_or_else(|| anyhow::anyhow!("id required"))?;
+                if Self::target_is_core(&manager, &id)? {
+                    return Ok(ToolOutput::new(format!(
+                        "Refused to forget core memory {id}. Stage the change with core_propose, then apply it explicitly with core_confirm."
+                    )));
+                }
                 memory::set_state(MemoryState::ToolAction {
                     action: "forget".into(),
                     detail: truncate_for_widget(&id, 30),
@@ -578,6 +667,13 @@ impl Tool for MemoryTool {
                 let importance = input
                     .importance
                     .ok_or_else(|| anyhow::anyhow!("importance required (0.0-1.0)"))?;
+                if importance < crate::memory::PRUNE_PROTECTION_IMPORTANCE
+                    && Self::target_is_core(&manager, &id)?
+                {
+                    return Ok(ToolOutput::new(format!(
+                        "Refused to lower core memory {id} below 0.8. Stage the change with core_propose, then apply it explicitly with core_confirm."
+                    )));
+                }
                 memory::set_state(MemoryState::ToolAction {
                     action: "set_importance".into(),
                     detail: format!("{} -> {:.2}", truncate_for_widget(&id, 20), importance),
@@ -648,7 +744,17 @@ mod tests {
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
-        for action in ["working", "note", "rehearse", "promote", "set_importance"] {
+        for action in [
+            "working",
+            "note",
+            "rehearse",
+            "promote",
+            "set_importance",
+            "core_show",
+            "core_recall",
+            "core_propose",
+            "core_confirm",
+        ] {
             assert!(
                 actions.contains(&action),
                 "schema must advertise the {action} action"
@@ -826,6 +932,295 @@ mod tests {
         crate::config::invalidate_config_cache();
         match prev_home {
             Some(v) => crate::env::set_var("JCODE_HOME", v),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn core_proposals_require_confirmation_and_round_trip_with_flag_off() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("home");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_flag = std::env::var_os("JCODE_CORE_MEMORY_ENABLED");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var("JCODE_CORE_MEMORY_ENABLED", "0");
+        crate::config::invalidate_config_cache();
+
+        let tool = MemoryTool::new();
+        let ctx = || test_ctx(None);
+        let proposed = tool
+            .execute(
+                json!({
+                    "action": "core_propose",
+                    "content": "Prefer concise progress updates.",
+                    "tags": ["core-style", "core-style"]
+                }),
+                ctx(),
+            )
+            .await
+            .expect("core_propose should work while injection is disabled");
+        let proposal_id = proposed
+            .output
+            .split("proposal id: ")
+            .nth(1)
+            .and_then(|value| value.lines().next())
+            .expect("proposal output should include its id")
+            .trim()
+            .to_string();
+
+        let proposal_path = home.path().join("memory").join("core_proposals.json");
+        assert!(proposal_path.exists(), "proposal must be staged separately");
+        let staged: serde_json::Value =
+            crate::storage::read_json(&proposal_path).expect("read staged proposals");
+        assert_eq!(staged.as_array().expect("proposal array").len(), 1);
+        assert!(
+            MemoryManager::new()
+                .load_global_graph()
+                .expect("global graph")
+                .memories
+                .is_empty(),
+            "proposing must not touch the live graph"
+        );
+
+        let before = tool
+            .execute(json!({ "action": "core_show" }), ctx())
+            .await
+            .expect("core_show should work while injection is disabled");
+        assert!(
+            before.output.contains("No core memories"),
+            "{}",
+            before.output
+        );
+
+        let confirmed = tool
+            .execute(
+                json!({ "action": "core_confirm", "id": proposal_id }),
+                ctx(),
+            )
+            .await
+            .expect("core_confirm should apply the explicit proposal");
+        assert!(confirmed.output.contains("Confirmed core proposal"));
+
+        let graph = MemoryManager::new()
+            .load_global_graph()
+            .expect("confirmed global graph");
+        let entry = graph.memories.values().next().expect("confirmed entry");
+        assert_eq!(entry.content, "Prefer concise progress updates.");
+        assert_eq!(entry.importance, 1.0);
+        assert!(entry.tags.iter().any(|tag| tag == "core"));
+        assert!(entry.tags.iter().any(|tag| tag == "core-style"));
+        assert_eq!(
+            entry
+                .tags
+                .iter()
+                .filter(|tag| tag.as_str() == "core-style")
+                .count(),
+            1,
+            "proposal tags should be deduplicated"
+        );
+        let entry_id = entry.id.clone();
+
+        let shown = tool
+            .execute(json!({ "action": "core_show" }), ctx())
+            .await
+            .expect("core_show should list confirmed entries");
+        assert!(shown.output.contains(&entry_id), "{}", shown.output);
+        assert!(shown.output.contains("core-style"), "{}", shown.output);
+
+        let recalled = tool
+            .execute(json!({ "action": "core_recall" }), ctx())
+            .await
+            .expect("core_recall should show full details");
+        for expected in [
+            &entry_id,
+            "tags: core, core-style",
+            "category: fact",
+            "importance: 1.00",
+            "created_at:",
+            "Prefer concise progress updates.",
+        ] {
+            assert!(recalled.output.contains(expected), "{}", recalled.output);
+        }
+
+        let update = tool
+            .execute(
+                json!({
+                    "action": "core_propose",
+                    "id": entry_id,
+                    "content": "Always give concise progress updates.",
+                    "tags": ["core-rules"]
+                }),
+                ctx(),
+            )
+            .await
+            .expect("core update proposal should stage");
+        let update_id = update
+            .output
+            .split("proposal id: ")
+            .nth(1)
+            .and_then(|value| value.lines().next())
+            .expect("update proposal id")
+            .trim();
+        tool.execute(json!({ "action": "core_confirm", "id": update_id }), ctx())
+            .await
+            .expect("core update confirmation should apply");
+
+        let graph = MemoryManager::new()
+            .load_global_graph()
+            .expect("updated global graph");
+        assert_eq!(
+            graph.memories.len(),
+            1,
+            "update must not create a duplicate"
+        );
+        let entry = graph.memories.values().next().expect("updated entry");
+        assert_eq!(entry.content, "Always give concise progress updates.");
+        assert_eq!(entry.importance, 1.0);
+        assert!(entry.tags.iter().any(|tag| tag == "core"));
+        assert!(entry.tags.iter().any(|tag| tag == "core-rules"));
+
+        let staged: serde_json::Value =
+            crate::storage::read_json(&proposal_path).expect("read cleared proposals");
+        assert!(staged.as_array().expect("proposal array").is_empty());
+
+        match prev_flag {
+            Some(value) => crate::env::set_var("JCODE_CORE_MEMORY_ENABLED", value),
+            None => crate::env::remove_var("JCODE_CORE_MEMORY_ENABLED"),
+        }
+        match prev_home {
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        crate::config::invalidate_config_cache();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn core_entries_refuse_forget_and_low_importance() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("home");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", home.path());
+
+        let manager = MemoryManager::new();
+        let mut graph = manager.load_global_graph().expect("global graph");
+        let mut entry = MemoryEntry::new(MemoryCategory::Fact, "protected identity");
+        entry.tags.push("core".to_string());
+        entry.set_importance(1.0);
+        let id = graph.add_memory(entry);
+        manager.save_global_graph(&graph).expect("save core entry");
+
+        let tool = MemoryTool::new();
+        let ctx = || test_ctx(None);
+        let forgot = tool
+            .execute(json!({ "action": "forget", "id": id }), ctx())
+            .await
+            .expect("protected forget should return a refusal");
+        assert!(forgot.output.contains("core_propose"), "{}", forgot.output);
+        assert!(forgot.output.contains("core_confirm"), "{}", forgot.output);
+
+        let lowered = tool
+            .execute(
+                json!({ "action": "set_importance", "id": id, "importance": 0.79 }),
+                ctx(),
+            )
+            .await
+            .expect("protected importance change should return a refusal");
+        assert!(
+            lowered.output.contains("core_propose"),
+            "{}",
+            lowered.output
+        );
+        assert!(
+            lowered.output.contains("core_confirm"),
+            "{}",
+            lowered.output
+        );
+
+        let graph = manager.load_global_graph().expect("protected graph");
+        let entry = graph.get_memory(&id).expect("core entry must remain");
+        assert!(entry.active);
+        assert_eq!(entry.importance, 1.0);
+
+        match prev_home {
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn core_proposals_allow_multiple_pending_and_confirm_one_by_id() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("home");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", home.path());
+
+        let tool = MemoryTool::new();
+        let ctx = || test_ctx(None);
+        let first = tool
+            .execute(
+                json!({ "action": "core_propose", "content": "first pending core memory" }),
+                ctx(),
+            )
+            .await
+            .expect("first proposal");
+        let second = tool
+            .execute(
+                json!({ "action": "core_propose", "content": "second pending core memory" }),
+                ctx(),
+            )
+            .await
+            .expect("second proposal");
+        let proposal_id = |output: &str| {
+            output
+                .split("proposal id: ")
+                .nth(1)
+                .and_then(|value| value.lines().next())
+                .expect("proposal id")
+                .trim()
+                .to_string()
+        };
+        let first_id = proposal_id(&first.output);
+        let second_id = proposal_id(&second.output);
+        assert_ne!(first_id, second_id);
+
+        let proposal_path = home.path().join("memory").join("core_proposals.json");
+        let proposals: serde_json::Value =
+            crate::storage::read_json(&proposal_path).expect("pending proposals");
+        assert_eq!(proposals.as_array().expect("proposal array").len(), 2);
+
+        tool.execute(json!({ "action": "core_confirm", "id": first_id }), ctx())
+            .await
+            .expect("confirm selected proposal");
+
+        let proposals: serde_json::Value =
+            crate::storage::read_json(&proposal_path).expect("remaining proposals");
+        let proposals = proposals.as_array().expect("proposal array");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0]["proposal_id"], second_id);
+        let graph = MemoryManager::new()
+            .load_global_graph()
+            .expect("global graph");
+        assert_eq!(graph.memories.len(), 1);
+        assert!(
+            graph
+                .memories
+                .values()
+                .any(|entry| entry.content == "first pending core memory")
+        );
+
+        let missing_id = tool
+            .execute(json!({ "action": "core_confirm" }), ctx())
+            .await;
+        assert!(
+            missing_id.is_err(),
+            "core_confirm must require a proposal id"
+        );
+
+        match prev_home {
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
             None => crate::env::remove_var("JCODE_HOME"),
         }
     }

@@ -231,6 +231,9 @@ pub struct ContextInfo {
     /// cost profiles: long-term memory is injected once and then suppressed,
     /// while working memory is re-sent on every turn.
     pub working_memory_chars: usize,
+    /// Durable user-level core memory section size (chars). Re-sent on each
+    /// turn while enabled and kept separate from recalled long-term memory.
+    pub core_memory_chars: usize,
     /// Project knowledge section size (chars). Like working memory this is
     /// re-sent while present, but it changes only when entries are proposed
     /// or verified, so it is budgeted separately (project_knowledge_max_chars).
@@ -322,6 +325,9 @@ impl ContextInfo {
         }
         if self.working_memory_chars > 0 {
             parts.push(("stm", self.working_memory_chars, "📌"));
+        }
+        if self.core_memory_chars > 0 {
+            parts.push(("core", self.core_memory_chars, "🧬"));
         }
         if self.active_plan_chars > 0 {
             parts.push(("plan", self.active_plan_chars, "🗺"));
@@ -568,6 +574,14 @@ pub fn build_system_prompt_split_with_capabilities(
     if let Some(memory) = memory_prompt {
         info.memory_chars = memory.len();
         dynamic_parts.push(memory.to_string());
+    }
+
+    // Core Memory is intentionally available for prompt injection only when
+    // enabled. Its inspection and confirmation tool actions remain available
+    // regardless of this flag so users can always review durable data.
+    if let Some(core_memory) = crate::memory::core_memory_prompt_section() {
+        info.core_memory_chars = core_memory.len();
+        dynamic_parts.push(core_memory);
     }
 
     // Project knowledge: the verified map of this project. In the DYNAMIC
