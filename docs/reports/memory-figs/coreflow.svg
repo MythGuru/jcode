@@ -1,0 +1,26 @@
+<svg viewBox="0 0 780 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Core memory propose and confirm flow"><rect width="100%" height="100%" fill="white"/>
+      <defs>
+        <marker id="arr3" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 z" fill="#8b5cf6"/></marker>
+        <marker id="arr3g" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto"><path d="M0,0 L8,3.5 L0,7 z" fill="#10b981"/></marker>
+      </defs>
+      <g text-anchor="middle" font-size="12">
+        <rect x="20" y="60" width="180" height="100" rx="14" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+        <text x="110" y="95" font-weight="bold" fill="#5b21b6" font-size="13">STEP 1: PROPOSE</text>
+        <text x="110" y="118" fill="#6d28d9">"I'd like to add this</text>
+        <text x="110" y="134" fill="#6d28d9">to core memory..."</text>
+
+        <rect x="290" y="60" width="200" height="100" rx="14" fill="#fef9c3" stroke="#eab308" stroke-width="2"/>
+        <text x="390" y="95" font-weight="bold" fill="#854d0e" font-size="13">STEP 2: YOU REVIEW</text>
+        <text x="390" y="118" fill="#a16207">the proposal sits in a</text>
+        <text x="390" y="134" fill="#a16207">waiting room, changing nothing</text>
+
+        <rect x="580" y="60" width="180" height="100" rx="14" fill="#d1fae5" stroke="#10b981" stroke-width="2"/>
+        <text x="670" y="95" font-weight="bold" fill="#065f46" font-size="13">STEP 3: CONFIRM</text>
+        <text x="670" y="118" fill="#047857">only then does it</text>
+        <text x="670" y="134" fill="#047857">become permanent</text>
+      </g>
+      <line x1="200" y1="110" x2="282" y2="110" stroke="#8b5cf6" stroke-width="2.5" marker-end="url(#arr3)"/>
+      <line x1="490" y1="110" x2="572" y2="110" stroke="#10b981" stroke-width="2.5" marker-end="url(#arr3g)"/>
+      <text x="390" y="205" text-anchor="middle" font-size="14" fill="#1e2433" font-weight="bold">No shortcuts exist. There is no code path that writes core memory without confirmation.</text>
+      <text x="390" y="230" text-anchor="middle" font-size="13" fill="#5b6478">Background processes can read core memory but are physically unable to change it.</text>
+    </svg>
