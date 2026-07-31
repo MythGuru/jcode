@@ -71,6 +71,34 @@ either flag enabled snapshots the pre-upgrade file to `*.pre-stm.json`
 
 ---
 
+## Core Memory
+
+> Flag-gated injection: `agents.core_memory_enabled` (default **off**), with
+> `core_memory_budget_chars` (default 2000). Env overrides:
+> `JCODE_CORE_MEMORY_ENABLED` and `JCODE_CORE_MEMORY_BUDGET_CHARS`.
+
+Core Memory is the durable user-level identity and relationship layer. It has
+global scope and is shared across projects and models. Entries live in the
+global memory graph, carry the `core` tag, are ordered by `core-identity`,
+`core-style`, `core-rules`, then `core-history` (and creation order within each
+group), and have importance forced to 1.0 with prune protection.
+
+The memory tool exposes `core_show`, `core_recall`, `core_propose`, and
+`core_confirm` regardless of the injection flag. Writes use an explicit
+propose/confirm flow: proposals do not change the graph, confirmation applies
+the reviewed proposal, and existing core entries are never silently
+overwritten. The ordinary `forget` action and attempts to lower importance are
+refused for core entries. Ambient memory processing is read-only with respect
+to them and never modifies core entries.
+
+When enabled and non-empty, the shared prompt chokepoint injects a budgeted
+`# Core Memory` section into the dynamic part before Project Knowledge. When
+the flag is off, prompt output is byte-identical to pre-feature behavior; the
+management tools remain available so core entries can be reviewed and curated
+before enabling injection.
+
+---
+
 ## Architecture Overview
 
 ```mermaid
