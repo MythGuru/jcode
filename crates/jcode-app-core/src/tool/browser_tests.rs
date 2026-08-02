@@ -351,3 +351,39 @@ fn eval_normalizes_script_through_the_bridge_request() {
     assert_eq!(action, "evaluate");
     assert_eq!(params["script"], "return document.title");
 }
+
+#[test]
+fn eval_handles_real_world_expression_shapes() {
+    // Verified live against the browser bridge after the fix landed.
+    // Arrow functions contain `=>` but are still a single expression.
+    assert_eq!(
+        normalize_eval_script("[1,2,3].map(n => n * 2).join(',')"),
+        "return [1,2,3].map(n => n * 2).join(',')"
+    );
+    // A call wrapping an object literal must not be mistaken for a block.
+    assert_eq!(
+        normalize_eval_script("JSON.stringify({a: 1})"),
+        "return JSON.stringify({a: 1})"
+    );
+    // Template literals are expressions.
+    assert_eq!(normalize_eval_script("`n: ${x}`"), "return `n: ${x}`");
+    // Optional chaining and spread stay untouched apart from the return.
+    assert_eq!(
+        normalize_eval_script("[...els].map(e => e.textContent)"),
+        "return [...els].map(e => e.textContent)"
+    );
+}
+
+#[test]
+fn eval_passes_through_statement_scripts_verified_live() {
+    // Each of these returned the correct value through the real bridge, which
+    // only works if they are left as a function body.
+    let decl = "let x = 5; return x * 2;";
+    assert_eq!(normalize_eval_script(decl), decl);
+
+    let branch = "if (document.title) { return 'has title'; } return 'none';";
+    assert_eq!(normalize_eval_script(branch), branch);
+
+    let multiline = "const a = 1;\nreturn a;";
+    assert_eq!(normalize_eval_script(multiline), multiline);
+}
