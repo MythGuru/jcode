@@ -445,6 +445,13 @@ impl Tool for MemoryTool {
                 memory::set_state(MemoryState::Idle);
                 if found {
                     Ok(ToolOutput::new(format!("Forgot: {}", id)))
+                } else if let Some(item) = memory::remove_working_memory(&session_id, &id) {
+                    // Working-memory ids (wm_*) live in the session buffer,
+                    // not the long-term graph, so fall through to the buffer.
+                    Ok(ToolOutput::new(format!(
+                        "Removed working-memory item: \"{}\" ({})",
+                        item.content, id
+                    )))
                 } else {
                     Ok(ToolOutput::new(format!("Not found: {}", id)))
                 }
@@ -1221,6 +1228,62 @@ mod tests {
 
         match prev_home {
             Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+    }
+
+    /// `forget` with a working-memory id must remove the buffer item instead
+    /// of reporting "Not found" (health check 2026-08-02).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn forget_removes_working_memory_items_by_id() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().expect("home");
+        let project = tempfile::tempdir().expect("project");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_flag = std::env::var_os("JCODE_WORKING_MEMORY_ENABLED");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", "1");
+        crate::config::invalidate_config_cache();
+        crate::memory::clear_working_memory("test-session");
+
+        let tool = MemoryTool::new();
+        let ctx = || test_ctx(Some(project.path().to_path_buf()));
+
+        let noted = tool
+            .execute(
+                json!({ "action": "note", "content": "healthcheck wm forget", "kind": "fact" }),
+                ctx(),
+            )
+            .await
+            .expect("note should succeed");
+        let id = noted
+            .output
+            .split("(id: ")
+            .nth(1)
+            .and_then(|s| s.split(')').next())
+            .expect("note output should contain the item id")
+            .to_string();
+
+        let forgotten = tool
+            .execute(json!({ "action": "forget", "id": id }), ctx())
+            .await
+            .expect("forget should succeed");
+        assert!(
+            forgotten.output.contains("Removed working-memory item"),
+            "{}",
+            forgotten.output
+        );
+        assert!(crate::memory::list_working_memory("test-session").is_empty());
+
+        crate::memory::clear_working_memory("test-session");
+        match prev_flag {
+            Some(v) => crate::env::set_var("JCODE_WORKING_MEMORY_ENABLED", v),
+            None => crate::env::remove_var("JCODE_WORKING_MEMORY_ENABLED"),
+        }
+        crate::config::invalidate_config_cache();
+        match prev_home {
+            Some(v) => crate::env::set_var("JCODE_HOME", v),
             None => crate::env::remove_var("JCODE_HOME"),
         }
     }
