@@ -264,3 +264,90 @@ async fn readiness_does_not_trust_a_stale_setup_marker() {
         jcode_base::env::remove_var("JCODE_HOME");
     }
 }
+
+#[test]
+fn eval_wraps_bare_expression_in_return() {
+    // The bridge runs the script as a function body, so a bare expression is
+    // discarded and the caller silently gets null.
+    assert_eq!(normalize_eval_script("1+1"), "return 1+1");
+    assert_eq!(
+        normalize_eval_script("document.title"),
+        "return document.title"
+    );
+    // A trailing semicolon still describes a single expression.
+    assert_eq!(
+        normalize_eval_script("document.title;"),
+        "return document.title"
+    );
+    // Surrounding whitespace must not defeat the rewrite.
+    assert_eq!(normalize_eval_script("  1+1  "), "return 1+1");
+}
+
+#[test]
+fn eval_leaves_explicit_and_multi_statement_scripts_alone() {
+    // Already explicit.
+    assert_eq!(
+        normalize_eval_script("return document.title"),
+        "return document.title"
+    );
+
+    // Multi-statement bodies keep function-body semantics.
+    let multi = "const a = 1; return a + 1;";
+    assert_eq!(normalize_eval_script(multi), multi);
+
+    let lines = "const a = 1;\nreturn a;";
+    assert_eq!(normalize_eval_script(lines), lines);
+
+    // Declarations and control flow are statements, not expressions.
+    assert_eq!(normalize_eval_script("let x = 5"), "let x = 5");
+    assert_eq!(normalize_eval_script("const y = 2"), "const y = 2");
+    assert_eq!(normalize_eval_script("if (a) b()"), "if (a) b()");
+
+    // Block bodies and comments must not be rewritten.
+    assert_eq!(normalize_eval_script("{ return 1; }"), "{ return 1; }");
+    assert_eq!(normalize_eval_script("// nothing"), "// nothing");
+
+    // Empty input is passed through untouched.
+    assert_eq!(normalize_eval_script(""), "");
+}
+
+#[test]
+fn eval_normalizes_script_through_the_bridge_request() {
+    // End to end: a bare expression submitted by a caller reaches the bridge
+    // with an explicit return attached.
+    let input = BrowserInput {
+        action: "eval".into(),
+        browser: None,
+        provider_action: None,
+        params: None,
+        url: None,
+        tab_id: None,
+        window_id: None,
+        frame_id: None,
+        all_frames: None,
+        selector: None,
+        text: None,
+        contains: None,
+        script: Some("document.title".into()),
+        key: None,
+        x: None,
+        y: None,
+        format: None,
+        wait: None,
+        new_tab: None,
+        focus: None,
+        clear: None,
+        submit: None,
+        page_world: None,
+        position: None,
+        behavior: None,
+        timeout_ms: None,
+        scroll_to: None,
+        path: None,
+        fields: None,
+    };
+
+    let (action, params, _) = bridge_request("eval", &input).expect("bridge request");
+    assert_eq!(action, "evaluate");
+    assert_eq!(params["script"], "return document.title");
+}

@@ -270,7 +270,13 @@ impl Tool for BrowserTool {
             ("selector", json!({"type": "string"})),
             ("text", json!({"type": "string"})),
             ("contains", json!({"type": "string"})),
-            ("script", json!({"type": "string"})),
+            (
+                "script",
+                json!({
+                    "type": "string",
+                    "description": "JavaScript for action='eval'. The bridge runs this as a FUNCTION BODY, so you must use an explicit `return`. `return document.title` works; a bare expression like `document.title` or `1+1` evaluates and is discarded, yielding null with type 'undefined'."
+                }),
+            ),
             ("key", json!({"type": "string"})),
             ("x", json!({"type": "number"})),
             ("y", json!({"type": "number"})),
@@ -481,7 +487,6 @@ async fn firefox_setup(provider: &FirefoxBridgeProvider) -> Result<ToolOutput> {
     })))
 }
 
-
 async fn chrome_status() -> Result<ToolOutput> {
     let status = crate::browser_chrome::ensure_chrome_ready_noninteractive().await?;
     let metadata = json!({
@@ -550,7 +555,9 @@ async fn ensure_chrome_ready() -> Result<Option<String>> {
     if !status.binary_installed {
         message.push_str("Browser bridge binary is not installed yet.\n");
     } else if status.responding && !status.compatible {
-        message.push_str("Browser bridge is connected, but the live extension is missing required actions.");
+        message.push_str(
+            "Browser bridge is connected, but the live extension is missing required actions.",
+        );
         if !status.missing_actions.is_empty() {
             message.push_str(&format!(
                 " Missing actions: {}.",
@@ -561,9 +568,7 @@ async fn ensure_chrome_ready() -> Result<Option<String>> {
     } else {
         message.push_str("Browser bridge binaries are installed, but the live bridge is not responding. Make sure Chrome is running with the Browser Agent Bridge extension loaded.\n");
     }
-    message.push_str(
-        "Do not retry browser actions until status reports ready.",
-    );
+    message.push_str("Do not retry browser actions until status reports ready.");
     anyhow::bail!(message)
 }
 
@@ -767,7 +772,7 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
                 .script
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("script is required for eval"))?;
-            params.insert("script".into(), json!(script));
+            params.insert("script".into(), json!(normalize_eval_script(script)));
             if let Some(page_world) = input.page_world {
                 params.insert("pageWorld".into(), json!(page_world));
             }
@@ -1029,6 +1034,56 @@ fn format_content_result(result: &Value) -> String {
         return title.to_string();
     }
     serde_json::to_string_pretty(result).unwrap_or_default()
+}
+
+/// The bridge evaluates `script` as a function body, so a bare expression like
+/// `document.title` is computed and discarded, silently yielding `null`. Callers
+/// reasonably expect expression semantics, so wrap a single bare expression in an
+/// explicit `return`.
+///
+/// Only single-expression scripts are rewritten. Anything that already returns,
+/// spans multiple statements, or opens a block is passed through untouched.
+fn normalize_eval_script(script: &str) -> String {
+    let trimmed = script.trim();
+    if trimmed.is_empty() {
+        return script.to_string();
+    }
+
+    // Already explicit, or a statement form where an implicit return is wrong.
+    if trimmed.starts_with("return")
+        || trimmed.starts_with('{')
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+    {
+        return script.to_string();
+    }
+
+    // Multi-statement scripts keep function-body semantics.
+    let body = trimmed.strip_suffix(';').unwrap_or(trimmed);
+    if body.contains(';') || body.contains('\n') {
+        return script.to_string();
+    }
+
+    // Declarations and control flow are statements, not expressions.
+    const STATEMENT_STARTS: [&str; 12] = [
+        "let ",
+        "const ",
+        "var ",
+        "if ",
+        "if(",
+        "for ",
+        "for(",
+        "while ",
+        "while(",
+        "throw ",
+        "switch ",
+        "function ",
+    ];
+    if STATEMENT_STARTS.iter().any(|kw| body.starts_with(kw)) {
+        return script.to_string();
+    }
+
+    format!("return {body}")
 }
 
 fn format_eval_result(result: &Value) -> String {
