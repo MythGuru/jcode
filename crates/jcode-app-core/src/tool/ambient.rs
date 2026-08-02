@@ -750,6 +750,29 @@ struct ScheduleToolInput {
     success_criteria: Option<String>,
     #[serde(default)]
     target: Option<String>,
+    // OAuth alias form: Claude models see this tool as `ScheduleWakeup` with
+    // `{delaySeconds, reason, prompt}`. Without accepting those spellings,
+    // every scheduling call from that provider fails with "task is required".
+    #[serde(default, alias = "delaySeconds")]
+    delay_seconds: Option<f64>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// The requested delay in minutes, whichever spelling supplied it.
+///
+/// `delaySeconds` rounds up with a 1-minute floor: the scheduler's clock is
+/// minute-granular, and "wake me in 30 seconds" waking never is worse than it
+/// waking slightly late.
+fn wake_minutes_from(params: &ScheduleToolInput) -> Option<u32> {
+    params.wake_in_minutes.or_else(|| {
+        params
+            .delay_seconds
+            .filter(|secs| secs.is_finite() && *secs >= 0.0)
+            .map(|secs| (secs / 60.0).ceil().max(1.0) as u32)
+    })
 }
 
 #[async_trait]
@@ -828,9 +851,11 @@ impl ScheduleTool {
         let task = params
             .task
             .clone()
+            .or_else(|| params.prompt.clone())
             .ok_or_else(|| anyhow::anyhow!("task is required for action=create"))?;
 
-        if params.wake_in_minutes.is_none() && params.wake_at.is_none() {
+        let wake_in_minutes = wake_minutes_from(&params);
+        if wake_in_minutes.is_none() && params.wake_at.is_none() {
             anyhow::bail!(
                 "Either wake_in_minutes or wake_at is required. \
                  This tool is for scheduling future tasks."
@@ -872,7 +897,7 @@ impl ScheduleTool {
         let target_summary = format_schedule_target(&target);
 
         let request = ScheduleRequest {
-            wake_in_minutes: params.wake_in_minutes,
+            wake_in_minutes,
             wake_at,
             context: task.clone(),
             priority: parse_priority(params.priority.as_deref()),
@@ -884,7 +909,11 @@ impl ScheduleTool {
             git_branch,
             additional_context: {
                 let mut parts = Vec::new();
-                if let Some(ref bg) = params.background_context {
+                if let Some(bg) = params
+                    .background_context
+                    .as_ref()
+                    .or(params.reason.as_ref())
+                {
                     parts.push(format!("Background: {}", bg));
                 }
                 if let Some(ref sc) = params.success_criteria {
@@ -901,7 +930,7 @@ impl ScheduleTool {
 
         let when = if let Some(ref ts) = params.wake_at {
             ts.clone()
-        } else if let Some(mins) = params.wake_in_minutes {
+        } else if let Some(mins) = wake_in_minutes {
             format!("in {}", crate::ambient::format_minutes_human(mins))
         } else {
             "unspecified".to_string()
@@ -1130,3 +1159,68 @@ impl Tool for SendChannelMessageTool {
 #[cfg(test)]
 #[path = "ambient/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod schedule_input_tests {
+    use super::*;
+
+    #[test]
+    fn oauth_schedule_wakeup_arguments_are_accepted() {
+        // The exact shape a Claude OAuth model sends for ScheduleWakeup.
+        let input: ScheduleToolInput = serde_json::from_value(serde_json::json!({
+            "delaySeconds": 120.0,
+            "reason": "keepalive loop",
+            "prompt": "check the build and continue"
+        }))
+        .expect("OAuth alias form must deserialize");
+        assert_eq!(
+            input.task.clone().or(input.prompt.clone()).as_deref(),
+            Some("check the build and continue")
+        );
+        assert_eq!(wake_minutes_from(&input), Some(2));
+        assert_eq!(input.reason.as_deref(), Some("keepalive loop"));
+    }
+
+    #[test]
+    fn sub_minute_delays_round_up_to_one_minute() {
+        let input: ScheduleToolInput =
+            serde_json::from_value(serde_json::json!({"delaySeconds": 30, "prompt": "x"})).unwrap();
+        assert_eq!(wake_minutes_from(&input), Some(1));
+    }
+
+    #[test]
+    fn native_arguments_still_work_and_take_precedence() {
+        let input: ScheduleToolInput = serde_json::from_value(serde_json::json!({
+            "task": "native form",
+            "wake_in_minutes": 5,
+            "delaySeconds": 600
+        }))
+        .unwrap();
+        assert_eq!(wake_minutes_from(&input), Some(5));
+        assert_eq!(input.task.as_deref(), Some("native form"));
+    }
+
+    #[test]
+    fn garbage_delay_values_do_not_panic_or_schedule() {
+        for value in [f64::NAN, f64::INFINITY, -5.0] {
+            let input: ScheduleToolInput =
+                serde_json::from_value(serde_json::json!({"delaySeconds": value, "prompt": "x"}))
+                    .unwrap_or(ScheduleToolInput {
+                        action: None,
+                        schedule_id: None,
+                        task: None,
+                        wake_in_minutes: None,
+                        wake_at: None,
+                        priority: None,
+                        relevant_files: Vec::new(),
+                        background_context: None,
+                        success_criteria: None,
+                        target: None,
+                        delay_seconds: None,
+                        prompt: None,
+                        reason: None,
+                    });
+            assert_eq!(wake_minutes_from(&input), None, "{value}");
+        }
+    }
+}
