@@ -179,10 +179,19 @@ fn resolve_provider_accepts_auto_and_firefox() {
 }
 
 #[test]
+fn resolve_provider_accepts_chrome() {
+    let provider = resolve_provider(Some("chrome")).expect("chrome resolves");
+    assert_eq!(provider.id(), "chrome_agent_bridge");
+    // auto must keep resolving to the Firefox provider (unchanged default).
+    let auto = resolve_provider(Some("auto")).expect("auto resolves");
+    assert_eq!(auto.id(), "firefox_agent_bridge");
+}
+
+#[test]
 fn resolve_provider_rejects_unsupported_browser() {
-    let err = resolve_provider(Some("chrome"))
+    let err = resolve_provider(Some("safari"))
         .err()
-        .expect("chrome should not resolve yet");
+        .expect("safari should not resolve yet");
     assert!(
         err.to_string()
             .contains("not wired into the built-in browser tool")

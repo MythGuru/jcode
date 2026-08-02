@@ -40,7 +40,7 @@ fn jcode_dir() -> PathBuf {
     })
 }
 
-fn browser_dir() -> PathBuf {
+pub(crate) fn browser_dir() -> PathBuf {
     jcode_dir().join("browser")
 }
 
@@ -56,7 +56,7 @@ pub fn browser_binary_path() -> PathBuf {
     }
 }
 
-fn host_binary_path() -> PathBuf {
+pub(crate) fn host_binary_path() -> PathBuf {
     let dir = browser_dir();
     #[cfg(windows)]
     {
@@ -68,7 +68,7 @@ fn host_binary_path() -> PathBuf {
     }
 }
 
-fn xpi_path() -> PathBuf {
+pub(crate) fn xpi_path() -> PathBuf {
     browser_dir().join("browser-agent-bridge.xpi")
 }
 
@@ -405,7 +405,7 @@ pub async fn ensure_browser_setup() -> Result<String> {
     Ok(log)
 }
 
-async fn download_browser_binary() -> Result<()> {
+pub(crate) async fn download_browser_binary() -> Result<()> {
     let asset_name = get_platform_asset_name();
     let client = jcode_provider_core::shared_http_client();
 
@@ -737,7 +737,7 @@ async fn run_browser_cli_capped(
     }
 }
 
-async fn check_browser_ping() -> Result<bool> {
+pub(crate) async fn check_browser_ping() -> Result<bool> {
     let bin = browser_binary_path();
     if !bin.exists() {
         return Ok(false);
@@ -778,7 +778,7 @@ async fn probe_bridge_action_support(action: &str, params_json: &str) -> Result<
     Ok(!combined.contains(&format!("Unknown action: {}", action)))
 }
 
-async fn probe_bridge_missing_actions() -> Result<Vec<String>> {
+pub(crate) async fn probe_bridge_missing_actions() -> Result<Vec<String>> {
     let mut missing = Vec::new();
     for (action, params_json) in REQUIRED_BRIDGE_ACTION_PROBES {
         if !probe_bridge_action_support(action, params_json).await? {

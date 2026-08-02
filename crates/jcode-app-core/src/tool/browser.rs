@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct BrowserTool;
 
 static FIREFOX_PROVIDER: FirefoxBridgeProvider = FirefoxBridgeProvider;
+static CHROME_PROVIDER: ChromeBridgeProvider = ChromeBridgeProvider;
 
 impl BrowserTool {
     pub fn new() -> Self {
@@ -116,6 +117,54 @@ trait BrowserProvider: Send + Sync {
 }
 
 struct FirefoxBridgeProvider;
+
+struct ChromeBridgeProvider;
+
+#[async_trait]
+impl BrowserProvider for ChromeBridgeProvider {
+    fn id(&self) -> &'static str {
+        "chrome_agent_bridge"
+    }
+
+    fn supported_browsers(&self) -> &'static [&'static str] {
+        &["chrome"]
+    }
+
+    async fn status(&self, _ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            chrome_status().await?,
+            self.id(),
+            "chrome",
+        ))
+    }
+
+    async fn setup(&self) -> Result<ToolOutput> {
+        Ok(attach_browser_metadata(
+            chrome_setup().await?,
+            self.id(),
+            "chrome",
+        ))
+    }
+
+    async fn ensure_ready(&self) -> Result<Option<String>> {
+        ensure_chrome_ready().await
+    }
+
+    async fn execute(
+        &self,
+        action: &str,
+        input: &BrowserInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        // The bridge pipeline (CLI -> host -> extension) is browser-agnostic,
+        // so Chrome reuses the same action path as Firefox.
+        Ok(attach_browser_metadata(
+            execute_firefox_action(&FIREFOX_PROVIDER, action, input, ctx).await?,
+            self.id(),
+            "chrome",
+        ))
+    }
+}
 
 #[async_trait]
 impl BrowserProvider for FirefoxBridgeProvider {
@@ -344,8 +393,12 @@ fn resolve_provider(browser: Option<&str>) -> Result<&'static dyn BrowserProvide
         return Ok(&FIREFOX_PROVIDER);
     }
 
+    if CHROME_PROVIDER.supported_browsers().contains(&browser) {
+        return Ok(&CHROME_PROVIDER);
+    }
+
     anyhow::bail!(
-        "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/firefox for now.",
+        "Browser backend '{}' is not wired into the built-in browser tool yet. Use auto/firefox/chrome for now.",
         browser
     )
 }
@@ -426,6 +479,92 @@ async fn firefox_setup(provider: &FirefoxBridgeProvider) -> Result<ToolOutput> {
         "backend": provider.id(),
         "browser": "firefox"
     })))
+}
+
+
+async fn chrome_status() -> Result<ToolOutput> {
+    let status = crate::browser_chrome::ensure_chrome_ready_noninteractive().await?;
+    let metadata = json!({
+        "setup_complete": status.setup_complete,
+        "binary_installed": status.binary_installed,
+        "responding": status.responding,
+        "compatible": status.compatible,
+        "missing_actions": status.missing_actions,
+        "ready": status.ready,
+        "backend": status.backend,
+        "browser": "chrome",
+        "extension_dir": crate::browser_chrome::chrome_extension_dir().to_string_lossy(),
+    });
+
+    let body = if status.ready {
+        "Browser bridge is responding (Chrome backend).".to_string()
+    } else if status.responding && !status.compatible {
+        format!(
+            "Browser bridge is connected, but the live extension is missing required actions: {}. Use action='setup' with browser='chrome' to regenerate the extension, then reload it in chrome://extensions.",
+            if status.missing_actions.is_empty() {
+                "unknown required actions".to_string()
+            } else {
+                status.missing_actions.join(", ")
+            }
+        )
+    } else if status.binary_installed {
+        "Browser bridge binaries are installed, but the live bridge is not responding. If Chrome setup was completed, make sure Chrome is running with the Browser Agent Bridge extension loaded (chrome://extensions). Use action='setup' with browser='chrome' for first-time install.".to_string()
+    } else {
+        "Browser bridge is not installed yet. Use action='setup' with browser='chrome' for first-time install.".to_string()
+    };
+
+    Ok(ToolOutput::new(body)
+        .with_title("browser status (chrome)")
+        .with_metadata(metadata))
+}
+
+async fn chrome_setup() -> Result<ToolOutput> {
+    let log = crate::browser_chrome::ensure_chrome_setup().await?;
+    let status = crate::browser_chrome::ensure_chrome_ready_noninteractive().await?;
+    let title = if status.ready {
+        "browser setup (chrome)"
+    } else {
+        "browser setup (chrome, incomplete)"
+    };
+    Ok(ToolOutput::new(log).with_title(title).with_metadata(json!({
+        "setup_complete": status.setup_complete,
+        "binary_installed": status.binary_installed,
+        "responding": status.responding,
+        "compatible": status.compatible,
+        "missing_actions": status.missing_actions,
+        "ready": status.ready,
+        "backend": status.backend,
+        "browser": "chrome"
+    })))
+}
+
+async fn ensure_chrome_ready() -> Result<Option<String>> {
+    let status = crate::browser_chrome::ensure_chrome_ready_noninteractive().await?;
+    if status.ready {
+        return Ok(None);
+    }
+
+    let mut message = String::from(
+        "Browser automation is not ready yet (Chrome backend). Use the browser tool with action='status' and browser='chrome' to confirm current state. Run action='setup' with browser='chrome' only for first-time install or repair.\n",
+    );
+    if !status.binary_installed {
+        message.push_str("Browser bridge binary is not installed yet.\n");
+    } else if status.responding && !status.compatible {
+        message.push_str("Browser bridge is connected, but the live extension is missing required actions.");
+        if !status.missing_actions.is_empty() {
+            message.push_str(&format!(
+                " Missing actions: {}.",
+                status.missing_actions.join(", ")
+            ));
+        }
+        message.push('\n');
+    } else {
+        message.push_str("Browser bridge binaries are installed, but the live bridge is not responding. Make sure Chrome is running with the Browser Agent Bridge extension loaded.\n");
+    }
+    message.push_str(
+        "Do not retry browser actions until status reports ready.",
+    );
+    anyhow::bail!(message)
 }
 
 async fn ensure_firefox_ready() -> Result<Option<String>> {

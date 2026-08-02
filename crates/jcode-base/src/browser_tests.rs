@@ -26,7 +26,9 @@ fn test_rewrite_command_with_full_path() {
     // If binary exists, it rewrites; if not, returns unchanged
     if browser_binary_path().exists() {
         assert!(result.contains("ping"));
-        assert!(result.contains(".jcode/browser"));
+        // Path separators differ per OS (backslashes on Windows).
+        let normalized = result.replace('\\', "/");
+        assert!(normalized.contains(".jcode/browser"));
     } else {
         assert_eq!(result, cmd);
     }
