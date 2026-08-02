@@ -46,7 +46,7 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
     let orphan_results: HashSet<_> = tool_result_ids.difference(&tool_use_ids).cloned().collect();
     if !orphan_results.is_empty() {
         jcode_logging::warn(&format!(
-            "[anthropic] Dropping {} orphan tool_result(s) without matching tool_use",
+            "[anthropic] Recovering {} orphan tool_result(s) without matching tool_use as text",
             orphan_results.len()
         ));
     }
@@ -65,16 +65,34 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
         let content_source = if orphan_results.is_empty() {
             &msg.content
         } else {
+            // An orphan tool_result cannot be sent as-is: the API rejects the
+            // whole request. But dropping it silently destroys real work, which
+            // is often the only record of what a long tool call produced.
+            // jcode-provider-openai already recovers these as text
+            // (orphan_tool_output_to_user_message); do the same here so the two
+            // providers do not disagree about whether history survives a resume.
             content_blocks = msg
                 .content
                 .iter()
-                .filter(|block| match block {
-                    ContentBlock::ToolResult { tool_use_id, .. } => {
-                        !orphan_results.contains(tool_use_id)
+                .map(|block| match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } if orphan_results.contains(tool_use_id) => {
+                        let text = content.trim();
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(ContentBlock::Text {
+                                text: format!("[Recovered orphaned tool output: {tool_use_id}]\n{text}"),
+                                cache_control: None,
+                            })
+                        }
                     }
-                    _ => true,
+                    other => Some(other.clone()),
                 })
-                .cloned()
+                .flatten()
                 .collect::<Vec<_>>();
             &content_blocks
         };
@@ -1027,7 +1045,7 @@ mod cache_prefix_invariant_tests {
     }
 
     #[test]
-    fn format_messages_drops_orphan_tool_results_loaded_from_history() {
+    fn format_messages_recovers_orphan_tool_results_loaded_from_history() {
         let messages = vec![
             text_msg(Role::User, "status tick"),
             Message {
@@ -1056,6 +1074,66 @@ mod cache_prefix_invariant_tests {
         assert!(
             !has_orphan_tool_result,
             "orphan tool_result escaped into Anthropic payload and would be rejected"
+        );
+
+        // Removing the block is only half the job. The output it carried is
+        // often the only record of what an expensive tool call produced, so
+        // dropping it silently loses real work. It must survive as text, the
+        // same way jcode-provider-openai recovers it.
+        let recovered_text = formatted
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ApiContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .find(|text| text.contains("completed while the matching tool_use was absent"));
+
+        assert!(
+            recovered_text.is_some(),
+            "orphan tool_result content was dropped instead of recovered as text"
+        );
+        assert!(
+            recovered_text
+                .unwrap()
+                .contains("toolu_orphan_from_resumed_session"),
+            "recovered text should name the call it came from, for traceability"
+        );
+    }
+
+    #[test]
+    fn format_messages_drops_empty_orphan_tool_results() {
+        // An empty orphan carries nothing worth recovering, so it should
+        // disappear rather than leave a confusing empty marker in history.
+        let messages = vec![
+            text_msg(Role::User, "status tick"),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "toolu_empty_orphan".to_string(),
+                    content: "   ".to_string(),
+                    is_error: None,
+                }],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+        ];
+
+        let formatted = format_messages(&messages, false);
+        let mentions_empty_orphan = formatted
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .any(|block| match block {
+                ApiContentBlock::Text { text, .. } => text.contains("toolu_empty_orphan"),
+                ApiContentBlock::ToolResult { tool_use_id, .. } => {
+                    tool_use_id == "toolu_empty_orphan"
+                }
+                _ => false,
+            });
+
+        assert!(
+            !mentions_empty_orphan,
+            "an empty orphan tool_result should be dropped, not turned into a marker"
         );
     }
 
