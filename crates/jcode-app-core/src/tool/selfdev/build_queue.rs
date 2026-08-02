@@ -956,13 +956,26 @@ export -f cargo
                 anyhow::anyhow!("Could not find the jcode repository directory for selfdev test")
             })?;
         let requested_source = SelfDevTool::requested_source_state(&repo_dir)?;
-        let shell_command = SelfDevBuildCommand {
-            program: "bash".to_string(),
-            args: vec![
-                "-lc".to_string(),
-                SelfDevTool::optimized_test_shell_command(&command),
-            ],
-            display: command.clone(),
+        // `bash` resolves to WSL on Windows, which is frequently absent, so every
+        // `selfdev test` failed with "Windows Subsystem for Linux has no installed
+        // distributions". The dev_cargo shell shim is a POSIX function definition and
+        // cannot run under cmd, so on Windows run the command directly; it loses the
+        // compile-lock wrapper but actually executes.
+        let shell_command = if cfg!(windows) {
+            SelfDevBuildCommand {
+                program: "cmd".to_string(),
+                args: vec!["/C".to_string(), command.clone()],
+                display: command.clone(),
+            }
+        } else {
+            SelfDevBuildCommand {
+                program: "bash".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    SelfDevTool::optimized_test_shell_command(&command),
+                ],
+                display: command.clone(),
+            }
         };
         let dedupe_key = format!(
             "test:{}:{}:{}",

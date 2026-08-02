@@ -187,6 +187,28 @@ pub fn selfdev_build_command_for_target(
             ]
         }
     };
+    // The dev_cargo.sh wrapper needs a POSIX shell. On Windows `bash` resolves to
+    // WSL, which is frequently absent, so spawn cargo directly there instead of
+    // failing every build with a WSL error.
+    if cfg!(windows) {
+        let mut args = vec![
+            "build".to_string(),
+            "--profile".to_string(),
+            SELFDEV_CARGO_PROFILE.to_string(),
+        ];
+        for (package, binary) in &specs {
+            args.push("-p".to_string());
+            args.push((*package).to_string());
+            args.push("--bin".to_string());
+            args.push((*binary).to_string());
+        }
+        return SelfDevBuildCommand {
+            program: "cargo".to_string(),
+            args,
+            display: display_build_command("cargo", &specs),
+        };
+    }
+
     let wrapper = repo_dir.join("scripts").join("dev_cargo.sh");
     if wrapper.is_file() {
         let script = wrapper.to_string_lossy();
