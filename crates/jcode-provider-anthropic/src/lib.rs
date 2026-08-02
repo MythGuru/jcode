@@ -43,6 +43,14 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
         ));
     }
 
+    let orphan_results: HashSet<_> = tool_result_ids.difference(&tool_use_ids).cloned().collect();
+    if !orphan_results.is_empty() {
+        jcode_logging::warn(&format!(
+            "[anthropic] Dropping {} orphan tool_result(s) without matching tool_use",
+            orphan_results.len()
+        ));
+    }
+
     // Second pass: build messages, injecting synthetic tool_results after assistant messages
     // that have dangling tool_uses
     let mut result: Vec<ApiMessage> = Vec::new();
@@ -53,7 +61,25 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
             Role::Assistant => "assistant",
         };
 
-        let content = format_content_blocks(&msg.content, is_oauth);
+        let content_blocks;
+        let content_source = if orphan_results.is_empty() {
+            &msg.content
+        } else {
+            content_blocks = msg
+                .content
+                .iter()
+                .filter(|block| match block {
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        !orphan_results.contains(tool_use_id)
+                    }
+                    _ => true,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            &content_blocks
+        };
+
+        let content = format_content_blocks(content_source, is_oauth);
 
         if !content.is_empty() {
             result.push(ApiMessage {
@@ -998,6 +1024,39 @@ mod cache_prefix_invariant_tests {
                 "memory variant {memory:?} changed the cached prefix span"
             );
         }
+    }
+
+    #[test]
+    fn format_messages_drops_orphan_tool_results_loaded_from_history() {
+        let messages = vec![
+            text_msg(Role::User, "status tick"),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "toolu_orphan_from_resumed_session".to_string(),
+                    content: "completed while the matching tool_use was absent".to_string(),
+                    is_error: None,
+                }],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+        ];
+
+        let formatted = format_messages(&messages, false);
+        let has_orphan_tool_result = formatted.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ApiContentBlock::ToolResult { tool_use_id, .. }
+                        if tool_use_id == "toolu_orphan_from_resumed_session"
+                )
+            })
+        });
+
+        assert!(
+            !has_orphan_tool_result,
+            "orphan tool_result escaped into Anthropic payload and would be rejected"
+        );
     }
 
     fn tool_def(name: &str) -> ToolDefinition {

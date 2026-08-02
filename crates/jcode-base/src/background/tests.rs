@@ -4,6 +4,28 @@ use anyhow::anyhow;
 use tempfile::tempdir;
 use tokio::time::{Duration, sleep};
 
+#[test]
+fn task_status_missing_wake_defaults_to_true() -> Result<()> {
+    let status: TaskStatusFile = serde_json::from_value(serde_json::json!({
+        "task_id": "task-default-wake",
+        "tool_name": "bash",
+        "session_id": "session-default-wake",
+        "status": "completed",
+        "exit_code": 0,
+        "error": null,
+        "started_at": "2026-08-02T15:00:00Z",
+        "completed_at": "2026-08-02T15:02:00Z",
+        "duration_secs": 120.0,
+        "notify": true
+    }))?;
+
+    assert!(
+        status.wake,
+        "omitted wake should resume the session by default"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn spawn_with_notify_emits_started_ui_activity() -> Result<()> {
     let tmp = tempdir()?;

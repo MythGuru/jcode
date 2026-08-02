@@ -74,7 +74,7 @@ pub struct TaskStatusFile {
     pub detached: bool,
     #[serde(default = "default_true")]
     pub notify: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub wake: bool,
     #[serde(default)]
     pub progress: Option<BackgroundTaskProgress>,
