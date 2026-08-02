@@ -38,11 +38,25 @@ impl Token {
     }
 
     pub fn is_flag(&self) -> bool {
-        self.text.starts_with('-') && self.text.len() > 1
+        if self.text.starts_with('-') && self.text.len() > 1 {
+            return true;
+        }
+        // Windows-style switches: `/s`, `/q`, `/c:pattern`. Only unambiguous
+        // single-letter forms count, so unix paths like `/etc` are never
+        // mistaken for flags.
+        let mut chars = self.text.chars();
+        if chars.next() == Some('/') && chars.next().is_some_and(|c| c.is_ascii_alphanumeric()) {
+            return matches!(chars.next(), None | Some(':'));
+        }
+        false
     }
 
     /// Whether this flag requests recursion, including bundles like `-rf`.
     pub fn is_recursive_flag(&self) -> bool {
+        // Windows `del /s` and `rd /s` recurse into subdirectories.
+        if self.text.starts_with('/') {
+            return matches!(self.text.as_str(), "/s" | "/S");
+        }
         if !self.is_flag() {
             return false;
         }
@@ -54,7 +68,11 @@ impl Token {
 }
 
 /// Characters that separate one command from the next.
-const SEGMENT_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "\n"];
+///
+/// A single `&` separates too: bash backgrounds the left side and runs both,
+/// and cmd.exe uses it exactly like `;`. Without it, tokens from two different
+/// commands would be classified as one command's arguments.
+const SEGMENT_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "&", "\n"];
 
 /// Split a command line into individual command segments, each tokenized.
 ///
@@ -145,9 +163,18 @@ pub fn tokenize(command: &str) -> Vec<Token> {
                 }
             }
             '\\' => {
-                if let Some(next) = chars.next() {
+                if let Some(&next) = chars.peek() {
                     has_content = true;
+                    // In shell a backslash escapes the next character, but a
+                    // backslash before an ordinary path character is far more
+                    // likely a Windows path separator (`C:\\Users\\micha`);
+                    // swallowing it would hide the real target from the
+                    // classifier.
+                    if next.is_ascii_alphanumeric() || matches!(next, '.' | '_' | '-') {
+                        current.push('\\');
+                    }
                     current.push(next);
+                    chars.next();
                 }
             }
             ' ' | '\t' => flush!(),
@@ -169,6 +196,13 @@ pub fn tokenize(command: &str) -> Vec<Token> {
                 tokens.push(op);
             }
             '>' => {
+                // A file-descriptor number glued to the redirect (`2>nul`,
+                // `1>out.log`) is part of the operator, not an operand.
+                if has_content && !current.is_empty() && current.chars().all(|d| d.is_ascii_digit())
+                {
+                    current.clear();
+                    has_content = false;
+                }
                 flush!();
                 // `>>` appends and does not truncate, so it is far less
                 // destructive; only a single `>` clobbers.

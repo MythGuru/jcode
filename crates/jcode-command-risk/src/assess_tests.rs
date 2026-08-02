@@ -99,7 +99,7 @@ fn deleting_outside_the_project_asks_for_justification() {
 fn non_rm_destructive_tools_are_covered() {
     // A name-based denylist would miss all of these.
     assert_eq!(level("find /home/u -delete"), RiskLevel::Catastrophic);
-    assert!(level("dd if=/dev/zero of=/dev/sda").runs_immediately() == false);
+    assert!(!level("dd if=/dev/zero of=/dev/sda").runs_immediately());
     assert!(level("shred /home/u/other/secrets.txt") >= RiskLevel::Confirm);
 }
 
@@ -139,7 +139,7 @@ fn explanation_names_the_offending_target() {
     let assessment = assess("rm -rf ~", &ctx());
     let text = assessment.explanation();
     assert!(
-        text.contains("/home/u"),
+        text.contains("/home/u") || text.contains("\\home\\u"),
         "explanation should name the path: {text}"
     );
 }
@@ -304,7 +304,7 @@ fn wrapper_commands_do_not_hide_the_real_program() {
 
 #[test]
 fn nested_wrappers_are_unwrapped_all_the_way_down() {
-    let ctx = ctx();
+    let _ctx = ctx();
     assert_eq!(
         level("sudo env nice -n 5 rm -rf ~"),
         RiskLevel::Catastrophic
@@ -358,7 +358,7 @@ fn piped_deletes_cannot_launder_their_targets() {
 fn files_inside_system_directories_are_protected_too() {
     // Exact-root matching left /etc/passwd merely "Confirm", and apply_patch
     // consults only the catastrophic tier, so it would have deleted it.
-    let ctx = ctx();
+    let _ctx = ctx();
     for path in [
         "rm -f /etc/passwd",
         "rm -rf /usr/bin/env",
@@ -373,7 +373,7 @@ fn files_inside_system_directories_are_protected_too() {
 fn user_directories_under_home_root_stay_workable() {
     // /home and /Users must not become recursive, or every project path under
     // them would be blocked.
-    let ctx = ctx();
+    let _ctx = ctx();
     assert!(level("rm -rf /home/u/proj/target").runs_immediately());
     assert_eq!(level("rm -rf /home"), RiskLevel::Catastrophic);
 }
@@ -405,4 +405,55 @@ fn ordinary_wrapped_commands_still_run_immediately() {
         noisy.is_empty(),
         "gate became noisy on normal work: {noisy:#?}"
     );
+}
+
+/// Windows commands observed false-positiving in real sessions (2026-08-01):
+/// `findstr /n`, `dir /b`, `2>nul` redirects, and backslash paths were parsed
+/// as unix paths and flagged as "irreversible". A gate that cries wolf on
+/// every Windows search trains users to bypass it.
+#[test]
+fn windows_query_commands_are_not_flagged() {
+    let ctx = ctx();
+    let commands = [
+        r#"findstr /n /c:"A-1" plans\company-plan-v3.html"#,
+        r#"findstr /s /i /m /c:"self-check" test3\PROTOCOL.md"#,
+        r#"findstr /n "method" test3\PROTOCOL.md 2>nul"#,
+        r#"dir /b /ad C:\Users\micha\dev\project 2>nul"#,
+        r#"type test2\BUILD-PROTOCOL.md 2>nul"#,
+        "echo done > /dev/null",
+        "cargo build 2>nul",
+        "dir /s /b *.md",
+    ];
+    let mut noisy = Vec::new();
+    for command in commands {
+        let level = assess(command, &ctx).level;
+        if !level.runs_immediately() {
+            noisy.push(format!("{command} -> {level:?}"));
+        }
+    }
+    assert!(
+        noisy.is_empty(),
+        "gate fired on Windows queries: {noisy:#?}"
+    );
+}
+
+/// The Windows leniency must not weaken real destructive detection.
+#[test]
+fn windows_destructive_commands_still_escalate() {
+    let _ctx = ctx();
+    // `del` and `rd` are destructive; unknown or out-of-tree targets escalate.
+    assert!(!level("del /s /q C:\\Users\\micha\\Documents").runs_immediately());
+    assert!(!level("rd /s /q ..\\other-project").runs_immediately());
+    // And the unix catastrophic tier is untouched.
+    assert_eq!(level("rm -rf ~"), RiskLevel::Catastrophic);
+    assert_eq!(level("rm -rf /etc"), RiskLevel::Catastrophic);
+}
+
+/// A single `&` chains commands (bash background, cmd sequencing); it must
+/// split segments so one command's redirect does not taint the next.
+#[test]
+fn single_ampersand_separates_segments() {
+    let _ctx = ctx();
+    assert!(level("echo a & echo b").runs_immediately());
+    assert_eq!(level("echo a & rm -rf ~"), RiskLevel::Catastrophic);
 }

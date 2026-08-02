@@ -149,6 +149,8 @@ fn dirs_home() -> Option<std::path::PathBuf> {
 /// directory is routine. It means "inspect the targets".
 const DESTRUCTIVE_COMMANDS: &[&str] = &[
     "rm", "rmdir", "shred", "unlink", "truncate", "dd", "mkfs", "fdisk", "parted", "wipefs", "srm",
+    // Windows equivalents: `del /s`, `rd /s /q`, `erase`.
+    "del", "erase", "rd",
 ];
 
 /// Commands that run another command. The real program is one of their
@@ -307,11 +309,19 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         return;
     }
 
-    let mut targets: Vec<&Token> = tokens
-        .iter()
-        .skip(1)
-        .filter(|t| !t.is_flag() && !t.is_operator)
-        .collect();
+    // Operands are only deletion targets when the program is destructive.
+    // For a harmless program with a redirect, only the redirect target is at
+    // risk; classifying its other arguments produced false positives on
+    // Windows commands like `findstr /n pattern file 2>nul`.
+    let mut targets: Vec<&Token> = Vec::new();
+    if triggered {
+        targets.extend(
+            tokens
+                .iter()
+                .skip(1)
+                .filter(|t| !t.is_flag() && !t.is_operator),
+        );
+    }
     targets.extend(redirect_targets.iter().copied());
 
     // A destructive command fed by a pipe takes its operands from the previous

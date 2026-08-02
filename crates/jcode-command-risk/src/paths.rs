@@ -178,6 +178,12 @@ pub fn classify_target(
     recursive: bool,
     ctx: &RiskContext,
 ) -> Option<RiskFinding> {
+    // Null sinks (`> /dev/null`, cmd.exe `> nul`) discard output; nothing is
+    // destroyed by writing to them.
+    if raw.eq_ignore_ascii_case("nul") || matches!(raw, "/dev/null" | "/dev/stdout" | "/dev/stderr")
+    {
+        return None;
+    }
     // Glob and variable expansion we did not perform: we cannot know the
     // footprint, so escalate rather than guess.
     if raw.contains('*') || raw.contains('?') {
