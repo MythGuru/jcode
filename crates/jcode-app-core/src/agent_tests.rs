@@ -1828,8 +1828,6 @@ async fn feature_off_tool_definitions_match_the_pre_peer_baseline() {
     Agent::apply_selfdev_tool_surface(&mut definitions, false);
 
     let actual = serde_json::to_string_pretty(&definitions).expect("serialize tool definitions");
-    assert_eq!(
-        actual,
-        include_str!("../tests/fixtures/pre_peer_tool_definitions.json")
-    );
+    let expected = include_str!("../tests/fixtures/pre_peer_tool_definitions.json");
+    assert_eq!(actual.replace("\r\n", "\n"), expected.replace("\r\n", "\n"));
 }

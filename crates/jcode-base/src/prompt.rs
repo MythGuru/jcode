@@ -1051,9 +1051,10 @@ mod peer_feature_baseline_tests {
 
     #[test]
     fn built_in_prompt_matches_the_pre_peer_baseline() {
+        let expected = include_str!("../tests/fixtures/pre_peer_system_prompt.md");
         assert_eq!(
-            DEFAULT_SYSTEM_PROMPT,
-            include_str!("../tests/fixtures/pre_peer_system_prompt.md")
+            DEFAULT_SYSTEM_PROMPT.replace("\r\n", "\n"),
+            expected.replace("\r\n", "\n")
         );
     }
 }

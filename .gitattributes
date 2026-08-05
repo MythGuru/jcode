@@ -1,0 +1,2 @@
+crates/jcode-app-core/tests/fixtures/pre_peer_tool_definitions.json -text
+crates/jcode-base/tests/fixtures/pre_peer_system_prompt.md -text
