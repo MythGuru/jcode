@@ -3321,10 +3321,33 @@ pub(super) async fn process_message_streaming_mpsc(
     event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
     turn_lease: super::turn_coordinator::ServerTurnLease,
 ) -> Result<()> {
+    let agent = agent.lock_owned().await;
+    let (result, _agent) = process_message_streaming_mpsc_with_guard(
+        agent,
+        content,
+        images,
+        system_reminder,
+        event_tx,
+        turn_lease,
+    )
+    .await;
+    result
+}
+
+/// Process a message using an Agent mutex guard acquired by the admission path.
+/// Returning the guard lets callers inspect the completed transcript without
+/// releasing and reacquiring ownership between admission and turn execution.
+pub(super) async fn process_message_streaming_mpsc_with_guard(
+    mut agent: tokio::sync::OwnedMutexGuard<Agent>,
+    content: &str,
+    images: Vec<(String, String)>,
+    system_reminder: Option<String>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
+    turn_lease: super::turn_coordinator::ServerTurnLease,
+) -> (Result<()>, tokio::sync::OwnedMutexGuard<Agent>) {
     let turn_execution = turn_lease.context().clone();
     let lease_cancellation = turn_lease.cancellation();
     let _turn_lease = turn_lease;
-    let mut agent = agent.lock().await;
     let session_id = agent.session_id().to_string();
     // The Agent mutex remains held for the whole turn, so a watcher cannot call
     // `request_graceful_shutdown()` by locking the Agent after cancellation.
@@ -3360,7 +3383,7 @@ pub(super) async fn process_message_streaming_mpsc(
             std::time::Duration::from_secs(30),
         );
     }
-    result
+    (result, agent)
 }
 
 #[cfg(test)]

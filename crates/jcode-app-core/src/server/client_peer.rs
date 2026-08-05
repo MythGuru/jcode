@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, broadcast, mpsc, oneshot};
 
 const MAX_PEER_MESSAGE_CHARS: usize = 8_000;
 
@@ -52,6 +52,7 @@ struct PreparedPeerSend {
     recipient: PeerMember,
     recipient_session_id: String,
     recipient_agent: Arc<Mutex<Agent>>,
+    recipient_agent_guard: OwnedMutexGuard<Agent>,
     exchange_id: String,
     registered: RegisteredPeerExchange,
 }
@@ -222,9 +223,10 @@ async fn begin_peer_send_transaction(
     target_alias: &str,
     context: &PeerServerContext<'_>,
 ) -> Result<PreparedPeerSend, PeerStartError> {
-    // Keep both read guards through registry resolution and coordinator
-    // reservation. Session insertion/removal and attachment changes therefore
-    // cannot enter between exact-one target selection and the committed lease.
+    // Admission lock order is sessions(read) -> swarm_members(read) -> peer
+    // registry/coordinator -> recipient Agent(try_lock only). No awaited mutex is
+    // acquired while these map guards are nested, and both map guards are
+    // released before rollback or turn startup.
     let sessions = context.sessions.read().await;
     let members = context.swarm_members.read().await;
     let resolved = context.exchanges.resolve_and_register(
@@ -243,12 +245,29 @@ async fn begin_peer_send_transaction(
             .get(&resolved.recipient_session_id)
             .expect("atomically resolved peer session must retain its live agent"),
     );
+    let recipient_agent_guard = Arc::clone(&recipient_agent).try_lock_owned();
+    drop(members);
+    drop(sessions);
+    let recipient_agent_guard = match recipient_agent_guard {
+        Ok(guard) => guard,
+        Err(_) => {
+            let alias = resolved.recipient.alias.clone();
+            let exchange_id = resolved.exchange_id.clone();
+            drop(resolved);
+            let _ = context.exchanges.cancel_exchange(&exchange_id);
+            return Err(PeerStartError::Coordinator {
+                alias,
+                error: BeginPeerError::Busy,
+            });
+        }
+    };
 
     Ok(PreparedPeerSend {
         sender: resolved.sender,
         recipient: resolved.recipient,
         recipient_session_id: resolved.recipient_session_id,
         recipient_agent,
+        recipient_agent_guard,
         exchange_id: resolved.exchange_id,
         registered: resolved.registered,
     })
@@ -482,6 +501,7 @@ pub(super) async fn handle_peer_request(
                 recipient,
                 recipient_session_id,
                 recipient_agent,
+                recipient_agent_guard,
                 exchange_id,
                 registered,
             } = prepared;
@@ -515,6 +535,7 @@ pub(super) async fn handle_peer_request(
             spawn_tracked_live_turn_with_completion(
                 &recipient_session_id,
                 Arc::clone(&recipient_agent),
+                Some(recipient_agent_guard),
                 peer_prompt(&sender, &recipient, &exchange_id, message.trim()),
                 Some(peer_system_reminder(&sender, &exchange_id)),
                 Some(format!("Peer message from {}", sender.alias)),
@@ -833,5 +854,103 @@ mod tests {
             !competing_attach_won,
             "a second live attachment entered between target resolution and dual-session reservation"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn peer_send_rejects_locked_recipient_without_exchange_or_transcript_delivery() {
+        let home = tempfile::TempDir::new().expect("peer config home");
+        let eve_dir = tempfile::TempDir::new().expect("Eve project");
+        let atlas_dir = tempfile::TempDir::new().expect("Atlas project");
+        let config = serde_json::json!({
+            "version": 1,
+            "groups": [{
+                "name": "reviewers",
+                "members": [
+                    { "alias": "Eve", "working_dir": eve_dir.path() },
+                    { "alias": "Atlas", "working_dir": atlas_dir.path() }
+                ]
+            }]
+        });
+        std::fs::write(
+            home.path().join("peer-groups.json"),
+            serde_json::to_vec(&config).expect("serialize peer config"),
+        )
+        .expect("write peer config");
+        let groups = PeerGroups::load_from_jcode_home(home.path()).expect("load peer groups");
+
+        let coordinator = TurnCoordinator::default();
+        let exchanges = PeerExchangeRegistry::new(coordinator.clone(), Duration::from_millis(50));
+        let sender_id = "sender-busy-agent";
+        let recipient_id = "recipient-busy-agent";
+        exchanges.pin_or_invalidate_session(sender_id, eve_dir.path(), &groups);
+        exchanges.pin_or_invalidate_session(recipient_id, atlas_dir.path(), &groups);
+
+        let sender_agent = test_agent(sender_id).await;
+        let recipient_agent = test_agent(recipient_id).await;
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.to_string(), sender_agent),
+            (recipient_id.to_string(), Arc::clone(&recipient_agent)),
+        ])));
+        let (sender_member, _sender_events) = live_member(sender_id, eve_dir.path().to_path_buf());
+        let (recipient_member, _recipient_events) =
+            live_member(recipient_id, atlas_dir.path().to_path_buf());
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.to_string(), sender_member),
+            (recipient_id.to_string(), recipient_member),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
+        let event_history = Arc::new(RwLock::new(VecDeque::new()));
+        let event_counter = Arc::new(AtomicU64::new(0));
+        let (swarm_event_tx, _swarm_event_rx) = broadcast::channel(4);
+        let sender_lease = coordinator
+            .begin_server_turn(sender_id, TurnOrigin::NormalUser)
+            .expect("sender turn");
+        let sender_context = sender_lease.context().clone();
+        let context = PeerServerContext {
+            sessions: &sessions,
+            peer_groups: &groups,
+            exchanges: &exchanges,
+            swarm_members: &swarm_members,
+            swarms_by_id: &swarms_by_id,
+            event_history: &event_history,
+            event_counter: &event_counter,
+            swarm_event_tx: &swarm_event_tx,
+            turn_coordinator: &coordinator,
+        };
+
+        let busy_guard = recipient_agent.lock().await;
+        let message_count_before = busy_guard.message_count();
+        let result = begin_peer_send_transaction(&sender_context, "Atlas", &context).await;
+        match result {
+            Err(PeerStartError::Coordinator {
+                alias,
+                error: BeginPeerError::Busy,
+            }) => assert_eq!(alias, "Atlas"),
+            Err(other) => panic!("expected Atlas busy rejection, got {other:?}"),
+            Ok(prepared) => {
+                let exchange_id = prepared.exchange_id.clone();
+                drop(prepared);
+                let _ = exchanges.cancel_exchange(&exchange_id);
+                panic!("locked recipient Agent was admitted to peer delivery");
+            }
+        }
+        assert_eq!(
+            exchanges.active_exchange_count(),
+            0,
+            "busy rejection must roll back the exchange registry"
+        );
+        assert!(
+            !coordinator.session_is_busy(recipient_id),
+            "busy rejection must roll back the recipient coordinator lease"
+        );
+
+        drop(busy_guard);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            recipient_agent.lock().await.message_count(),
+            message_count_before,
+            "a rejected peer body must never appear later in the recipient transcript"
+        );
+        drop(sender_lease);
     }
 }

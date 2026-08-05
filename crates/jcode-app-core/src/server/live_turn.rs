@@ -13,7 +13,9 @@
 //! `Done`/`Error` event (id 0) so attached clients can settle the externally
 //! started turn in their UI.
 
-use super::client_lifecycle::process_message_streaming_mpsc;
+use super::client_lifecycle::{
+    process_message_streaming_mpsc, process_message_streaming_mpsc_with_guard,
+};
 use super::turn_coordinator::{ServerTurnLease, TurnCoordinator};
 use super::{
     SwarmEvent, SwarmMember, session_event_fanout_sender, truncate_detail, update_member_status,
@@ -24,7 +26,7 @@ use crate::protocol::ServerEvent;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, broadcast, oneshot};
 
 type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 
@@ -103,6 +105,7 @@ pub(super) async fn spawn_tracked_live_turn(
     spawn_tracked_live_turn_with_completion(
         session_id,
         agent,
+        None,
         message,
         system_reminder,
         status_detail,
@@ -120,6 +123,7 @@ pub(super) async fn spawn_tracked_live_turn(
 pub(super) async fn spawn_tracked_live_turn_with_completion(
     session_id: &str,
     agent: Arc<Mutex<Agent>>,
+    acquired_agent: Option<OwnedMutexGuard<Agent>>,
     message: String,
     system_reminder: Option<String>,
     status_detail: Option<String>,
@@ -142,29 +146,54 @@ pub(super) async fn spawn_tracked_live_turn_with_completion(
     let event_tx = session_event_fanout_sender(session_id.to_string(), Arc::clone(&swarm.members));
     let session_id = session_id.to_string();
     tokio::spawn(async move {
-        let start_message_index = {
-            let agent_guard = agent.lock().await;
-            agent_guard.message_count()
+        let (result, completion_report) = match acquired_agent {
+            Some(agent_guard) => {
+                let start_message_index = agent_guard.message_count();
+                let (result, agent_guard) = process_message_streaming_mpsc_with_guard(
+                    agent_guard,
+                    &message,
+                    vec![],
+                    system_reminder,
+                    event_tx.clone(),
+                    turn_lease,
+                )
+                .await;
+                let completion_report = if result.is_ok() {
+                    agent_guard.latest_assistant_text_after(start_message_index)
+                } else {
+                    None
+                };
+                (result, completion_report)
+            }
+            None => {
+                let start_message_index = {
+                    let agent_guard = agent.lock().await;
+                    agent_guard.message_count()
+                };
+                let result = process_message_streaming_mpsc(
+                    Arc::clone(&agent),
+                    &message,
+                    vec![],
+                    system_reminder,
+                    event_tx.clone(),
+                    turn_lease,
+                )
+                .await;
+                let completion_report = if result.is_ok() {
+                    let agent_guard = agent.lock().await;
+                    agent_guard.latest_assistant_text_after(start_message_index)
+                } else {
+                    None
+                };
+                (result, completion_report)
+            }
         };
-        let result = process_message_streaming_mpsc(
-            Arc::clone(&agent),
-            &message,
-            vec![],
-            system_reminder,
-            event_tx.clone(),
-            turn_lease,
-        )
-        .await;
         let completion = result
             .as_ref()
             .map(|_| ())
             .map_err(|error| error.to_string());
         match result {
             Ok(()) => {
-                let completion_report = {
-                    let agent_guard = agent.lock().await;
-                    agent_guard.latest_assistant_text_after(start_message_index)
-                };
                 update_member_status_with_report(
                     &session_id,
                     "ready",

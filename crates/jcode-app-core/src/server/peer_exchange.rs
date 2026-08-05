@@ -233,6 +233,11 @@ impl PeerExchangeRegistry {
     }
 
     #[cfg(test)]
+    pub(super) fn active_exchange_count(&self) -> usize {
+        self.lock_state().exchanges.len()
+    }
+
+    #[cfg(test)]
     fn pause_atomic_start_for_test(&self) {
         let mut hook = self
             .atomic_start_hook
