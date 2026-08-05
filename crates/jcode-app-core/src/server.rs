@@ -790,7 +790,7 @@ impl Server {
         };
         let peer_exchanges = peer_exchange::PeerExchangeRegistry::new(
             turn_coordinator.clone(),
-            Duration::from_secs(10 * 60),
+            crate::peer_timing::PEER_RECIPIENT_DEADLINE,
         );
 
         Self {

@@ -1,4 +1,5 @@
 use super::{Tool, ToolContext, ToolExecutionMode, TurnExecutionContext, TurnOrigin};
+use crate::peer_timing::peer_socket_timeout;
 use crate::protocol::{
     PeerCaller, PeerInfo, PeerOutcome, PeerResult, PeerState, Request, ServerEvent,
 };
@@ -10,8 +11,6 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 const REQUEST_ID: u64 = 1;
-const PEER_RECIPIENT_DEADLINE: Duration = Duration::from_secs(10 * 60);
-const PEER_SOCKET_GRACE: Duration = Duration::from_secs(30);
 const PEER_MESSAGE_MAX_CHARS: usize = 8_000;
 
 pub struct PeerTool;
@@ -31,10 +30,6 @@ struct PeerInput {
     message: Option<String>,
     #[serde(default)]
     tldr: Option<String>,
-}
-
-fn peer_socket_timeout(server_deadline: Duration) -> Duration {
-    server_deadline.saturating_add(PEER_SOCKET_GRACE)
 }
 
 fn validated_caller(ctx: &ToolContext) -> Result<(&TurnExecutionContext, PeerCaller)> {
@@ -234,7 +229,7 @@ impl Tool for PeerTool {
                 let mut pending =
                     Box::pin(super::communicate::transport::send_request_with_timeout(
                         request,
-                        Some(peer_socket_timeout(PEER_RECIPIENT_DEADLINE)),
+                        Some(peer_socket_timeout()),
                     ));
                 tokio::select! {
                     response = &mut pending => match response? {
@@ -318,10 +313,11 @@ mod tests {
     }
 
     #[test]
-    fn peer_socket_timeout_is_server_deadline_plus_thirty_seconds() {
+    fn peer_socket_timeout_is_derived_from_shared_server_deadline() {
         assert_eq!(
-            peer_socket_timeout(std::time::Duration::from_secs(600)),
-            std::time::Duration::from_secs(630)
+            crate::peer_timing::peer_socket_timeout(),
+            crate::peer_timing::PEER_RECIPIENT_DEADLINE
+                .saturating_add(std::time::Duration::from_secs(30))
         );
     }
 
