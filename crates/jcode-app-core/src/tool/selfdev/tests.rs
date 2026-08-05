@@ -42,9 +42,21 @@ fn create_test_context(session_id: &str, working_dir: Option<std::path::PathBuf>
     }
 }
 
+/// A throwaway repo for selfdev tests.
+///
+/// The `.git` directory must look like a *real* one. An empty `.git` is not a
+/// valid repository, so git walks up the ancestors hunting for one, and if any
+/// ancestor of the system temp dir happens to be a repo (a home directory under
+/// version control, for example) git adopts that instead and then scans the
+/// user's entire home tree. That turns these tests into a multi-minute hang
+/// that looks exactly like a deadlock. `HEAD` plus `objects/` and `refs/` is
+/// the minimum that makes git stop here.
 fn create_repo_fixture() -> tempfile::TempDir {
     let temp = tempfile::TempDir::new().expect("temp repo");
-    std::fs::create_dir_all(temp.path().join(".git")).expect("git dir");
+    let git_dir = temp.path().join(".git");
+    std::fs::create_dir_all(git_dir.join("objects")).expect("git objects dir");
+    std::fs::create_dir_all(git_dir.join("refs")).expect("git refs dir");
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("git HEAD");
     std::fs::write(
         temp.path().join("Cargo.toml"),
         "[package]\nname = \"jcode\"\nversion = \"0.1.0\"\n",
