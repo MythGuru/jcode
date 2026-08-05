@@ -85,6 +85,42 @@ export -f cargo
         }
     }
 
+    /// Tell the build which commit it is building, and whether the tree is dirty.
+    ///
+    /// Without this the embedded version comes from whenever `jcode-build-meta`
+    /// last happened to run, which is not necessarily the current commit. The
+    /// publish guard then rejects a perfectly good binary for carrying a stale
+    /// stamp. Best-effort: if git is unavailable the build still proceeds and
+    /// the existing (possibly stale) metadata is used, exactly as before.
+    fn apply_git_stamp(cmd: &mut tokio::process::Command, repo_dir: &std::path::Path) {
+        let git = |args: &[&str]| -> Option<String> {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo_dir)
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        };
+
+        let Some(hash) = git(&["rev-parse", "--short", "HEAD"]).filter(|h| !h.is_empty()) else {
+            return;
+        };
+        cmd.env("JCODE_BUILD_GIT_HASH", &hash);
+        if let Some(date) = git(&["log", "-1", "--format=%ci"]) {
+            cmd.env("JCODE_BUILD_GIT_DATE", date);
+        }
+        if let Some(tag) = git(&["describe", "--tags", "--always"]) {
+            cmd.env("JCODE_BUILD_GIT_TAG", tag);
+        }
+        // The guard treats a dirty tree differently from a clean one, so the
+        // stamp has to agree with reality rather than assume clean.
+        let dirty = git(&["status", "--porcelain"]).is_some_and(|out| !out.is_empty());
+        cmd.env("JCODE_BUILD_GIT_DIRTY", if dirty { "1" } else { "0" });
+    }
+
     async fn stream_build_command(
         repo_dir: PathBuf,
         command: SelfDevBuildCommand,
@@ -100,6 +136,21 @@ export -f cargo
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Stamp the binary with the commit it is actually being built from.
+        //
+        // `jcode-build-meta`'s build script deliberately does not watch `.git`,
+        // because doing so force-recompiled the whole crate graph on every
+        // `git add`. The cost is that its embedded hash can lag HEAD. That is
+        // cosmetic for a plain `cargo build`, but not here: the publish guard
+        // compares the embedded hash against the current source state and
+        // refuses to install on a mismatch, so a self-dev build of a new commit
+        // was rejected for carrying the previous commit's stamp.
+        //
+        // Passing the hash explicitly resolves both concerns at once: the build
+        // script declares these as `rerun-if-env-changed`, so its metadata
+        // refreshes exactly when the commit changes rather than on unrelated
+        // git activity.
+        Self::apply_git_stamp(&mut cmd, &repo_dir);
 
         let mut child = cmd
             .spawn()
@@ -1163,6 +1214,54 @@ mod desktop_binary_tests {
             args: Vec::new(),
             display: display.to_string(),
         }
+    }
+
+    /// The bug this guards: `jcode-build-meta` does not watch `.git` (watching it
+    /// force-recompiled the whole crate graph on every `git add`), so a build could
+    /// embed the *previous* commit’s hash. The publish guard compares that hash
+    /// against the current source state, so a self-dev build of a fresh commit was
+    /// refused for a stamp it had no way to update. The stamp must therefore be
+    /// supplied by whoever launches the build.
+    #[test]
+    fn a_build_is_stamped_with_the_commit_it_is_built_from() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("workspace root");
+        let mut cmd = tokio::process::Command::new("cargo");
+        SelfDevTool::apply_git_stamp(&mut cmd, repo);
+
+        let env: std::collections::HashMap<_, _> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().to_string(),
+                    v?.to_string_lossy().to_string(),
+                ))
+            })
+            .collect();
+
+        // In a git checkout the hash must be present and must match HEAD. Outside
+        // one (a source tarball, say) stamping is skipped and the build still runs.
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(repo)
+            .output();
+        let Ok(head) = head else { return };
+        if !head.status.success() {
+            return;
+        }
+        let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(
+            env.get("JCODE_BUILD_GIT_HASH"),
+            Some(&head),
+            "the build must be stamped with the commit it is building"
+        );
+        assert!(
+            env.contains_key("JCODE_BUILD_GIT_DIRTY"),
+            "dirtiness is stamped too, because the guard treats dirty trees differently"
+        );
     }
 
     /// The bug this guards: a desktop2 build was validated against the
