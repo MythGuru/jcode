@@ -1,4 +1,6 @@
-use super::live_turn::{LiveTurnSwarmContext, spawn_tracked_live_turn_with_completion};
+use super::live_turn::{
+    LiveTurnSwarmContext, PeerLaunchFence, spawn_tracked_live_turn_with_completion,
+};
 use super::peer_exchange::{
     PeerExchangeRegistry, PeerExchangeResult, PeerRecipientOutcome, PeerStartError,
     PinnedPeerIdentity, RegisteredPeerExchange,
@@ -261,15 +263,6 @@ async fn begin_peer_send_transaction(
             });
         }
     };
-    if !context
-        .exchanges
-        .mark_recipient_delivery_started(&resolved.exchange_id)
-    {
-        return Err(PeerStartError::TargetOffline(
-            resolved.recipient.alias.clone(),
-        ));
-    }
-
     Ok(PreparedPeerSend {
         sender: resolved.sender,
         recipient: resolved.recipient,
@@ -533,6 +526,12 @@ pub(super) async fn handle_peer_request(
                 message: peer_notification_message(&sender, &message),
             });
             let (completion_tx, completion_rx) = oneshot::channel();
+            let peer_launch_fence = PeerLaunchFence::new(
+                context.sessions,
+                context.exchanges,
+                exchange_id.clone(),
+                Arc::clone(&recipient_agent),
+            );
             let swarm = LiveTurnSwarmContext::new(
                 context.swarm_members,
                 context.swarms_by_id,
@@ -549,6 +548,7 @@ pub(super) async fn handle_peer_request(
                 Some(format!("Peer message from {}", sender.alias)),
                 swarm,
                 recipient_lease,
+                Some(peer_launch_fence),
                 Some(completion_tx),
             )
             .await;
@@ -961,6 +961,133 @@ mod tests {
             recipient_agent.lock().await.message_count(),
             message_count_before,
             "a rejected peer body must never appear later in the recipient transcript"
+        );
+        drop(sender_lease);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn removed_recipient_is_not_appended_after_peer_admission() {
+        let home = tempfile::TempDir::new().expect("peer config home");
+        let eve_dir = tempfile::TempDir::new().expect("Eve project");
+        let atlas_dir = tempfile::TempDir::new().expect("Atlas project");
+        let config = serde_json::json!({
+            "version": 1,
+            "groups": [{
+                "name": "reviewers",
+                "members": [
+                    { "alias": "Eve", "working_dir": eve_dir.path() },
+                    { "alias": "Atlas", "working_dir": atlas_dir.path() }
+                ]
+            }]
+        });
+        std::fs::write(
+            home.path().join("peer-groups.json"),
+            serde_json::to_vec(&config).expect("serialize peer config"),
+        )
+        .expect("write peer config");
+        let groups = PeerGroups::load_from_jcode_home(home.path()).expect("load peer groups");
+
+        let coordinator = TurnCoordinator::default();
+        let exchanges = PeerExchangeRegistry::new(coordinator.clone(), Duration::from_secs(2));
+        let sender_id = "sender-removed-recipient";
+        let recipient_id = "recipient-removed-before-launch";
+        exchanges.pin_or_invalidate_session(sender_id, eve_dir.path(), &groups);
+        exchanges.pin_or_invalidate_session(recipient_id, atlas_dir.path(), &groups);
+
+        let sender_agent = test_agent(sender_id).await;
+        let recipient_agent = test_agent(recipient_id).await;
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.to_string(), sender_agent),
+            (recipient_id.to_string(), Arc::clone(&recipient_agent)),
+        ])));
+        let (sender_member, _sender_events) = live_member(sender_id, eve_dir.path().to_path_buf());
+        let (recipient_member, _recipient_events) =
+            live_member(recipient_id, atlas_dir.path().to_path_buf());
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            (sender_id.to_string(), sender_member),
+            (recipient_id.to_string(), recipient_member),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
+        let event_history = Arc::new(RwLock::new(VecDeque::new()));
+        let event_counter = Arc::new(AtomicU64::new(0));
+        let (swarm_event_tx, _swarm_event_rx) = broadcast::channel(4);
+        let sender_lease = coordinator
+            .begin_server_turn(sender_id, TurnOrigin::NormalUser)
+            .expect("sender turn");
+        let sender_context = sender_lease.context().clone();
+        let context = PeerServerContext {
+            sessions: &sessions,
+            peer_groups: &groups,
+            exchanges: &exchanges,
+            swarm_members: &swarm_members,
+            swarms_by_id: &swarms_by_id,
+            event_history: &event_history,
+            event_counter: &event_counter,
+            swarm_event_tx: &swarm_event_tx,
+            turn_coordinator: &coordinator,
+        };
+        let prepared = begin_peer_send_transaction(&sender_context, "Atlas", &context)
+            .await
+            .expect("peer admission should succeed");
+        let message_count_before = prepared.recipient_agent_guard.message_count();
+
+        let removed =
+            super::super::remove_session_entry(&sessions, recipient_id, &exchanges, &coordinator)
+                .await;
+        assert!(removed.is_some(), "recipient session must be removed");
+
+        let PreparedPeerSend {
+            sender,
+            recipient,
+            recipient_session_id,
+            recipient_agent,
+            recipient_agent_guard,
+            exchange_id,
+            registered,
+        } = prepared;
+        let super::super::peer_exchange::RegisteredPeerExchange {
+            recipient_lease,
+            waiter,
+            ..
+        } = registered;
+        let (completion_tx, completion_rx) = oneshot::channel();
+        spawn_tracked_live_turn_with_completion(
+            &recipient_session_id,
+            Arc::clone(&recipient_agent),
+            Some(recipient_agent_guard),
+            peer_prompt(&sender, &recipient, &exchange_id, "must not be appended"),
+            Some(peer_system_reminder(&sender, &exchange_id)),
+            Some(format!("Peer message from {}", sender.alias)),
+            LiveTurnSwarmContext::new(
+                &swarm_members,
+                &swarms_by_id,
+                &event_history,
+                &event_counter,
+                &swarm_event_tx,
+            ),
+            recipient_lease,
+            Some(PeerLaunchFence::new(
+                &sessions,
+                &exchanges,
+                exchange_id.clone(),
+                Arc::clone(&recipient_agent),
+            )),
+            Some(completion_tx),
+        )
+        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), completion_rx)
+            .await
+            .expect("recipient launch must settle");
+        let result = waiter.wait().await;
+
+        assert!(matches!(
+            result.recipient_outcome,
+            PeerRecipientOutcome::Failed | PeerRecipientOutcome::Cancelled
+        ));
+        assert_eq!(
+            recipient_agent.lock().await.message_count(),
+            message_count_before,
+            "a removed recipient must never persist the peer body"
         );
         drop(sender_lease);
     }

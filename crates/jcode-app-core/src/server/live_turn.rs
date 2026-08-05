@@ -16,6 +16,7 @@
 use super::client_lifecycle::{
     process_message_streaming_mpsc, process_message_streaming_mpsc_with_guard,
 };
+use super::peer_exchange::PeerExchangeRegistry;
 use super::turn_coordinator::{ServerTurnLease, TurnCoordinator};
 use super::{
     SwarmEvent, SwarmMember, session_event_fanout_sender, truncate_detail, update_member_status,
@@ -39,6 +40,45 @@ pub(super) struct LiveTurnSwarmContext {
     pub event_history: Arc<RwLock<VecDeque<SwarmEvent>>>,
     pub event_counter: Arc<AtomicU64>,
     pub event_tx: broadcast::Sender<SwarmEvent>,
+}
+
+pub(super) struct PeerLaunchFence {
+    sessions: SessionAgents,
+    exchanges: PeerExchangeRegistry,
+    exchange_id: String,
+    expected_agent: Arc<Mutex<Agent>>,
+}
+
+impl PeerLaunchFence {
+    pub(super) fn new(
+        sessions: &SessionAgents,
+        exchanges: &PeerExchangeRegistry,
+        exchange_id: String,
+        expected_agent: Arc<Mutex<Agent>>,
+    ) -> Self {
+        Self {
+            sessions: Arc::clone(sessions),
+            exchanges: exchanges.clone(),
+            exchange_id,
+            expected_agent,
+        }
+    }
+
+    async fn commit(self, recipient_context: &crate::tool::TurnExecutionContext) -> bool {
+        let sessions = self.sessions.read().await;
+        let same_live_agent = sessions
+            .get(
+                recipient_context
+                    .server_session_id
+                    .as_deref()
+                    .unwrap_or_default(),
+            )
+            .is_some_and(|agent| Arc::ptr_eq(agent, &self.expected_agent));
+        same_live_agent
+            && self
+                .exchanges
+                .commit_recipient_launch(&self.exchange_id, recipient_context)
+    }
 }
 
 impl LiveTurnSwarmContext {
@@ -112,6 +152,7 @@ pub(super) async fn spawn_tracked_live_turn(
         swarm,
         turn_lease,
         None,
+        None,
     )
     .await;
 }
@@ -129,8 +170,20 @@ pub(super) async fn spawn_tracked_live_turn_with_completion(
     status_detail: Option<String>,
     swarm: LiveTurnSwarmContext,
     turn_lease: ServerTurnLease,
+    peer_launch_fence: Option<PeerLaunchFence>,
     completion_tx: Option<oneshot::Sender<Result<(), String>>>,
 ) {
+    if let Some(peer_launch_fence) = peer_launch_fence
+        && !peer_launch_fence.commit(turn_lease.context()).await
+    {
+        if let Some(completion_tx) = completion_tx {
+            let _ = completion_tx.send(Err(
+                "The peer recipient session or exchange ended before message delivery.".to_string(),
+            ));
+        }
+        return;
+    }
+
     update_member_status(
         session_id,
         "running",

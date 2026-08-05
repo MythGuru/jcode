@@ -571,11 +571,25 @@ impl PeerExchangeRegistry {
         self.finish(exchange_id, FinishReason::Recipient(result))
     }
 
-    pub(super) fn mark_recipient_delivery_started(&self, exchange_id: &str) -> bool {
+    pub(super) fn commit_recipient_launch(
+        &self,
+        exchange_id: &str,
+        recipient_context: &TurnExecutionContext,
+    ) -> bool {
         let mut state = self.lock_state();
         let Some(exchange) = state.exchanges.get_mut(exchange_id) else {
             return false;
         };
+        if recipient_context.server_session_id.as_deref()
+            != Some(exchange.recipient.session_id.as_str())
+            || recipient_context.turn_generation != Some(exchange.recipient_generation)
+            || self
+                .coordinator
+                .validate_context(recipient_context)
+                .is_err()
+        {
+            return false;
+        }
         exchange.reservation.mark_delivery_started();
         true
     }
@@ -653,9 +667,17 @@ impl PeerExchangeRegistry {
 
         if matches!(
             reason,
-            FinishReason::TimedOut | FinishReason::Cancelled | FinishReason::SenderRemoved
+            FinishReason::TimedOut
+                | FinishReason::Cancelled
+                | FinishReason::SenderRemoved
+                | FinishReason::RecipientRemoved
         ) {
-            exchange.recipient_cancellation.fire();
+            if !self.coordinator.cancel_generation(
+                &exchange.recipient.session_id,
+                exchange.recipient_generation,
+            ) {
+                exchange.recipient_cancellation.fire();
+            }
         }
 
         let (recipient_outcome, detail) = match reason {

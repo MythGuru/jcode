@@ -2,6 +2,7 @@ use crate::tool::{TurnCapability, TurnExecutionContext, TurnOrigin};
 use jcode_agent_runtime::InterruptSignal;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use uuid::Uuid;
 
@@ -96,7 +97,12 @@ struct ActiveTurn {
     origin: TurnOrigin,
     can_send: bool,
     cancellation: InterruptSignal,
+    launch_state: Arc<AtomicU8>,
 }
+
+const TURN_LAUNCH_PENDING: u8 = 0;
+const TURN_LAUNCH_STARTED: u8 = 1;
+const TURN_LAUNCH_CANCELLED: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BeginTurnError {
@@ -172,6 +178,7 @@ pub(super) struct ServerTurnLease {
     generation: u64,
     context: TurnExecutionContext,
     cancellation: InterruptSignal,
+    launch_state: Arc<AtomicU8>,
 }
 
 pub(super) struct PendingPeerStart {
@@ -298,6 +305,17 @@ impl ServerTurnLease {
     pub(super) fn cancellation(&self) -> InterruptSignal {
         self.cancellation.clone()
     }
+
+    pub(super) fn commit_launch(&self) -> bool {
+        self.launch_state
+            .compare_exchange(
+                TURN_LAUNCH_PENDING,
+                TURN_LAUNCH_STARTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
 }
 
 impl Drop for ServerTurnLease {
@@ -325,6 +343,11 @@ impl TurnCoordinator {
             .map_err(|error| anyhow::anyhow!(error))?;
         let turn_execution = lease.context().clone();
         let lease_cancellation = lease.cancellation();
+        if !lease.commit_launch() {
+            return Err(anyhow::anyhow!(
+                "The turn was cancelled before message delivery."
+            ));
+        }
         let _lease = lease;
         let mut agent = agent.lock().await;
         let agent_shutdown = agent.graceful_shutdown_signal();
@@ -399,6 +422,7 @@ impl TurnCoordinator {
         let generation = session.last_generation;
         let capability = TurnCapability::new(format!("turn_{}", Uuid::new_v4().simple()));
         let cancellation = InterruptSignal::new();
+        let launch_state = Arc::new(AtomicU8::new(TURN_LAUNCH_PENDING));
         let context = TurnExecutionContext {
             origin: origin.clone(),
             server_session_id: Some(session_id.to_string()),
@@ -411,6 +435,7 @@ impl TurnCoordinator {
             can_send: matches!(origin, TurnOrigin::NormalUser),
             origin,
             cancellation: cancellation.clone(),
+            launch_state: Arc::clone(&launch_state),
         });
 
         Ok(ServerTurnLease {
@@ -419,6 +444,7 @@ impl TurnCoordinator {
             generation,
             context,
             cancellation,
+            launch_state,
         })
     }
 
@@ -500,6 +526,7 @@ impl TurnCoordinator {
         let recipient_generation = recipient.last_generation;
         let recipient_capability = TurnCapability::new(format!("turn_{}", Uuid::new_v4().simple()));
         let recipient_cancellation = InterruptSignal::new();
+        let recipient_launch_state = Arc::new(AtomicU8::new(TURN_LAUNCH_PENDING));
         let recipient_origin = TurnOrigin::PeerInbound {
             exchange_id: exchange_id.clone(),
         };
@@ -515,6 +542,7 @@ impl TurnCoordinator {
             origin: recipient_origin,
             can_send: false,
             cancellation: recipient_cancellation.clone(),
+            launch_state: Arc::clone(&recipient_launch_state),
         });
 
         Ok(PendingPeerStart {
@@ -529,6 +557,7 @@ impl TurnCoordinator {
                 generation: recipient_generation,
                 context: recipient_context,
                 cancellation: recipient_cancellation,
+                launch_state: recipient_launch_state,
             }),
             committed: false,
         })
@@ -560,7 +589,21 @@ impl TurnCoordinator {
         else {
             return false;
         };
-        active.cancellation.fire();
+        Self::cancel_active(active);
+        true
+    }
+
+    pub(super) fn cancel_generation(&self, session_id: &str, generation: u64) -> bool {
+        let state = self.lock_state();
+        let Some(active) = state
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.active.as_ref())
+            .filter(|active| active.generation == generation)
+        else {
+            return false;
+        };
+        Self::cancel_active(active);
         true
     }
 
@@ -571,7 +614,7 @@ impl TurnCoordinator {
             .get(session_id)
             .and_then(|session| session.active.as_ref())
         {
-            active.cancellation.fire();
+            Self::cancel_active(active);
         }
         state.reservations.remove(session_id);
         if let Some(session) = state.sessions.get_mut(session_id) {
@@ -639,6 +682,16 @@ impl TurnCoordinator {
             return Err(TurnValidationError::OriginMismatch);
         }
         Ok(())
+    }
+
+    fn cancel_active(active: &ActiveTurn) {
+        let _ = active.launch_state.compare_exchange(
+            TURN_LAUNCH_PENDING,
+            TURN_LAUNCH_CANCELLED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        active.cancellation.fire();
     }
 
     fn clear_generation(&self, session_id: &str, generation: u64) -> bool {

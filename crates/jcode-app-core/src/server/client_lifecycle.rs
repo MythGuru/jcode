@@ -3347,8 +3347,17 @@ pub(super) async fn process_message_streaming_mpsc_with_guard(
 ) -> (Result<()>, tokio::sync::OwnedMutexGuard<Agent>) {
     let turn_execution = turn_lease.context().clone();
     let lease_cancellation = turn_lease.cancellation();
+    let launch_committed = turn_lease.commit_launch();
     let _turn_lease = turn_lease;
     let session_id = agent.session_id().to_string();
+    if !launch_committed || lease_cancellation.is_set() {
+        return (
+            Err(anyhow::anyhow!(
+                "The turn was cancelled before message delivery."
+            )),
+            agent,
+        );
+    }
     // The Agent mutex remains held for the whole turn, so a watcher cannot call
     // `request_graceful_shutdown()` by locking the Agent after cancellation.
     // Clone the exact signal used by that method while the lock is available,
