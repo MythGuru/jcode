@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "name": "healthview",
+      "members": [
+        {
+          "alias": "Atlas",
+          "working_dir": "C:\\Users\\micha\\Developer\\healthview-platform"
+        },
+        {
+          "alias": "Eve",
+          "working_dir": "C:\\Users\\micha\\Developer\\healthview-app"
+        }
+      ]
+    }
+  ]
+}
