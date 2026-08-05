@@ -151,6 +151,61 @@ mod tests {
         );
     }
 
+    /// The unit tests above prove we set the variable. This proves the variable
+    /// actually does the job: real git, a real home-directory repo, and a real
+    /// scratch directory inside it that must NOT be swallowed.
+    ///
+    /// Without the ceiling this is the production bug: git climbs out of the
+    /// scratch dir, adopts the home repo, and reports it as the toplevel.
+    #[test]
+    fn git_really_stops_at_the_ceiling() {
+        let _lock = crate::storage::lock_test_env();
+
+        let home = tempfile::tempdir().expect("temp home");
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(home.path())
+            .status();
+        // No usable git in this environment: nothing to assert about git's behaviour.
+        if !matches!(init, Ok(status) if status.success()) {
+            return;
+        }
+
+        let scratch = home.path().join("scratch-project");
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+
+        let toplevel_of = |ceiling: Option<&std::path::Path>| -> Option<String> {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["rev-parse", "--show-toplevel"])
+                .current_dir(&scratch);
+            match ceiling {
+                Some(dir) => {
+                    cmd.env("GIT_CEILING_DIRECTORIES", dir);
+                }
+                None => {
+                    cmd.env_remove("GIT_CEILING_DIRECTORIES");
+                }
+            }
+            let out = cmd.output().ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+
+        // Baseline: the hazard is real in this environment.
+        assert!(
+            toplevel_of(None).is_some(),
+            "without a ceiling git should climb out of the scratch dir into the home repo"
+        );
+
+        // With the ceiling git must refuse rather than adopt the home repo.
+        assert_eq!(
+            toplevel_of(Some(home.path())),
+            None,
+            "the ceiling must stop discovery before it reaches the home repo"
+        );
+    }
+
     /// Worktrees and submodules use a `.git` *file* rather than a directory.
     #[test]
     fn a_home_using_a_git_file_also_counts_as_a_repo() {
