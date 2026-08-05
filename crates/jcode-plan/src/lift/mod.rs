@@ -401,8 +401,14 @@ fn augment(
             continue;
         }
         seen[right] = true;
-        let free = matched_right[right].is_none();
-        if free || augment(matched_right[right].unwrap(), reach, matched_right, seen) {
+        // `matched_right[right]` is only read when it is occupied, so this
+        // expresses the same logic as an `is_none()` check plus `unwrap()`
+        // without leaving a panic path for a later edit to reach.
+        let advanced = match matched_right[right] {
+            None => true,
+            Some(current) => augment(current, reach, matched_right, seen),
+        };
+        if advanced {
             matched_right[right] = Some(left);
             return true;
         }

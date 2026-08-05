@@ -1710,6 +1710,8 @@ async fn app_core_prompt_path_omits_working_memory_when_disabled() {
 
     crate::memory::clear_working_memory(&session_id);
     restore_working_memory_flag(previous);
+}
+
 #[derive(Clone, Default)]
 struct FableGuardrailProvider {
     calls: Arc<std::sync::Mutex<usize>>,

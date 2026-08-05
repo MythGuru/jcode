@@ -100,17 +100,34 @@ fn clear_snapshot_removes_saved_file() {
     assert!(load_snapshot().is_err());
 }
 
+/// A pid that is guaranteed to be dead.
+///
+/// These tests need a session whose process is gone, so they spawn something
+/// that exits immediately and reap it. The command differs per platform: a
+/// hardcoded `sh` is not present on Windows, which failed the test for a
+/// reason that had nothing to do with restart snapshots.
+fn reaped_dead_pid() -> u32 {
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("cmd");
+    #[cfg(windows)]
+    command.args(["/C", "exit 0"]);
+
+    #[cfg(unix)]
+    let mut command = std::process::Command::new("sh");
+    #[cfg(unix)]
+    command.args(["-c", "exit 0"]);
+
+    let mut child = command.spawn().expect("spawn child");
+    let pid = child.id();
+    let _ = child.wait().expect("wait for child");
+    pid
+}
+
 #[test]
 fn arm_auto_restore_from_recent_crashes_captures_dead_active_sessions() {
     let _guard = TestEnvGuard::new().expect("setup test env");
 
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("exit 0")
-        .spawn()
-        .expect("spawn child");
-    let dead_pid = child.id();
-    let _ = child.wait().expect("wait for child");
+    let dead_pid = reaped_dead_pid();
 
     let mut crashed = Session::create_with_id(
         "session_auto_restore_crash".to_string(),
@@ -144,13 +161,7 @@ fn arm_auto_restore_from_recent_crashes_captures_dead_active_sessions() {
 fn arm_auto_restore_from_recent_crashes_ignores_old_crashes() {
     let _guard = TestEnvGuard::new().expect("setup test env");
 
-    let mut child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("exit 0")
-        .spawn()
-        .expect("spawn child");
-    let dead_pid = child.id();
-    let _ = child.wait().expect("wait for child");
+    let dead_pid = reaped_dead_pid();
 
     let mut crashed = Session::create_with_id(
         "session_old_auto_restore_crash".to_string(),

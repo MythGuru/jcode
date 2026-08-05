@@ -868,6 +868,8 @@ fn knowledge_nudge_absent_when_either_flag_is_off() {
 
     crate::memory::clear_working_memory(session);
     crate::knowledge::promotion::clear_nudged(session);
+}
+
 #[test]
 fn test_selfdev_prompt_uses_desktop2_focus_for_desktop2_working_dir() {
     let desktop2_dir = std::path::Path::new("/tmp/jcode/crates/jcode-desktop2/src");
