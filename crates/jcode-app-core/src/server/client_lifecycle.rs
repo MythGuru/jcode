@@ -3317,12 +3317,30 @@ pub(super) async fn process_message_streaming_mpsc(
     turn_lease: super::turn_coordinator::ServerTurnLease,
 ) -> Result<()> {
     let turn_execution = turn_lease.context().clone();
+    let lease_cancellation = turn_lease.cancellation();
     let _turn_lease = turn_lease;
     let mut agent = agent.lock().await;
     let session_id = agent.session_id().to_string();
+    // The Agent mutex remains held for the whole turn, so a watcher cannot call
+    // `request_graceful_shutdown()` by locking the Agent after cancellation.
+    // Clone the exact signal used by that method while the lock is available,
+    // then wait without retaining or reacquiring the mutex.
+    let agent_shutdown = agent.graceful_shutdown_signal();
+    let watcher_shutdown = agent_shutdown.clone();
+    let cancellation_watcher = tokio::spawn(async move {
+        lease_cancellation.notified().await;
+        watcher_shutdown.fire();
+        watcher_shutdown.epoch()
+    });
     let result = agent
         .run_once_streaming_mpsc(content, images, system_reminder, event_tx, turn_execution)
         .await;
+    cancellation_watcher.abort();
+    if let Ok(cancel_epoch) = cancellation_watcher.await {
+        // Do not let this lease's consumed cancellation stop a later turn. A
+        // newer fire wins and is preserved by the epoch-aware reset.
+        agent_shutdown.reset_if_epoch(cancel_epoch);
+    }
     if result.is_ok() {
         crate::runtime_memory_log::emit_event(
             crate::runtime_memory_log::RuntimeMemoryLogEvent::new(

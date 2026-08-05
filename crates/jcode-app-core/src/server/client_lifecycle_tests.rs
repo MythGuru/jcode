@@ -611,6 +611,74 @@ fn cancel_aborts_detached_streaming_turn_with_stale_stop_signal() -> anyhow::Res
     Ok(())
 }
 
+#[test]
+fn coordinator_cancellation_stops_running_agent_turn() -> anyhow::Result<()> {
+    let _lock = crate::storage::lock_test_env();
+    let _env = IsolatedReloadRecoveryEnv::new();
+    let session_id = "session_coordinator_cancel_running_agent";
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(async {
+        let provider: Arc<dyn Provider> = Arc::new(NeverEndingStreamProvider);
+        let registry = Registry::new(Arc::clone(&provider)).await;
+        let mut session =
+            crate::session::Session::create_with_id(session_id.to_string(), None, None);
+        session.model = Some("never-ending-stream".to_string());
+        let agent = Arc::new(Mutex::new(Agent::new_with_session(
+            provider, registry, session, None,
+        )));
+        let coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+        let lease = coordinator
+            .begin_server_turn(
+                session_id,
+                crate::tool::TurnOrigin::ServerInitiated {
+                    kind: "coordinator-cancel-test".to_string(),
+                },
+            )
+            .expect("test turn lease");
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+
+        let turn_agent = Arc::clone(&agent);
+        let mut turn = tokio::spawn(async move {
+            process_message_streaming_mpsc(
+                turn_agent,
+                "stream until the coordinator cancels",
+                Vec::new(),
+                None,
+                event_tx,
+                lease,
+            )
+            .await
+        });
+
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), event_rx.recv()).await {
+                Ok(Some(ServerEvent::TextDelta { .. })) => break,
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("event channel closed before streaming started"),
+                Err(_) => panic!("turn never started streaming"),
+            }
+        }
+
+        assert!(coordinator.cancel_session(session_id));
+
+        let completed = tokio::time::timeout(Duration::from_secs(2), &mut turn).await;
+        if completed.is_err() {
+            turn.abort();
+        }
+        let result = completed
+            .expect("coordinator cancellation must stop the running Agent turn")
+            .expect("turn task join");
+        result.expect("cancelled turn should checkpoint cleanly");
+        let shutdown = agent.lock().await.graceful_shutdown_signal();
+        assert!(
+            !shutdown.is_set(),
+            "the consumed lease cancellation must not leak into the next turn"
+        );
+    });
+    Ok(())
+}
+
 /// A cancel that arrives while the session is idle must not arm the cancel
 /// signal at all.
 ///
