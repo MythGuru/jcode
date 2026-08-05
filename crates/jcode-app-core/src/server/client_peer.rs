@@ -3,7 +3,7 @@ use super::peer_exchange::{
     PeerExchangeRegistry, PeerExchangeResult, PeerRecipientOutcome, PeerStartError,
     PinnedPeerIdentity, RegisteredPeerExchange,
 };
-use super::turn_coordinator::{BeginPeerError, TurnCoordinator};
+use super::turn_coordinator::{BeginPeerError, TurnCoordinator, TurnValidationError};
 use super::{SessionAgents, SwarmEvent, SwarmMember, session_event_fanout_sender};
 use crate::agent::Agent;
 use crate::protocol::{
@@ -62,6 +62,24 @@ fn send_error(id: u64, message: impl Into<String>, tx: &mpsc::UnboundedSender<Se
         message: message.into(),
         retry_after_secs: None,
     });
+}
+
+fn peer_turn_validation_message(error: TurnValidationError) -> &'static str {
+    match error {
+        TurnValidationError::OriginNotAllowed => {
+            "Peer messages can only be started during a normal user-directed turn."
+        }
+        TurnValidationError::SendAlreadyConsumed => {
+            "This normal turn has already started a peer exchange."
+        }
+        TurnValidationError::MissingServerIdentity
+        | TurnValidationError::NoActiveLease
+        | TurnValidationError::GenerationMismatch
+        | TurnValidationError::CapabilityMismatch
+        | TurnValidationError::OriginMismatch => {
+            "This tool call does not have a valid live server turn capability."
+        }
+    }
 }
 
 fn project_name(path: &Path) -> String {
@@ -185,7 +203,7 @@ fn validated_caller<'a>(
             caller.generation,
             &caller.capability,
         )
-        .map_err(|error| format!("Peer caller validation failed: {error}."))?;
+        .map_err(|error| peer_turn_validation_message(error).to_string())?;
     let snapshot = snapshots
         .iter()
         .find(|snapshot| snapshot.session_id == caller.session_id)
@@ -236,11 +254,9 @@ async fn begin_peer_send_transaction(
     })
 }
 
-fn send_peer_start_error(id: u64, error: PeerStartError, tx: &mpsc::UnboundedSender<ServerEvent>) {
-    let message = match error {
-        PeerStartError::InvalidSender(error) => {
-            format!("Peer caller validation failed: {error}.")
-        }
+fn peer_start_error_message(error: PeerStartError) -> String {
+    match error {
+        PeerStartError::InvalidSender(error) => peer_turn_validation_message(error).to_string(),
         PeerStartError::SenderSessionMissing => {
             "The peer caller session is no longer live on this server.".to_string()
         }
@@ -260,14 +276,29 @@ fn send_peer_start_error(id: u64, error: PeerStartError, tx: &mpsc::UnboundedSen
             alias,
             error: BeginPeerError::Busy,
         } => format!("{alias} is busy. No message was sent."),
+        PeerStartError::Coordinator {
+            alias,
+            error: BeginPeerError::PeerExchangeInProgress,
+        }
+        | PeerStartError::Registration {
+            alias,
+            error: super::peer_exchange::RegisterExchangeError::SessionAlreadyReserved,
+        } => format!("{alias} is already handling another peer exchange."),
+        PeerStartError::Coordinator {
+            error: BeginPeerError::InvalidSender(error),
+            ..
+        } => peer_turn_validation_message(error).to_string(),
         PeerStartError::Coordinator { error, .. } => {
             format!("Peer message was rejected: {error}.")
         }
         PeerStartError::Registration { error, .. } => {
             format!("Peer message was rejected: {error}.")
         }
-    };
-    send_error(id, message, tx);
+    }
+}
+
+fn send_peer_start_error(id: u64, error: PeerStartError, tx: &mpsc::UnboundedSender<ServerEvent>) {
+    send_error(id, peer_start_error_message(error), tx);
 }
 
 fn peer_prompt(
@@ -365,7 +396,7 @@ pub(super) async fn handle_peer_request(
             let exchange_id = match &caller.context.origin {
                 TurnOrigin::PeerInbound { exchange_id } => exchange_id.clone(),
                 _ => {
-                    send_error(id, "This turn cannot reply to peer messages.", tx);
+                    send_error(id, "This turn cannot start or reply to peer messages.", tx);
                     return;
                 }
             };
@@ -427,7 +458,7 @@ pub(super) async fn handle_peer_request(
                 ) {
                 Ok(turn) => turn,
                 Err(error) => {
-                    send_error(id, format!("Peer caller validation failed: {error}."), tx);
+                    send_error(id, peer_turn_validation_message(error), tx);
                     return;
                 }
             };
@@ -624,6 +655,58 @@ mod tests {
         assert_eq!(result.from_project, "recipient");
         assert_eq!(result.to, "Eve");
         assert_eq!(result.to_project, "sender");
+    }
+
+    #[test]
+    fn peer_start_errors_preserve_exact_specification_distinctions() {
+        assert_eq!(
+            peer_start_error_message(PeerStartError::Coordinator {
+                alias: "Atlas".to_string(),
+                error: BeginPeerError::InvalidSender(
+                    super::super::turn_coordinator::TurnValidationError::SendAlreadyConsumed,
+                ),
+            }),
+            "This normal turn has already started a peer exchange."
+        );
+        assert_eq!(
+            peer_start_error_message(PeerStartError::Coordinator {
+                alias: "Atlas".to_string(),
+                error: BeginPeerError::PeerExchangeInProgress,
+            }),
+            "Atlas is already handling another peer exchange."
+        );
+        assert_eq!(
+            peer_start_error_message(PeerStartError::Coordinator {
+                alias: "Atlas".to_string(),
+                error: BeginPeerError::Busy,
+            }),
+            "Atlas is busy. No message was sent."
+        );
+        assert_eq!(
+            peer_start_error_message(PeerStartError::Registration {
+                alias: "Atlas".to_string(),
+                error: super::super::peer_exchange::RegisterExchangeError::SessionAlreadyReserved,
+            }),
+            "Atlas is already handling another peer exchange."
+        );
+    }
+
+    #[test]
+    fn invalid_live_turn_errors_use_the_exact_specification_text() {
+        use super::super::turn_coordinator::TurnValidationError;
+
+        assert_eq!(
+            peer_turn_validation_message(TurnValidationError::CapabilityMismatch),
+            "This tool call does not have a valid live server turn capability."
+        );
+        assert_eq!(
+            peer_turn_validation_message(TurnValidationError::OriginNotAllowed),
+            "Peer messages can only be started during a normal user-directed turn."
+        );
+        assert_eq!(
+            peer_turn_validation_message(TurnValidationError::SendAlreadyConsumed),
+            "This normal turn has already started a peer exchange."
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

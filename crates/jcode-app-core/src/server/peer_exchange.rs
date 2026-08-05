@@ -141,9 +141,9 @@ impl fmt::Display for PeerReplyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::UnknownExchange => "the peer exchange is no longer active",
-            Self::InvalidTurn => "this turn cannot reply to peer messages",
+            Self::InvalidTurn => "This turn cannot start or reply to peer messages.",
             Self::WrongRecipient => "this peer reply is not from the fixed recipient",
-            Self::AlreadyReplied => "this peer message has already been replied to",
+            Self::AlreadyReplied => "This peer message has already been replied to.",
             Self::MessageTooLong => "peer replies may not exceed 8,000 characters",
         };
         formatter.write_str(message)
@@ -820,6 +820,18 @@ mod tests {
             )
             .expect("exchange should register");
         (coordinator, sender_lease, registry, registered)
+    }
+
+    #[test]
+    fn peer_reply_errors_use_exact_specification_text() {
+        assert_eq!(
+            PeerReplyError::AlreadyReplied.to_string(),
+            "This peer message has already been replied to."
+        );
+        assert_eq!(
+            PeerReplyError::InvalidTurn.to_string(),
+            "This turn cannot start or reply to peer messages."
+        );
     }
 
     #[test]

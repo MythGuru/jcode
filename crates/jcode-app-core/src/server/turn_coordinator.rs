@@ -39,6 +39,7 @@ pub(super) enum BeginTurnError {
 pub(super) enum BeginPeerError {
     SameSession,
     Busy,
+    PeerExchangeInProgress,
     InvalidSender(TurnValidationError),
 }
 
@@ -49,6 +50,9 @@ impl fmt::Display for BeginPeerError {
                 formatter.write_str("a session cannot send a peer message to itself")
             }
             Self::Busy => formatter.write_str("a participating session is busy"),
+            Self::PeerExchangeInProgress => {
+                formatter.write_str("the recipient already has an active peer exchange")
+            }
             Self::InvalidSender(error) => write!(formatter, "invalid sender turn: {error}"),
         }
     }
@@ -373,12 +377,18 @@ impl TurnCoordinator {
                 TurnValidationError::SendAlreadyConsumed,
             ));
         }
-        if state.reservations.contains_key(sender_session_id)
-            || state.reservations.contains_key(recipient_session_id)
-            || state
-                .sessions
-                .get(recipient_session_id)
-                .is_some_and(|session| session.active.is_some())
+        if state.reservations.contains_key(sender_session_id) {
+            return Err(BeginPeerError::InvalidSender(
+                TurnValidationError::SendAlreadyConsumed,
+            ));
+        }
+        if state.reservations.contains_key(recipient_session_id) {
+            return Err(BeginPeerError::PeerExchangeInProgress);
+        }
+        if state
+            .sessions
+            .get(recipient_session_id)
+            .is_some_and(|session| session.active.is_some())
         {
             return Err(BeginPeerError::Busy);
         }
@@ -848,6 +858,45 @@ mod tests {
                 .begin_peer_turn(sender.context(), "recipient", "exchange-ok".to_string())
                 .is_ok(),
             "a rejected peer start must not consume the sender permit"
+        );
+    }
+
+    #[test]
+    fn peer_start_distinguishes_reserved_recipient_from_ordinary_busy() {
+        let coordinator = TurnCoordinator::default();
+        let first_sender = coordinator
+            .begin_server_turn("first-sender", TurnOrigin::NormalUser)
+            .expect("first sender turn should start");
+        let second_sender = coordinator
+            .begin_server_turn("second-sender", TurnOrigin::NormalUser)
+            .expect("second sender turn should start");
+        let first_exchange = coordinator
+            .begin_peer_turn(
+                first_sender.context(),
+                "recipient",
+                "exchange-1".to_string(),
+            )
+            .expect("first peer exchange should reserve the recipient");
+
+        assert!(matches!(
+            coordinator.begin_peer_turn(
+                second_sender.context(),
+                "recipient",
+                "exchange-2".to_string(),
+            ),
+            Err(BeginPeerError::PeerExchangeInProgress)
+        ));
+
+        drop(first_exchange);
+        assert!(
+            coordinator
+                .begin_peer_turn(
+                    second_sender.context(),
+                    "recipient",
+                    "exchange-3".to_string(),
+                )
+                .is_ok(),
+            "the rejected start must not consume the second sender permit"
         );
     }
 }
