@@ -229,6 +229,40 @@ impl Drop for ServerTurnLease {
 }
 
 impl TurnCoordinator {
+    pub(super) async fn run_server_capture(
+        &self,
+        session_id: &str,
+        agent: Arc<tokio::sync::Mutex<crate::agent::Agent>>,
+        message: &str,
+        turn_kind: &'static str,
+    ) -> anyhow::Result<String> {
+        let lease = self
+            .begin_server_turn(
+                session_id,
+                TurnOrigin::ServerInitiated {
+                    kind: turn_kind.to_string(),
+                },
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let turn_execution = lease.context().clone();
+        let lease_cancellation = lease.cancellation();
+        let _lease = lease;
+        let mut agent = agent.lock().await;
+        let agent_shutdown = agent.graceful_shutdown_signal();
+        let watcher_shutdown = agent_shutdown.clone();
+        let cancellation_watcher = tokio::spawn(async move {
+            lease_cancellation.notified().await;
+            watcher_shutdown.fire();
+            watcher_shutdown.epoch()
+        });
+        let result = agent.run_once_capture(message, turn_execution).await;
+        cancellation_watcher.abort();
+        if let Ok(cancel_epoch) = cancellation_watcher.await {
+            agent_shutdown.reset_if_epoch(cancel_epoch);
+        }
+        result
+    }
+
     pub(super) fn validated_context_from_hidden_identity(
         &self,
         session_id: &str,

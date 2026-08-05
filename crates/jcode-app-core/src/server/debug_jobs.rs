@@ -71,6 +71,8 @@ impl DebugJob {
 
 pub(super) async fn maybe_start_async_debug_job(
     agent: Arc<Mutex<Agent>>,
+    session_id: String,
+    turn_coordinator: super::turn_coordinator::TurnCoordinator,
     trimmed: &str,
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
 ) -> Result<Option<String>> {
@@ -83,16 +85,19 @@ pub(super) async fn maybe_start_async_debug_job(
             return Err(anyhow::anyhow!("swarm_message_async: requires content"));
         }
 
-        let job_id = create_job(&agent, &debug_jobs, format!("swarm_message:{}", msg)).await;
+        let job_id = create_job(&session_id, &debug_jobs, format!("swarm_message:{}", msg)).await;
 
         let jobs = Arc::clone(&debug_jobs);
         let agent = Arc::clone(&agent);
+        let session_id = session_id.clone();
+        let turn_coordinator = turn_coordinator.clone();
         let msg = msg.to_string();
         let job_id_inner = job_id.clone();
         tokio::spawn(async move {
             mark_job_running(&jobs, &job_id_inner).await;
 
-            let result = super::run_swarm_message(agent.clone(), &msg).await;
+            let result =
+                super::run_swarm_message(agent.clone(), &session_id, &turn_coordinator, &msg).await;
             let partial_output = if result.is_err() {
                 let agent = agent.lock().await;
                 agent.last_assistant_text()
@@ -112,24 +117,20 @@ pub(super) async fn maybe_start_async_debug_job(
             return Err(anyhow::anyhow!("message_async: requires content"));
         }
 
-        let job_id = create_job(&agent, &debug_jobs, format!("message:{}", msg)).await;
+        let job_id = create_job(&session_id, &debug_jobs, format!("message:{}", msg)).await;
 
         let jobs = Arc::clone(&debug_jobs);
         let agent = Arc::clone(&agent);
+        let session_id = session_id.clone();
+        let turn_coordinator = turn_coordinator.clone();
         let msg = msg.to_string();
         let job_id_inner = job_id.clone();
         tokio::spawn(async move {
             mark_job_running(&jobs, &job_id_inner).await;
 
-            let result = {
-                let mut agent = agent.lock().await;
-                agent
-                    .run_once_capture(
-                        &msg,
-                        crate::tool::TurnExecutionContext::server_initiated("debug-job"),
-                    )
-                    .await
-            };
+            let result = turn_coordinator
+                .run_server_capture(&session_id, agent.clone(), &msg, "debug-job")
+                .await;
             let partial_output = if result.is_err() {
                 let agent = agent.lock().await;
                 agent.last_assistant_text()
@@ -266,14 +267,10 @@ pub(super) async fn maybe_handle_job_command(
 }
 
 async fn create_job(
-    agent: &Arc<Mutex<Agent>>,
+    session_id: &str,
     debug_jobs: &Arc<RwLock<HashMap<String, DebugJob>>>,
     command: String,
 ) -> String {
-    let session = {
-        let agent = agent.lock().await;
-        agent.session_id().to_string()
-    };
     let job_id = id::new_id("job");
     {
         let mut jobs = debug_jobs.write().await;
@@ -283,7 +280,7 @@ async fn create_job(
                 id: job_id.clone(),
                 status: DebugJobStatus::Queued,
                 command,
-                session_id: Some(session),
+                session_id: Some(session_id.to_string()),
                 created_at: Instant::now(),
                 started_at: None,
                 finished_at: None,

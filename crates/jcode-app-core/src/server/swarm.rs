@@ -1618,7 +1618,12 @@ pub(super) async fn run_swarm_task(
     }
 }
 
-pub(super) async fn run_swarm_message(agent: Arc<Mutex<Agent>>, message: &str) -> Result<String> {
+pub(super) async fn run_swarm_message(
+    agent: Arc<Mutex<Agent>>,
+    session_id: &str,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
+    message: &str,
+) -> Result<String> {
     let started = Instant::now();
     log_swarm_lifecycle(
         "message_start",
@@ -1639,15 +1644,14 @@ Return ONLY a JSON array of objects with keys: description, prompt, subagent_typ
 No extra text.\n\nRequest:\n{message}"
     );
 
-    let plan_text = {
-        let mut agent = agent.lock().await;
-        agent
-            .run_once_capture(
-                &planner_prompt,
-                crate::tool::TurnExecutionContext::server_initiated("swarm-planner"),
-            )
-            .await?
-    };
+    let plan_text = turn_coordinator
+        .run_server_capture(
+            session_id,
+            Arc::clone(&agent),
+            &planner_prompt,
+            "swarm-planner",
+        )
+        .await?;
 
     let mut tasks = parse_swarm_tasks(&plan_text);
     if tasks.is_empty() {
@@ -1694,15 +1698,9 @@ No extra text.\n\nRequest:\n{message}"
     }
     integration_prompt.push_str("\nNow complete the task.\n");
 
-    let final_output = {
-        let mut agent = agent.lock().await;
-        agent
-            .run_once_capture(
-                &integration_prompt,
-                crate::tool::TurnExecutionContext::server_initiated("swarm-integration"),
-            )
-            .await?
-    };
+    let final_output = turn_coordinator
+        .run_server_capture(session_id, agent, &integration_prompt, "swarm-integration")
+        .await?;
 
     log_swarm_lifecycle(
         "message_done",

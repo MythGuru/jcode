@@ -528,14 +528,16 @@ pub(super) async fn handle_debug_client(
                             match resolve_debug_session(&sessions, &session_id, requested_session)
                                 .await
                             {
-                                Ok((_session, agent)) => {
+                                Ok((resolved_session_id, agent)) => {
                                     execute_debug_command(
                                         agent,
+                                        resolved_session_id.clone(),
+                                        turn_coordinator.clone(),
                                         cmd,
                                         Arc::clone(&debug_jobs),
                                         Some(&server_identity),
                                         Some(DebugInterruptContext {
-                                            session_id: _session,
+                                            session_id: resolved_session_id,
                                             shutdown_signals: Arc::clone(&shutdown_signals),
                                             soft_interrupt_queues: Arc::clone(
                                                 &soft_interrupt_queues,

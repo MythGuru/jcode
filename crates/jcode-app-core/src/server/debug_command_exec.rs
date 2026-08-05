@@ -88,17 +88,15 @@ pub(super) fn debug_message_timeout_secs() -> Option<u64> {
 
 pub(super) async fn run_debug_message_with_timeout(
     agent: Arc<Mutex<Agent>>,
+    session_id: String,
+    turn_coordinator: super::turn_coordinator::TurnCoordinator,
     msg: &str,
     timeout_secs: u64,
 ) -> Result<String> {
     let msg = msg.to_string();
     let mut handle = tokio::spawn(async move {
-        let mut agent = agent.lock().await;
-        agent
-            .run_once_capture(
-                &msg,
-                crate::tool::TurnExecutionContext::server_initiated("debug-message"),
-            )
+        turn_coordinator
+            .run_server_capture(&session_id, agent, &msg, "debug-message")
             .await
     });
 
@@ -121,6 +119,8 @@ pub(super) async fn run_debug_message_with_timeout(
 
 pub(super) async fn execute_debug_command(
     agent: Arc<Mutex<Agent>>,
+    session_id: String,
+    turn_coordinator: super::turn_coordinator::TurnCoordinator,
     command: &str,
     debug_jobs: Arc<RwLock<HashMap<String, DebugJob>>>,
     server_identity: Option<&ServerIdentity>,
@@ -128,8 +128,14 @@ pub(super) async fn execute_debug_command(
 ) -> Result<String> {
     let trimmed = command.trim();
 
-    if let Some(output) =
-        maybe_start_async_debug_job(Arc::clone(&agent), trimmed, Arc::clone(&debug_jobs)).await?
+    if let Some(output) = maybe_start_async_debug_job(
+        Arc::clone(&agent),
+        session_id.clone(),
+        turn_coordinator.clone(),
+        trimmed,
+        Arc::clone(&debug_jobs),
+    )
+    .await?
     {
         return Ok(output);
     }
@@ -140,21 +146,25 @@ pub(super) async fn execute_debug_command(
             return Err(anyhow::anyhow!("swarm_message: requires content"));
         }
 
-        let final_text = super::run_swarm_message(agent.clone(), msg).await?;
+        let final_text =
+            super::run_swarm_message(agent.clone(), &session_id, &turn_coordinator, msg).await?;
         return Ok(final_text);
     }
 
     if trimmed.starts_with("message:") {
         let msg = trimmed.strip_prefix("message:").unwrap_or("").trim();
         if let Some(timeout_secs) = debug_message_timeout_secs() {
-            return run_debug_message_with_timeout(agent, msg, timeout_secs).await;
-        }
-        let mut agent = agent.lock().await;
-        let output = agent
-            .run_once_capture(
+            return run_debug_message_with_timeout(
+                agent,
+                session_id,
+                turn_coordinator,
                 msg,
-                crate::tool::TurnExecutionContext::server_initiated("debug-command"),
+                timeout_secs,
             )
+            .await;
+        }
+        let output = turn_coordinator
+            .run_server_capture(&session_id, agent, msg, "debug-command")
             .await?;
         return Ok(output);
     }
@@ -648,6 +658,7 @@ mod tests {
     use crate::tool::Registry;
     use anyhow::Result;
     use async_trait::async_trait;
+    use futures::stream;
     use jcode_agent_runtime::InterruptSignal;
     use std::collections::HashMap;
     use std::ffi::OsString;
@@ -693,6 +704,8 @@ mod tests {
 
     struct TestProvider;
 
+    struct CompleteProvider;
+
     #[async_trait]
     impl Provider for TestProvider {
         async fn complete(
@@ -716,6 +729,29 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl Provider for CompleteProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::message::Message],
+            _tools: &[crate::message::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            Ok(Box::pin(stream::iter(vec![Ok(
+                crate::message::StreamEvent::MessageEnd { stop_reason: None },
+            )])))
+        }
+
+        fn name(&self) -> &str {
+            "complete"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self)
+        }
+    }
+
     #[tokio::test]
     async fn debug_tool_selfdev_reload_returns_promptly_for_direct_execution() {
         let _env_lock = lock_env();
@@ -731,6 +767,7 @@ mod tests {
         let mut agent = Agent::new(provider, registry);
         agent.set_canary("self-dev");
         let agent = Arc::new(AsyncMutex::new(agent));
+        let session_id = agent.lock().await.session_id().to_string();
 
         let debug_jobs = Arc::new(RwLock::new(HashMap::new()));
         let started = Instant::now();
@@ -750,6 +787,8 @@ mod tests {
             Duration::from_secs(2),
             execute_debug_command(
                 agent,
+                session_id,
+                crate::server::turn_coordinator::TurnCoordinator::default(),
                 r#"tool:selfdev {"action":"reload"}"#,
                 debug_jobs,
                 None,
@@ -802,11 +841,13 @@ mod tests {
             Duration::from_millis(200),
             execute_debug_command(
                 Arc::clone(&agent),
+                session_id.clone(),
+                crate::server::turn_coordinator::TurnCoordinator::default(),
                 "cancel",
                 Arc::new(RwLock::new(HashMap::new())),
                 None,
                 Some(DebugInterruptContext {
-                    session_id,
+                    session_id: session_id.clone(),
                     shutdown_signals,
                     soft_interrupt_queues,
                 }),
@@ -821,5 +862,42 @@ mod tests {
         let pending = queue.lock().expect("queue lock should not be poisoned");
         assert_eq!(pending.len(), 1);
         assert!(pending[0].urgent);
+    }
+
+    #[tokio::test]
+    async fn peer_reservation_excludes_debug_model_turn() {
+        let provider: Arc<dyn Provider> = Arc::new(CompleteProvider);
+        let registry = Registry::new(provider.clone()).await;
+        let agent = Arc::new(AsyncMutex::new(Agent::new(provider, registry)));
+        let recipient_session_id = agent.lock().await.session_id().to_string();
+        let coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+        let sender_lease = coordinator
+            .begin_server_turn("debug-peer-sender", crate::tool::TurnOrigin::NormalUser)
+            .expect("sender turn lease");
+        let peer_reservation = coordinator
+            .begin_peer_turn(
+                sender_lease.context(),
+                &recipient_session_id,
+                "debug-peer-contention".to_string(),
+            )
+            .expect("peer reservation")
+            .commit();
+
+        let result = execute_debug_command(
+            Arc::clone(&agent),
+            recipient_session_id,
+            coordinator,
+            "message:debug must not bypass the peer reservation",
+            Arc::new(RwLock::new(HashMap::new())),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "debug model turn and peer reservation must not both acquire the recipient"
+        );
+        drop(peer_reservation);
     }
 }
