@@ -147,14 +147,15 @@ fn format_peer_list(peers: Vec<PeerInfo>) -> String {
 }
 
 fn format_peer_result(result: PeerResult) -> String {
+    let peer = format!("{} (`{}`)", result.from, result.from_project);
     let heading = match result.status {
-        PeerOutcome::Replied => format!("Peer reply from {}", result.from),
+        PeerOutcome::Replied => format!("Peer reply from {peer}"),
         PeerOutcome::CompletedWithoutReply => {
-            format!("{} completed the peer turn without replying", result.from)
+            format!("{peer} completed the peer turn without replying")
         }
-        PeerOutcome::Failed => format!("Peer turn with {} failed", result.from),
-        PeerOutcome::TimedOut => format!("Peer turn with {} timed out", result.from),
-        PeerOutcome::Cancelled => format!("Peer turn with {} was cancelled", result.from),
+        PeerOutcome::Failed => format!("Peer turn with {peer} failed"),
+        PeerOutcome::TimedOut => format!("Peer turn with {peer} timed out"),
+        PeerOutcome::Cancelled => format!("Peer turn with {peer} was cancelled"),
     };
     let mut output = format!("{heading}.\n\nMessage ID: `{}`", result.message_id);
     if let Some(reply) = result.reply {
@@ -322,6 +323,23 @@ mod tests {
             peer_socket_timeout(std::time::Duration::from_secs(600)),
             std::time::Duration::from_secs(630)
         );
+    }
+
+    #[test]
+    fn peer_result_identifies_reply_project() {
+        let output = format_peer_result(PeerResult {
+            status: PeerOutcome::Replied,
+            message_id: "peer_123".to_string(),
+            from: "Atlas".to_string(),
+            from_project: "healthview-platform".to_string(),
+            to: "Eve".to_string(),
+            to_project: "healthview-app".to_string(),
+            reply: Some("Reviewed.".to_string()),
+            error: None,
+        });
+
+        assert!(output.starts_with("Peer reply from Atlas (`healthview-platform`)."));
+        assert!(output.contains("Reviewed."));
     }
 
     #[test]

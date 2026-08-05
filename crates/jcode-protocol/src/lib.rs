@@ -106,7 +106,9 @@ pub struct PeerResult {
     pub status: PeerOutcome,
     pub message_id: String,
     pub from: String,
+    pub from_project: String,
     pub to: String,
+    pub to_project: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

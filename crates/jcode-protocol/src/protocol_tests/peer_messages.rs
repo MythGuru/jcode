@@ -105,7 +105,9 @@ fn peer_send_result_roundtrip_preserves_reply_and_failure_outcome() -> Result<()
             status: PeerOutcome::Failed,
             message_id: "peer_123".to_string(),
             from: "Atlas".to_string(),
+            from_project: "healthview-platform".to_string(),
             to: "Jcode".to_string(),
+            to_project: "healthview-app".to_string(),
             reply: Some("The shape is sound.".to_string()),
             error: Some("Recipient turn failed after replying.".to_string()),
         },
@@ -119,7 +121,9 @@ fn peer_send_result_roundtrip_preserves_reply_and_failure_outcome() -> Result<()
             assert_eq!(result.status, PeerOutcome::Failed);
             assert_eq!(result.message_id, "peer_123");
             assert_eq!(result.from, "Atlas");
+            assert_eq!(result.from_project, "healthview-platform");
             assert_eq!(result.to, "Jcode");
+            assert_eq!(result.to_project, "healthview-app");
             assert_eq!(result.reply.as_deref(), Some("The shape is sound."));
             assert_eq!(
                 result.error.as_deref(),

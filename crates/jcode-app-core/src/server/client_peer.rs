@@ -85,7 +85,9 @@ fn peer_result(result: PeerExchangeResult) -> PeerResult {
         status,
         message_id: result.exchange_id,
         from: result.recipient_alias,
+        from_project: result.recipient_project_name,
         to: result.sender_alias,
+        to_project: result.sender_project_name,
         reply: result.reply,
         error: result.detail,
     }
@@ -619,7 +621,9 @@ mod tests {
         assert_eq!(result.reply.as_deref(), Some("Reviewed."));
         assert_eq!(result.error.as_deref(), Some("recipient failed"));
         assert_eq!(result.from, "Atlas");
+        assert_eq!(result.from_project, "recipient");
         assert_eq!(result.to, "Eve");
+        assert_eq!(result.to_project, "sender");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

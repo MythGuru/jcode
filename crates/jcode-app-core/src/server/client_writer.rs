@@ -71,7 +71,9 @@ mod tests {
                 status: PeerOutcome::Replied,
                 message_id: "peer-message-7".to_string(),
                 from: "sender-session".to_string(),
+                from_project: "sender-project".to_string(),
                 to: "recipient-session".to_string(),
+                to_project: "recipient-project".to_string(),
                 reply: Some(secret.to_string()),
                 error: None,
             },
@@ -91,6 +93,8 @@ mod tests {
         assert!(captured.contains("request_id=42"));
         assert!(!captured.contains(secret));
         assert!(!captured.contains("sender-session"));
+        assert!(!captured.contains("sender-project"));
         assert!(!captured.contains("recipient-session"));
+        assert!(!captured.contains("recipient-project"));
     }
 }
