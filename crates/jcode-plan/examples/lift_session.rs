@@ -80,14 +80,27 @@ fn print_summary(path: &Path, report: &LiftReport) {
     println!("edges (kept):   {}", total_deps(report));
     println!("edges (found):  {}", report.edges.len());
     println!("critical path:  {}", report.critical_path());
-    println!("parallel width: {}", report.parallel_width());
+    println!("parallel width: {} (upper bound)", report.parallel_width());
     if report.critical_path() > 0 {
-        // The headline: an emergent run executes strictly sequentially, so any
-        // width above 1 is concurrency the session left unused.
+        let linked = report
+            .graph
+            .nodes()
+            .iter()
+            .filter(|node| !node.depends_on.is_empty())
+            .count();
         println!(
             "sequential rounds needed: {} of {} nodes",
             report.critical_path(),
             report.graph.len()
+        );
+        // Recall context, so the width above is not read as a measurement.
+        // Dependencies with no observable trace cannot be recovered, so the
+        // fewer nodes carry edges, the more the width overstates real freedom.
+        println!(
+            "nodes with a recovered dependency: {linked} of {} ({:.0}%); \
+             unlinked nodes may still be dependent",
+            report.graph.len(),
+            100.0 * linked as f64 / report.graph.len().max(1) as f64
         );
     }
     println!("\nnodes:");

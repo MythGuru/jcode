@@ -12,22 +12,36 @@
 //! gap directly: no system today closes the loop from trace to versioned,
 //! optimizable graph.
 //!
-//! This module closes it. It takes what actually happened, an ordered list of
+//! This module builds the first half of that loop: trace to explicit,
+//! versionable graph. It takes what actually happened, an ordered list of
 //! [`TraceEvent`]s, and recovers the graph that was implicitly executed:
 //! segments of related work become nodes, and real dataflow between them becomes
 //! edges. The result is an ordinary [`TaskGraph`], so everything the swarm engine
 //! already does with authored graphs (persist, diff, render, simulate, re-run)
 //! applies unchanged to a lifted one.
 //!
+//! The second half is not built, and the distinction matters. Closing the
+//! paper's loop also requires replaying a lifted graph and showing the replay
+//! reproduces the original outcome, then searching for a better structure and
+//! measuring that it is actually faster, cheaper, or no worse. None of that
+//! exists here. Until it does, this is a conservative trace lifter, not an
+//! optimizer, and it should be described that way.
+//!
+//! The idea of recovering a process model from an execution log is also not new
+//! in general: process mining has done it for business workflows for decades.
+//! What is specific here is applying it to coding-agent transcripts, where the
+//! evidence is tool calls and the recovered object is a task graph the same
+//! runtime can execute.
+//!
 //! # What the lift can and cannot know
 //!
-//! Lifting is *recovery*, not inference of intent. Two honesty rules follow:
+//! Lifting is *recovery*, not inference of intent. Three honesty rules follow:
 //!
 //! 1. **Edges are evidence, not guesses.** An edge is emitted only when a later
 //!    segment read a resource an earlier segment wrote, when two segments wrote
 //!    the same resource (write-after-write ordering), when a later segment
 //!    changed a resource an earlier one inspected (the read-then-edit pattern),
-//!    or when a verification ran after a change it could plausibly be verifying.
+//!    or when a verification ran in the same turn as the change it follows.
 //!    Mere adjacency in time is never an edge; sequential traces are not
 //!    sequential graphs, and pretending otherwise would produce a chain that
 //!    forbids the parallelism the real work allowed.
@@ -35,6 +49,14 @@
 //!    failure are lifted as [`NodeStatus::Failed`], so a lifted graph of a messy
 //!    session looks messy. A lifted graph is a record first and a template
 //!    second.
+//! 3. **Recall is partial, so the metrics are bounded claims.** Dependencies
+//!    that never touched a shared, observable resource, for example knowledge
+//!    the model carried in its head from one step to the next, leave no trace
+//!    and cannot be recovered. Because refusing to guess costs edges, and
+//!    missing edges make work look more independent than it was,
+//!    [`LiftReport::parallel_width`] is an upper bound on real concurrency, not
+//!    a measurement of it. Treat it as a hypothesis to test, never as a licence
+//!    to run those nodes in parallel.
 //!
 //! Because every edge points from a lower sequence position to a higher one, the
 //! output is acyclic by construction.
@@ -246,18 +268,23 @@ impl std::fmt::Display for ParallelWidth {
 }
 
 impl LiftReport {
-    /// Widest set of nodes that were mutually independent, i.e. how much of this
-    /// session could have run in parallel. This is the headline number a lifted
-    /// graph exists to produce: a chain has width 1, and anything above that is
-    /// concurrency the emergent run left on the table.
+    /// Widest set of nodes that were mutually independent *in the recovered
+    /// graph*, i.e. an upper bound on how much of this session could have run in
+    /// parallel.
     ///
-    /// This is the true maximum antichain, obtained via Dilworth's theorem: the
-    /// largest antichain equals the minimum chain cover, which equals
-    /// `n - maximum bipartite matching` over the reachability relation. The
-    /// cheaper widest-depth-layer count is only a lower bound, because an
-    /// antichain may span several depths, so reporting it as the answer would
-    /// understate available parallelism. Above [`MAX_EXACT_WIDTH_NODES`] the
-    /// bound is returned instead, flagged as inexact.
+    /// Read the qualifier carefully. This is exact for the graph that was
+    /// recovered, and the graph is missing every dependency that left no
+    /// observable trace, so the true figure is at most this and usually lower. A
+    /// chain has width 1; a large width means "worth investigating", not "safe to
+    /// parallelize".
+    ///
+    /// Within the recovered graph the value is the true maximum antichain,
+    /// obtained via Dilworth's theorem: the largest antichain equals the minimum
+    /// chain cover, which equals `n - maximum bipartite matching` over the
+    /// reachability relation. The cheaper widest-depth-layer count is only a
+    /// lower bound, because an antichain may span several depths, so reporting it
+    /// as the answer would understate the recovered concurrency. Above
+    /// [`MAX_EXACT_WIDTH_NODES`] the bound is returned instead, flagged inexact.
     pub fn parallel_width(&self) -> ParallelWidth {
         let count = self.graph.len();
         if count > MAX_EXACT_WIDTH_NODES {

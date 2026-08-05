@@ -85,6 +85,13 @@ pub fn trace_from_session(session: &Value) -> Vec<TraceEvent> {
                 .is_some_and(|id| failures.contains(&id.to_string()));
             let seq = events.len();
             let (reads, writes) = resources(tool, input);
+            // A tool that failed produced nothing, so it cannot be the source of
+            // a later read. Keeping its writes made a failed `Write` appear to
+            // feed everything that subsequently touched that path, inventing a
+            // dependency on work that never happened. The reads are kept: the
+            // attempt did consume its inputs, and the node still records the
+            // failure.
+            let writes = if failed { Vec::new() } else { writes };
             events.push(
                 TraceEvent::new(seq, turn, tool, summarize(tool, input))
                     .reads(reads)
@@ -154,10 +161,23 @@ fn resources(tool: &str, input: &Value) -> (Vec<String>, Vec<String>) {
         tool.to_ascii_lowercase().as_str(),
         "write" | "edit" | "multiedit" | "patch" | "apply_patch" | "notebookedit"
     );
+    // Search tools take a directory in `path` and a target in `file`, so the
+    // second is relative to the first. Treating them as two independent paths
+    // made a bare `.github/workflow.yml` match that file in *any* checkout.
+    let base = input
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|_| input.get("file").and_then(Value::as_str).is_some());
     let mut paths: Vec<String> = Vec::new();
     for key in ["file_path", "path", "notebook_path", "file", "target"] {
         if let Some(value) = input.get(key).and_then(Value::as_str) {
-            paths.extend(file_resource(value));
+            // `path` is the base itself; only `file` resolves against it.
+            let resolved = if key == "file" {
+                resolve_against(base, value)
+            } else {
+                value.to_string()
+            };
+            paths.extend(file_resource(&resolved));
         }
     }
     // Patch-style tools carry their targets inside the patch body.
@@ -293,25 +313,34 @@ fn program_name(program: &str) -> String {
 /// it merely mentions.
 fn command_resources(command: &str) -> (Vec<String>, Vec<String>) {
     let resolved = resolve_command(command);
+    // `cd build && node x.js` runs `x.js` inside `build`. The directory change
+    // is stripped when finding the effective command, so it must be recovered
+    // here or the operand resolves to the wrong file.
+    let base = leading_directory(command);
     let mut reads: Vec<String> = namespaced(CMD_NS, &command_key(command))
         .into_iter()
         .collect();
+    // Redirection is scanned over the *whole* command, not just its effective
+    // segment: `cargo test > out.log` puts the redirect in the same segment,
+    // but `cd x && cargo test > out.log` and chains that redirect in a later
+    // segment do not, and missing those loses the most common way one step
+    // hands its output to the next.
     let mut writes = Vec::new();
+    {
+        let mut all = tokenize(command).into_iter().peekable();
+        while let Some(token) = all.next() {
+            if let Some(target) = redirect_target(&token, &mut all) {
+                push_path(&mut writes, &target, base);
+            }
+        }
+    }
     let mut tokens = tokenize(&resolved).into_iter().peekable();
     let mut seen_program = false;
     let mut operands_are_paths = false;
     while let Some(token) = tokens.next() {
-        // `> out.txt` and `>> out.txt`, with or without a space after the arrow.
-        // Redirection is scanned for every command, not just file-taking ones,
-        // because capturing output to a file is the most common way one step
-        // hands work to the next.
-        if let Some(rest) = token.strip_prefix(">>").or_else(|| token.strip_prefix('>')) {
-            let target = if rest.is_empty() {
-                tokens.next().unwrap_or_default()
-            } else {
-                rest.to_string()
-            };
-            push_path(&mut writes, &target);
+        // Redirections were already collected above; skip them here so their
+        // targets are not also read as operands.
+        if redirect_target(&token, &mut tokens).is_some() {
             continue;
         }
         if token.starts_with('-') {
@@ -339,10 +368,54 @@ fn command_resources(command: &str) -> (Vec<String>, Vec<String>) {
             continue;
         }
         if operands_are_paths {
-            push_path(&mut reads, &token);
+            push_path(&mut reads, &token, base);
         }
     }
     (reads, writes)
+}
+
+/// The redirection target named by `token`, if it contains one.
+///
+/// Handles `>x`, `> x`, `>>x`, `>> x`, descriptor forms such as `2>x`, and the
+/// unspaced form `echo hi>x` where the redirection is glued to the preceding
+/// word. `2>&1` and `>&2` duplicate a stream rather than naming a file and so
+/// yield nothing.
+fn redirect_target(
+    token: &str,
+    rest: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
+) -> Option<String> {
+    // Take the last `>` so `a>b>c` resolves to the final target, and so any
+    // preceding text (a word or a file descriptor) is simply skipped.
+    let arrow = token.rfind('>')?;
+    let tail = &token[arrow + 1..];
+    // `&1` duplicates a descriptor; there is no file involved.
+    if tail.starts_with('&') {
+        return None;
+    }
+    if tail.is_empty() {
+        rest.next()
+    } else {
+        Some(tail.to_string())
+    }
+}
+
+/// The directory a command changes into before doing its work, if any.
+///
+/// Only a leading `cd` counts. A later `cd` in the chain applies to segments
+/// this function's caller does not analyze, so honoring it would resolve
+/// operands against the wrong base.
+fn leading_directory(command: &str) -> Option<&str> {
+    let trimmed = command.trim();
+    let (start, end) = *top_level_segments(trimmed).first()?;
+    let first = trimmed[start..end].trim();
+    let mut tokens = tokenize(first).into_iter();
+    if tokens.next().as_deref() != Some("cd") {
+        return None;
+    }
+    // Skip `/d` and similar switches used by cmd.
+    let dir = tokens.find(|token| !token.starts_with('/') && !token.starts_with('-'))?;
+    let offset = first.find(&dir)?;
+    Some(&first[offset..offset + dir.len()])
 }
 
 /// Programs whose bare operands are reliably file paths. Deliberately short: a
@@ -372,11 +445,14 @@ fn takes_file_operands(program: &str) -> bool {
     )
 }
 
-/// Record an operand that actually looks like a file path. Interpreters are also
-/// handed inline code and shell fragments, so a token only counts when it ends in
-/// a short alphanumeric extension and contains no code punctuation. Skipping a
-/// real path costs one missing edge; accepting a code fragment invents one.
-fn push_path(paths: &mut Vec<String>, token: &str) {
+/// Record an operand that actually looks like a file path, resolved against
+/// `base` (the directory the command ran in, when known).
+///
+/// Interpreters are also handed inline code and shell fragments, so a token only
+/// counts when it ends in a short alphanumeric extension and contains no code
+/// punctuation. Skipping a real path costs one missing edge; accepting a code
+/// fragment invents one.
+fn push_path(paths: &mut Vec<String>, token: &str, base: Option<&str>) {
     let cleaned = token.trim_matches(['"', '\'']);
     if cleaned.is_empty() || cleaned.contains(['(', ')', '{', '}', '=', '$', ',', ';']) {
         return;
@@ -391,7 +467,10 @@ fn push_path(paths: &mut Vec<String>, token: &str) {
     if !plausible {
         return;
     }
-    let Some(resource) = file_resource(cleaned) else {
+    // A relative operand names a file under the command's working directory, so
+    // resolving it there is what makes `cd build && node x.js` refer to
+    // `build/x.js` rather than to some other `x.js`.
+    let Some(resource) = file_resource(&resolve_against(base, cleaned)) else {
         return;
     };
     if !paths.contains(&resource) {
@@ -399,20 +478,64 @@ fn push_path(paths: &mut Vec<String>, token: &str) {
     }
 }
 
-/// Paths named by `*** Update/Add/Delete File:` headers in a Codex-style patch.
+/// Join a relative path onto a base directory. Absolute paths ignore the base.
+fn resolve_against(base: Option<&str>, path: &str) -> String {
+    let Some(base) = base.filter(|_| is_relative(path)) else {
+        return path.to_string();
+    };
+    format!("{}/{}", base.trim_end_matches(['/', '\\']), path)
+}
+
+fn is_relative(path: &str) -> bool {
+    let (root, _) = split_root(&path.replace('\\', "/"));
+    root.is_empty()
+}
+
+/// Paths a patch body says it modifies.
+///
+/// Two formats appear in transcripts: Codex-style `*** Update File:` headers and
+/// ordinary unified diffs (`+++ b/path`). Only headers count. Context lines
+/// inside a hunk can contain text that looks like a header, so a line is a
+/// header only where the format allows one: `*** ...` lines must not be indented
+/// or prefixed by a diff marker, and `+++` targets are taken from the diff
+/// header rather than from added content.
 fn patch_targets(patch: &str) -> Vec<String> {
-    patch
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            for prefix in ["*** Update File:", "*** Add File:", "*** Delete File:"] {
-                if let Some(rest) = line.strip_prefix(prefix) {
-                    return file_resource(rest.trim());
-                }
+    let mut targets = Vec::new();
+    for line in patch.lines() {
+        // A leading space, `+` or `-` marks hunk content, never a header.
+        if line.starts_with([' ', '\t']) {
+            continue;
+        }
+        for prefix in ["*** Update File:", "*** Add File:", "*** Delete File:"] {
+            if let Some(rest) = line.strip_prefix(prefix)
+                && let Some(resource) = file_resource(rest.trim())
+            {
+                targets.push(resource);
             }
-            None
-        })
-        .collect()
+        }
+        // Unified diff: `+++ b/src/lib.rs`. `/dev/null` marks a deletion, whose
+        // old path is named on the `---` side.
+        if let Some(rest) = line
+            .strip_prefix("+++ ")
+            .or_else(|| line.strip_prefix("--- "))
+        {
+            let path = rest.split('\t').next().unwrap_or(rest).trim();
+            if path.is_empty() || path == "/dev/null" {
+                continue;
+            }
+            // Strip the conventional `a/` and `b/` prefixes git adds.
+            let stripped = path
+                .strip_prefix("a/")
+                .or_else(|| path.strip_prefix("b/"))
+                .unwrap_or(path);
+            if let Some(resource) = file_resource(stripped)
+                && !targets.contains(&resource)
+            {
+                targets.push(resource);
+            }
+        }
+    }
+    targets
 }
 
 /// Reduce a command to a stable identity: the program plus its first argument.
@@ -494,15 +617,15 @@ fn is_setup_segment(segment: &str) -> bool {
 }
 
 /// Whether a token is a `VAR=value` environment assignment. A Windows path such
-/// as `C:\tmp` is not one, so the name must be a plain identifier.
+/// as `C:\tmp` is not one, and neither is a dotted name like `a.b=c`, which is
+/// not a legal shell variable: accepting it let an arbitrary token pose as an
+/// assignment and shift which token was read as the program.
 fn is_env_assignment(token: &str) -> bool {
     let Some((name, _)) = token.split_once('=') else {
         return false;
     };
     !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         && name.chars().next().is_some_and(|c| !c.is_ascii_digit())
 }
 
@@ -544,23 +667,86 @@ fn top_level_segments(command: &str) -> Vec<(usize, usize)> {
 }
 
 /// Normalize a path for comparison so that the same file referred to with
-/// different separators or a trailing slash still compares equal.
+/// different separators, redundant components, or letter case still compares
+/// equal, while genuinely different files stay different.
 ///
-/// Crucially this preserves the *whole* path. An earlier version kept only the
-/// last three components, which made `packages/frontend/src/components/Button.tsx`
-/// and `packages/admin/src/components/Button.tsx` identical and produced an edge
-/// between unrelated files. Two spellings of one file are reconciled later, by
+/// Three properties matter, and each exists because violating it fabricated an
+/// edge in review:
+///
+/// 1. **The whole path is preserved.** An earlier version kept only the last
+///    three components, so `packages/frontend/src/components/Button.tsx` and
+///    `packages/admin/src/components/Button.tsx` compared equal.
+/// 2. **The root is preserved.** Stripping empty components erased the leading
+///    slash of `/tmp/a.rs` and the host of `\\server\share\a.rs`, making an
+///    absolute path collide with an unrelated relative one of the same tail.
+/// 3. **`..` is resolved, not carried.** `x/../victim.rs` is `victim.rs`, and
+///    leaving the segments in place let unrelated paths appear to share a
+///    component-aligned suffix.
+///
+/// Two spellings of one file that differ only in depth are reconciled later, by
 /// suffix matching in the lifter, which is a comparison rather than a
-/// destructive rewrite and so cannot merge distinct fully-qualified paths.
+/// destructive rewrite and refuses when the reference is ambiguous.
 fn normalize_path(path: &str) -> String {
-    let unified = path.replace('\\', "/");
-    let trimmed = unified.trim().trim_end_matches('/');
-    // Collapse empty and `.` components so `./a//b` and `a/b` agree.
-    let parts: Vec<&str> = trimmed
-        .split('/')
-        .filter(|part| !part.is_empty() && *part != ".")
-        .collect();
-    parts.join("/")
+    let unified = path.trim().replace('\\', "/");
+    // A root must survive normalization: `//server/share` (UNC), `/abs`, and
+    // `C:/abs` are all distinct namespaces from a bare relative path.
+    let (root, rest) = split_root(&unified);
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        match part {
+            "" | "." => continue,
+            ".." => {
+                // Only pop a real component; a leading `..` in a relative path
+                // is meaningful and must be kept.
+                if matches!(parts.last(), Some(&last) if last != "..") {
+                    parts.pop();
+                } else if root.is_empty() {
+                    parts.push("..");
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    // Windows paths are case-insensitive, so `C:/Repo/A.rs` and `c:/repo/a.rs`
+    // are one file. Lowercasing everywhere would merge distinct files on
+    // case-sensitive systems, so it applies only to Windows-rooted paths.
+    let joined = format!("{root}{}", parts.join("/"));
+    if is_windows_root(&root) {
+        joined.to_lowercase()
+    } else {
+        joined
+    }
+}
+
+/// Split a path into its root (possibly empty) and the remainder.
+///
+/// Recognized roots are UNC (`//server/share/`), drive-qualified (`C:/`), and
+/// POSIX absolute (`/`).
+fn split_root(path: &str) -> (String, &str) {
+    if let Some(rest) = path.strip_prefix("//") {
+        // UNC: the host and share are part of the root, not ordinary components.
+        let mut parts = rest.splitn(3, '/');
+        let host = parts.next().unwrap_or_default();
+        let share = parts.next().unwrap_or_default();
+        let tail = parts.next().unwrap_or_default();
+        if !host.is_empty() {
+            return (format!("//{host}/{share}/"), tail);
+        }
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic() {
+        let drive = &path[..2];
+        let rest = path[2..].strip_prefix('/').unwrap_or(&path[2..]);
+        return (format!("{drive}/"), rest);
+    }
+    if let Some(rest) = path.strip_prefix('/') {
+        return ("/".to_string(), rest);
+    }
+    (String::new(), path)
+}
+
+fn is_windows_root(root: &str) -> bool {
+    root.starts_with("//") || (root.len() == 3 && root.as_bytes()[1] == b':')
 }
 
 fn summarize(tool: &str, input: &Value) -> String {
@@ -768,8 +954,9 @@ mod tests {
             tool_use("b", "Bash", json!({"command": "node C:\\tmp\\work\\recompute.js"})),
         ])]});
         let trace = trace_from_session(&session);
-        assert_eq!(trace[0].writes, vec![file("C:/tmp/work/recompute.js")]);
-        assert!(trace[1].reads.contains(&file("C:/tmp/work/recompute.js")));
+        // Windows paths are case-insensitive, so identities fold to lowercase.
+        assert_eq!(trace[0].writes, vec![file("c:/tmp/work/recompute.js")]);
+        assert!(trace[1].reads.contains(&file("c:/tmp/work/recompute.js")));
     }
 
     #[test]
@@ -878,7 +1065,10 @@ mod tests {
         // make every command sharing that variable look like one resource.
         assert_eq!(command_key("SANDBOX='/tmp/x' node b2.js"), "node b2.js");
         let (reads, _) = command_resources("cd s && SANDBOX='/tmp/x' node b2.js");
-        assert!(reads.contains(&file("b2.js")));
+        assert!(
+            reads.contains(&file("s/b2.js")),
+            "the operand resolves against the directory the command ran in: {reads:?}"
+        );
         assert!(reads.contains(&cmd("node b2.js")));
     }
 
@@ -917,6 +1107,175 @@ mod tests {
                 .all(|r| r.chars().count() <= MAX_RESOURCE_ID + CMD_NS.len()),
             "oversized identities are dropped, not truncated: {reads:?}"
         );
+    }
+
+    #[test]
+    fn windows_paths_are_case_insensitive_but_others_are_not() {
+        // `C:/Repo/A.rs` and `c:/repo/a.rs` are one file on Windows, and the
+        // lift missed the dependency entirely before folding case.
+        assert_eq!(
+            normalize_path("C:\\Repo\\A.rs"),
+            normalize_path("c:/repo/a.rs")
+        );
+        // A POSIX path has no such guarantee, and folding it would merge two
+        // genuinely different files.
+        assert_ne!(normalize_path("/repo/A.rs"), normalize_path("/repo/a.rs"));
+    }
+
+    #[test]
+    fn roots_survive_normalization() {
+        // Stripping empty components erased the root, so an absolute path
+        // collided with an unrelated relative one sharing the same tail.
+        assert_ne!(normalize_path("/tmp/a.rs"), normalize_path("tmp/a.rs"));
+        assert_ne!(
+            normalize_path("\\\\server\\share\\a.rs"),
+            normalize_path("server/share/a.rs")
+        );
+        assert_eq!(
+            normalize_path("\\\\server\\share\\a.rs"),
+            "//server/share/a.rs"
+        );
+    }
+
+    #[test]
+    fn dot_dot_components_are_resolved() {
+        // `x/../victim.rs` is `victim.rs`. Leaving the segments in place let
+        // `other/x/../victim.rs` appear to share a suffix with it.
+        assert_eq!(normalize_path("x/../victim.rs"), "victim.rs");
+        assert_eq!(normalize_path("other/x/../victim.rs"), "other/victim.rs");
+        assert_ne!(
+            normalize_path("x/../victim.rs"),
+            normalize_path("other/x/../victim.rs")
+        );
+        // A leading `..` in a relative path is meaningful and must be kept.
+        assert_eq!(normalize_path("../sibling/a.rs"), "../sibling/a.rs");
+    }
+
+    #[test]
+    fn a_failed_tool_produces_no_writes() {
+        // A write that failed never created the file, so nothing downstream can
+        // depend on it. The failure itself is still recorded.
+        let session = json!({"messages": [
+            assistant(vec![
+                tool_use("a", "Write", json!({"file_path": "never-created.rs"})),
+                tool_use("b", "Read", json!({"file_path": "never-created.rs"})),
+            ]),
+            tool_result("a", "Error: permission denied", true),
+        ]});
+        let trace = trace_from_session(&session);
+        assert!(trace[0].failed, "the failure is still recorded");
+        assert!(
+            trace[0].writes.is_empty(),
+            "a failed write cannot feed a later read"
+        );
+    }
+
+    #[test]
+    fn operands_resolve_against_a_leading_directory_change() {
+        // `cd build && node x.js` runs `build/x.js`, not some other `x.js`.
+        let (reads, _) = command_resources("cd build && node x.js");
+        assert!(reads.contains(&file("build/x.js")), "got {reads:?}");
+        assert!(!reads.contains(&file("x.js")));
+    }
+
+    #[test]
+    fn redirection_is_found_anywhere_in_a_chain_and_in_any_form() {
+        // Descriptor form.
+        let (_, stderr) = command_resources("cargo test 2> target/error.log");
+        assert!(stderr.contains(&file("target/error.log")), "got {stderr:?}");
+
+        // No space before the target.
+        let (_, embedded) = command_resources("echo hi>target/out.log");
+        assert!(
+            embedded.contains(&file("target/out.log")),
+            "got {embedded:?}"
+        );
+
+        // Redirect in a later segment of the chain.
+        let (_, chained) = command_resources("cd x && cargo test > target/out.log");
+        assert!(
+            chained.contains(&file("x/target/out.log")),
+            "got {chained:?}"
+        );
+
+        // Stream duplication names no file.
+        let (_, dup) = command_resources("cargo test 2>&1");
+        assert!(dup.is_empty(), "2>&1 is not a file: {dup:?}");
+    }
+
+    #[test]
+    fn unified_diffs_name_their_targets() {
+        // Ordinary `git diff` output was previously invisible to the lifter.
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n\
+                     --- a/src/lib.rs\n\
+                     +++ b/src/lib.rs\n\
+                     @@ -1 +1 @@\n\
+                     -old\n\
+                     +new\n";
+        let session = json!({"messages": [assistant(vec![tool_use(
+            "a",
+            "patch",
+            json!({"patch_text": patch}),
+        )])]});
+        let trace = trace_from_session(&session);
+        assert_eq!(trace[0].writes, vec![file("src/lib.rs")]);
+    }
+
+    #[test]
+    fn patch_hunk_content_cannot_pose_as_a_file_header() {
+        // A context line inside a hunk is indented, so text that looks like a
+        // header there must not be believed. Built by joining lines rather than
+        // with `\` continuations, which would strip the leading space that is
+        // the whole point of the case.
+        let patch = [
+            "*** Begin Patch",
+            "*** Update File: real.rs",
+            "@@",
+            "+text",
+            " *** Update File: victim.rs",
+            "*** End Patch",
+        ]
+        .join("\n");
+        let session = json!({"messages": [assistant(vec![tool_use(
+            "a",
+            "apply_patch",
+            json!({"patch_text": patch}),
+        )])]});
+        let trace = trace_from_session(&session);
+        assert_eq!(
+            trace[0].writes,
+            vec![file("real.rs")],
+            "only genuine headers count"
+        );
+    }
+
+    #[test]
+    fn a_relative_file_field_resolves_against_its_tool_base_path() {
+        // A search rooted at one checkout must not match the same relative file
+        // in a different checkout.
+        let session = json!({"messages": [assistant(vec![
+            tool_use("a", "Write", json!({"file_path": "C:/repo/.github/workflow.yml"})),
+            tool_use("b", "agentgrep", json!({
+                "path": "C:/other-worktree",
+                "file": ".github/workflow.yml",
+            })),
+        ])]});
+        let trace = trace_from_session(&session);
+        assert!(
+            !trace[1]
+                .reads
+                .contains(&file("c:/repo/.github/workflow.yml")),
+            "the search was rooted elsewhere: {:?}",
+            trace[1].reads
+        );
+    }
+
+    #[test]
+    fn a_dotted_name_is_not_an_environment_assignment() {
+        // `a.b=c` is not a legal shell variable; accepting it shifted which
+        // token was read as the program and fabricated a script read.
+        assert!(!is_env_assignment("invalid.dotted=x"));
+        assert!(is_env_assignment("SANDBOX=x"));
     }
 
     #[test]
