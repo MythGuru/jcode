@@ -79,7 +79,7 @@ fn print_summary(path: &Path, report: &LiftReport) {
     println!("lifted nodes:   {}", report.graph.len());
     println!("edges (kept):   {}", total_deps(report));
     println!("edges (found):  {}", report.edges.len());
-    println!("critical path:  {}", report.critical_path());
+    println!("critical path:  {} (lower bound)", report.critical_path());
     println!("parallel width: {} (upper bound)", report.parallel_width());
     if report.critical_path() > 0 {
         let linked = report
@@ -88,14 +88,17 @@ fn print_summary(path: &Path, report: &LiftReport) {
             .iter()
             .filter(|node| !node.depends_on.is_empty())
             .count();
+        // Both figures err in the same direction, because a dependency that left
+        // no observable trace cannot be recovered: every missing edge can only
+        // shorten the chain and widen the antichain. So the recovered graph
+        // always flatters the run, and the gap between these numbers is an
+        // upper bound on the concurrency that was available, never a measurement
+        // of it.
         println!(
-            "sequential rounds needed: {} of {} nodes",
+            "recovered rounds: {} of {} nodes; real work needed at least this many",
             report.critical_path(),
             report.graph.len()
         );
-        // Recall context, so the width above is not read as a measurement.
-        // Dependencies with no observable trace cannot be recovered, so the
-        // fewer nodes carry edges, the more the width overstates real freedom.
         println!(
             "nodes with a recovered dependency: {linked} of {} ({:.0}%); \
              unlinked nodes may still be dependent",

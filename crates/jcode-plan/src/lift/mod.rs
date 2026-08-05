@@ -310,8 +310,14 @@ impl LiftReport {
         by_depth.values().copied().max().unwrap_or(0)
     }
 
-    /// Longest dependency chain, i.e. the minimum number of sequential rounds
-    /// this work needed. Nodes are unit cost: this counts rounds, not time.
+    /// Longest dependency chain in the recovered graph, i.e. a *lower* bound on
+    /// the number of sequential rounds this work needed. Nodes are unit cost:
+    /// this counts rounds, not time.
+    ///
+    /// The bound points the same way as [`Self::parallel_width`]'s: an edge that
+    /// left no observable trace is missing, and every missing edge can only
+    /// shorten the chain. So the recovered graph always makes a run look more
+    /// parallel than it was, from both directions at once.
     pub fn critical_path(&self) -> usize {
         self.depths().values().copied().max().map_or(0, |d| d + 1)
     }
