@@ -15,11 +15,11 @@ fn request_type_from_json(json: &str) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-pub(super) async fn send_request(request: Request) -> Result<ServerEvent> {
+pub(crate) async fn send_request(request: Request) -> Result<ServerEvent> {
     send_request_with_timeout(request, None).await
 }
 
-pub(super) async fn send_request_with_timeout(
+pub(crate) async fn send_request_with_timeout(
     request: Request,
     timeout: Option<std::time::Duration>,
 ) -> Result<ServerEvent> {

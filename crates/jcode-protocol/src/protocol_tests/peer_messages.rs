@@ -55,11 +55,7 @@ fn peer_list_reply_and_cancel_requests_are_lightweight_and_generation_bound() ->
             caller: caller.clone(),
             message: "Reviewed.".to_string(),
         },
-        Request::PeerCancel {
-            id: 3,
-            caller,
-            message_id: "peer_123".to_string(),
-        },
+        Request::PeerCancel { id: 3, caller },
     ];
 
     for (expected_id, request) in (1_u64..).zip(requests) {

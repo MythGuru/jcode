@@ -22,6 +22,7 @@ mod memory;
 mod multiedit;
 mod open;
 mod patch;
+mod peer;
 mod read;
 pub mod selfdev;
 pub(crate) mod serde_coerce;
@@ -255,6 +256,7 @@ impl Registry {
             Self::insert_tool_timed(&mut m, &mut timings, "invalid", invalid::InvalidTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "todo", todo::TodoTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bg", bg::BgTool::new);
+            Self::insert_tool_timed(&mut m, &mut timings, "peer", peer::PeerTool::new);
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,
@@ -641,6 +643,9 @@ impl Registry {
     pub async fn execute(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let tools = self.tools.read().await;
         let resolved_name = Self::resolve_tool_name(name);
+        if resolved_name == "peer" && !crate::config::config().features.peer_messaging {
+            return Err(anyhow::anyhow!("Peer messaging is disabled."));
+        }
         if let Some(policy) = session_tool_policy(&ctx.session_id) {
             if let Some(allowed) = policy.allowed_tools.as_ref()
                 && !allowed.contains(resolved_name)

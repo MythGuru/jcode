@@ -744,11 +744,7 @@ pub enum Request {
 
     /// Cancel a sender-owned exchange when its waiting tool call is interrupted.
     #[serde(rename = "peer_cancel")]
-    PeerCancel {
-        id: u64,
-        caller: PeerCaller,
-        message_id: String,
-    },
+    PeerCancel { id: u64, caller: PeerCaller },
 }
 
 /// Server event sent to client
