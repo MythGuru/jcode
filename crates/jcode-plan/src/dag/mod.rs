@@ -64,6 +64,10 @@ pub enum NodeOrigin {
     Gap,
     /// An auto-inserted critique/verify gate (including the root gate).
     Gate,
+    /// Reconstructed from an execution trace by [`crate::lift`] rather than
+    /// authored. Lifted nodes record work that already happened, so they carry
+    /// recovered status and artifacts instead of being scheduled.
+    Lift,
 }
 
 /// The terminal action a node represents. The DAG is task-type agnostic; only the

@@ -57,6 +57,7 @@ pub fn parse_origin(origin: Option<&str>) -> Option<NodeOrigin> {
         Some("expand") => Some(NodeOrigin::Expand),
         Some("gap") => Some(NodeOrigin::Gap),
         Some("gate") => Some(NodeOrigin::Gate),
+        Some("lift") => Some(NodeOrigin::Lift),
         _ => None,
     }
 }
@@ -67,6 +68,7 @@ pub fn origin_str(origin: NodeOrigin) -> &'static str {
         NodeOrigin::Expand => "expand",
         NodeOrigin::Gap => "gap",
         NodeOrigin::Gate => "gate",
+        NodeOrigin::Lift => "lift",
     }
 }
 
@@ -245,11 +247,14 @@ pub struct GrowthStats {
     pub from_gaps: usize,
     /// Auto-inserted critique/verify gates (including the root gate).
     pub gates: usize,
+    /// Nodes reconstructed from an execution trace by the lifter. These are a
+    /// record of work already done, so they are neither seed nor growth.
+    pub lifted: usize,
 }
 
 impl GrowthStats {
     pub fn total(&self) -> usize {
-        self.seeded + self.from_expansion + self.from_gaps + self.gates
+        self.seeded + self.from_expansion + self.from_gaps + self.gates + self.lifted
     }
 
     /// Machinery-generated nodes (everything that is not seed).
@@ -260,14 +265,18 @@ impl GrowthStats {
     /// One-line human summary, e.g.
     /// `12 seeded -> 87 nodes (+55 expansion, +14 gap, +6 gates)`.
     pub fn summary_line(&self) -> String {
-        format!(
+        let mut line = format!(
             "{} seeded -> {} nodes (+{} expansion, +{} gap, +{} gates)",
             self.seeded,
             self.total(),
             self.from_expansion,
             self.from_gaps,
             self.gates
-        )
+        );
+        if self.lifted > 0 {
+            line.push_str(&format!(" [{} lifted]", self.lifted));
+        }
+        line
     }
 }
 
@@ -284,6 +293,7 @@ pub fn growth_stats(plan: &VersionedPlan) -> GrowthStats {
             Some(NodeOrigin::Expand) => stats.from_expansion += 1,
             Some(NodeOrigin::Gap) => stats.from_gaps += 1,
             Some(NodeOrigin::Gate) => stats.gates += 1,
+            Some(NodeOrigin::Lift) => stats.lifted += 1,
             Some(NodeOrigin::Seed) | None => stats.seeded += 1,
         }
     }
