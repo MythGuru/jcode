@@ -199,6 +199,8 @@ pub struct Agent {
     /// Transient reminder injected into provider requests for the current turn only.
     /// Not persisted to session history.
     current_turn_system_reminder: Option<String>,
+    /// Required provenance and authority metadata for the currently running model turn.
+    current_turn_execution: Option<crate::tool::TurnExecutionContext>,
     /// Tool call ids observed in the current session transcript.
     tool_call_ids: HashSet<String>,
     /// Tool result ids observed in the current session transcript.
@@ -285,6 +287,7 @@ impl Agent {
             last_status_detail: None,
             pending_alerts: Vec::new(),
             current_turn_system_reminder: None,
+            current_turn_execution: None,
             tool_call_ids: HashSet::new(),
             tool_result_ids: HashSet::new(),
             tool_output_scan_index: 0,

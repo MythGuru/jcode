@@ -795,6 +795,7 @@ pub(super) async fn spawn_swarm_agent(
                     vec![],
                     None,
                     event_tx,
+                    crate::tool::TurnExecutionContext::server_initiated("swarm-agent-startup"),
                 )
                 .await;
                 let completion_report = if result.is_ok() {

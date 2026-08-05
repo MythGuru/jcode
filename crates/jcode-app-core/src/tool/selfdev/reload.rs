@@ -409,7 +409,7 @@ impl SelfDevTool {
                     }
                 }
             }
-            ToolExecutionMode::AgentTurn => {
+            ToolExecutionMode::AgentTurn(_) => {
                 // In normal agent turns the reload will intentionally terminate this
                 // process shortly after the server acknowledges the request. Return a
                 // tool result immediately so the harness can persist/deliver the tool

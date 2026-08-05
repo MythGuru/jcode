@@ -25,7 +25,9 @@ fn make_agent_ctx(signal: jcode_agent_runtime::InterruptSignal) -> ToolContext {
         working_dir: Some(std::path::PathBuf::from("/tmp")),
         stdin_request_tx: None,
         graceful_shutdown_signal: Some(signal),
-        execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+        execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+            crate::tool::TurnExecutionContext::standalone("bash-test"),
+        ),
     }
 }
 

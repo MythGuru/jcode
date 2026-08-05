@@ -834,7 +834,11 @@ impl Agent {
                             working_dir: self.working_dir().map(PathBuf::from),
                             stdin_request_tx: self.stdin_request_tx.clone(),
                             graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-                            execution_mode: ToolExecutionMode::AgentTurn,
+                            execution_mode: ToolExecutionMode::AgentTurn(
+                                self.current_turn_execution
+                                    .clone()
+                                    .expect("public turn entry must install execution context"),
+                            ),
                         };
                         crate::telemetry::record_tool_call();
                         let tool_result = self
@@ -1351,7 +1355,11 @@ impl Agent {
                     working_dir: self.working_dir().map(PathBuf::from),
                     stdin_request_tx: self.stdin_request_tx.clone(),
                     graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-                    execution_mode: ToolExecutionMode::AgentTurn,
+                    execution_mode: ToolExecutionMode::AgentTurn(
+                        self.current_turn_execution
+                            .clone()
+                            .expect("public turn entry must install execution context"),
+                    ),
                 };
 
                 if trace {

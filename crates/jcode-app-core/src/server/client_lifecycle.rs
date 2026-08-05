@@ -2912,12 +2912,25 @@ async fn start_processing_message(
         client_event_tx.clone(),
     );
     let done_tx = processing_done_tx.clone();
+    let turn_session_id = client_session_id.to_string();
     crate::logging::info(&format!("Processing message id={} spawning task", id));
     *state.task = Some(tokio::spawn(async move {
         let event_tx = tx.clone();
         let result = match std::panic::AssertUnwindSafe(crate::hooks::with_client_terminal_env(
             client_terminal_env,
-            process_message_streaming_mpsc(agent, &content, images, system_reminder, event_tx),
+            process_message_streaming_mpsc(
+                agent,
+                &content,
+                images,
+                system_reminder,
+                event_tx,
+                crate::tool::TurnExecutionContext {
+                    origin: crate::tool::TurnOrigin::NormalUser,
+                    server_session_id: Some(turn_session_id),
+                    turn_generation: None,
+                    turn_capability: None,
+                },
+            ),
         ))
         .catch_unwind()
         .await
@@ -3256,11 +3269,12 @@ pub(super) async fn process_message_streaming_mpsc(
     images: Vec<(String, String)>,
     system_reminder: Option<String>,
     event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
+    turn_execution: crate::tool::TurnExecutionContext,
 ) -> Result<()> {
     let mut agent = agent.lock().await;
     let session_id = agent.session_id().to_string();
     let result = agent
-        .run_once_streaming_mpsc(content, images, system_reminder, event_tx)
+        .run_once_streaming_mpsc(content, images, system_reminder, event_tx, turn_execution)
         .await;
     if result.is_ok() {
         crate::runtime_memory_log::emit_event(

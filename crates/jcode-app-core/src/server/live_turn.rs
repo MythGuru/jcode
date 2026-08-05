@@ -123,6 +123,7 @@ pub(super) async fn spawn_tracked_live_turn(
             vec![],
             system_reminder,
             event_tx.clone(),
+            crate::tool::TurnExecutionContext::server_initiated("live-turn"),
         )
         .await;
         match result {

@@ -97,7 +97,7 @@ impl DiscoveryRequestProvenance {
             is_debug: session.as_ref().is_some_and(|session| session.is_debug),
             is_canary: session.as_ref().is_some_and(|session| session.is_canary),
             execution_mode: match ctx.execution_mode {
-                ToolExecutionMode::AgentTurn => "agent_turn",
+                ToolExecutionMode::AgentTurn(_) => "agent_turn",
                 ToolExecutionMode::Direct => "direct",
             },
             build_channel: runtime.build_channel,

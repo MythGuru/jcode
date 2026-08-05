@@ -123,7 +123,12 @@ pub(super) async fn maybe_start_async_debug_job(
 
             let result = {
                 let mut agent = agent.lock().await;
-                agent.run_once_capture(&msg).await
+                agent
+                    .run_once_capture(
+                        &msg,
+                        crate::tool::TurnExecutionContext::server_initiated("debug-job"),
+                    )
+                    .await
             };
             let partial_output = if result.is_err() {
                 let agent = agent.lock().await;

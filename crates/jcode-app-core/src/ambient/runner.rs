@@ -396,7 +396,12 @@ impl AmbientRunnerHandle {
         agent.restore_session(session_id)?;
 
         let reminder = ambient::format_scheduled_session_message(item);
-        let _ = agent.run_once_capture(&reminder).await?;
+        let _ = agent
+            .run_once_capture(
+                &reminder,
+                crate::tool::TurnExecutionContext::server_initiated("ambient-resume"),
+            )
+            .await?;
         agent.mark_closed();
         Ok(())
     }
@@ -470,7 +475,12 @@ impl AmbientRunnerHandle {
         }
 
         let reminder = ambient::format_scheduled_session_message(item);
-        let _ = agent.run_once_capture(&reminder).await?;
+        let _ = agent
+            .run_once_capture(
+                &reminder,
+                crate::tool::TurnExecutionContext::server_initiated("scheduled-item"),
+            )
+            .await?;
         agent.mark_closed();
         Ok(child_session_id)
     }
@@ -914,7 +924,12 @@ impl AmbientRunnerHandle {
 
         self.set_running_detail("running agent").await;
 
-        let run_result = agent.run_once_capture(&initial_message).await;
+        let run_result = agent
+            .run_once_capture(
+                &initial_message,
+                crate::tool::TurnExecutionContext::server_initiated("ambient-cycle"),
+            )
+            .await;
 
         // Check if end_ambient_cycle was called
         if let Some(result) = ambient_tools::take_cycle_result() {
@@ -941,7 +956,12 @@ impl AmbientRunnerHandle {
             what you accomplished and schedule your next wake. \
             If you are not done, continue what you were doing.";
 
-        let _ = agent.run_once_capture(continuation).await;
+        let _ = agent
+            .run_once_capture(
+                continuation,
+                crate::tool::TurnExecutionContext::server_initiated("ambient-continuation"),
+            )
+            .await;
 
         // Check again
         if let Some(result) = ambient_tools::take_cycle_result() {

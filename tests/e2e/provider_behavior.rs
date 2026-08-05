@@ -29,11 +29,21 @@ async fn test_multi_turn_conversation() -> Result<()> {
     let mut agent = Agent::new(provider, registry);
 
     // First turn
-    let response1 = agent.run_once_capture("Hello").await?;
+    let response1 = agent
+        .run_once_capture(
+            "Hello",
+            jcode::tool::TurnExecutionContext::standalone("e2e-provider"),
+        )
+        .await?;
     assert_eq!(response1, "I'll remember that.");
 
     // Second turn - should use session resume
-    let response2 = agent.run_once_capture("What did I say?").await?;
+    let response2 = agent
+        .run_once_capture(
+            "What did I say?",
+            jcode::tool::TurnExecutionContext::standalone("e2e-provider"),
+        )
+        .await?;
     assert_eq!(response2, "You said hello earlier.");
 
     Ok(())
@@ -63,7 +73,12 @@ async fn test_token_usage() -> Result<()> {
     let registry = Registry::new(provider.clone()).await;
     let mut agent = Agent::new(provider, registry);
 
-    let response = agent.run_once_capture("Test").await?;
+    let response = agent
+        .run_once_capture(
+            "Test",
+            jcode::tool::TurnExecutionContext::standalone("e2e-provider"),
+        )
+        .await?;
     assert_eq!(response, "Response");
 
     Ok(())
@@ -87,7 +102,12 @@ async fn test_stream_error() -> Result<()> {
     let registry = Registry::new(provider.clone()).await;
     let mut agent = Agent::new(provider, registry);
 
-    let result = agent.run_once_capture("Test").await;
+    let result = agent
+        .run_once_capture(
+            "Test",
+            jcode::tool::TurnExecutionContext::standalone("e2e-provider"),
+        )
+        .await;
     assert!(result.is_err());
     assert!(
         result
@@ -905,7 +925,12 @@ async fn test_system_prompt_no_claude_code_identity() -> Result<()> {
     let mut agent = Agent::new(provider_dyn, registry);
 
     // Run a simple query - we just need to trigger a complete() call
-    let _ = agent.run_once_capture("Who are you?").await?;
+    let _ = agent
+        .run_once_capture(
+            "Who are you?",
+            jcode::tool::TurnExecutionContext::standalone("e2e-provider"),
+        )
+        .await?;
 
     // Get the captured system prompt from our Arc<MockProvider>
     let captured_prompts = provider_for_check.captured_system_prompts.lock().unwrap();

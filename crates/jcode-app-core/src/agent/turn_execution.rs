@@ -3,7 +3,11 @@ use crate::{terminal_eprintln as eprintln, terminal_println as println};
 
 impl Agent {
     /// Run a single turn with the given user message
-    pub async fn run_once(&mut self, user_message: &str) -> Result<()> {
+    pub async fn run_once(
+        &mut self,
+        user_message: &str,
+        turn_execution: crate::tool::TurnExecutionContext,
+    ) -> Result<()> {
         self.add_message(
             Role::User,
             vec![ContentBlock::Text {
@@ -15,11 +19,17 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        let _ = self.run_turn(true).await?;
-        Ok(())
+        self.current_turn_execution = Some(turn_execution);
+        let result = self.run_turn(true).await.map(|_| ());
+        self.current_turn_execution = None;
+        result
     }
 
-    pub async fn run_once_capture(&mut self, user_message: &str) -> Result<String> {
+    pub async fn run_once_capture(
+        &mut self,
+        user_message: &str,
+        turn_execution: crate::tool::TurnExecutionContext,
+    ) -> Result<String> {
         self.add_message(
             Role::User,
             vec![ContentBlock::Text {
@@ -31,7 +41,10 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        self.run_turn(false).await
+        self.current_turn_execution = Some(turn_execution);
+        let result = self.run_turn(false).await;
+        self.current_turn_execution = None;
+        result
     }
 
     /// Run one conversation turn with streaming events via mpsc channel (per-client)
@@ -41,6 +54,7 @@ impl Agent {
         images: Vec<(String, String)>,
         system_reminder: Option<String>,
         event_tx: mpsc::UnboundedSender<ServerEvent>,
+        turn_execution: crate::tool::TurnExecutionContext,
     ) -> Result<()> {
         // Inject any pending notifications before the user message
         let alerts = self.take_alerts();
@@ -59,16 +73,17 @@ impl Agent {
             );
         }
 
+        self.append_user_context_message(user_message, images)?;
         self.current_turn_system_reminder =
             system_reminder.filter(|value| !value.trim().is_empty());
-
-        self.append_user_context_message(user_message, images)?;
+        self.current_turn_execution = Some(turn_execution);
         crate::telemetry::record_turn();
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
         self.fire_turn_start_hook("chat");
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.current_turn_system_reminder = None;
+        self.current_turn_execution = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
         result
     }
@@ -789,7 +804,13 @@ impl Agent {
                     println!("{}\n", skill.description);
                     self.active_skill = Some(invocation.name.to_string());
                     if let Some(prompt) = invocation.prompt {
-                        if let Err(e) = self.run_once(prompt).await {
+                        if let Err(e) = self
+                            .run_once(
+                                prompt,
+                                crate::tool::TurnExecutionContext::standalone("agent-repl"),
+                            )
+                            .await
+                        {
                             eprintln!("\nError: {}\n", e);
                         }
                         println!();
@@ -810,7 +831,13 @@ impl Agent {
                 }
             }
 
-            if let Err(e) = self.run_once(input).await {
+            if let Err(e) = self
+                .run_once(
+                    input,
+                    crate::tool::TurnExecutionContext::standalone("agent-repl"),
+                )
+                .await
+            {
                 eprintln!("\nError: {}\n", e);
             }
 

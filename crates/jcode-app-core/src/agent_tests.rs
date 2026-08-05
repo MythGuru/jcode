@@ -1598,7 +1598,13 @@ async fn stranded_tool_use_stop_continues_instead_of_ending_the_turn() {
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     agent
-        .run_once_streaming_mpsc("do the task", Vec::new(), None, tx)
+        .run_once_streaming_mpsc(
+            "do the task",
+            Vec::new(),
+            None,
+            tx,
+            crate::tool::TurnExecutionContext::standalone("test"),
+        )
         .await
         .expect("turn should complete");
 
@@ -1787,7 +1793,13 @@ async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     agent
-        .run_once_streaming_mpsc("do this ordinary coding task", Vec::new(), None, tx)
+        .run_once_streaming_mpsc(
+            "do this ordinary coding task",
+            Vec::new(),
+            None,
+            tx,
+            crate::tool::TurnExecutionContext::standalone("test"),
+        )
         .await
         .expect("turn should recover from the guardrail");
 

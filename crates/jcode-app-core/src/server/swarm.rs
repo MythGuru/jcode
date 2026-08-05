@@ -1581,7 +1581,13 @@ pub(super) async fn run_swarm_task(
         .apply_to_allowed_set(&mut allowed);
 
     let mut worker = Agent::new_with_session(provider, registry, session, Some(allowed));
-    match worker.run_once_capture(prompt).await {
+    match worker
+        .run_once_capture(
+            prompt,
+            crate::tool::TurnExecutionContext::server_initiated("swarm-task"),
+        )
+        .await
+    {
         Ok(output) => {
             log_swarm_lifecycle(
                 "task_done",
@@ -1635,7 +1641,12 @@ No extra text.\n\nRequest:\n{message}"
 
     let plan_text = {
         let mut agent = agent.lock().await;
-        agent.run_once_capture(&planner_prompt).await?
+        agent
+            .run_once_capture(
+                &planner_prompt,
+                crate::tool::TurnExecutionContext::server_initiated("swarm-planner"),
+            )
+            .await?
     };
 
     let mut tasks = parse_swarm_tasks(&plan_text);
@@ -1685,7 +1696,12 @@ No extra text.\n\nRequest:\n{message}"
 
     let final_output = {
         let mut agent = agent.lock().await;
-        agent.run_once_capture(&integration_prompt).await?
+        agent
+            .run_once_capture(
+                &integration_prompt,
+                crate::tool::TurnExecutionContext::server_initiated("swarm-integration"),
+            )
+            .await?
     };
 
     log_swarm_lifecycle(

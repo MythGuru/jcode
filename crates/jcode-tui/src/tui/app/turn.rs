@@ -977,7 +977,11 @@ impl App {
                                             working_dir: self.session.working_dir.as_deref().map(PathBuf::from),
                                             stdin_request_tx: None,
                                             graceful_shutdown_signal: None,
-                                            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+                                            execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+                                                crate::tool::TurnExecutionContext::standalone(
+                                                    "local-tui",
+                                                ),
+                                            ),
                                         };
                                         let tool_result = self
                                             .registry
@@ -1262,7 +1266,9 @@ impl App {
                     working_dir: self.session.working_dir.as_deref().map(PathBuf::from),
                     stdin_request_tx: None,
                     graceful_shutdown_signal: None,
-                    execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+                    execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+                        crate::tool::TurnExecutionContext::standalone("local-tui"),
+                    ),
                 };
 
                 Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {

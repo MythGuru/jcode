@@ -1114,6 +1114,7 @@ pub(super) async fn handle_agent_task(
         vec![],
         None,
         ctx.client_event_tx.clone(),
+        crate::tool::TurnExecutionContext::server_initiated("agent-task"),
     )
     .await;
     match result {

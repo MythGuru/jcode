@@ -2177,7 +2177,9 @@ mod tests {
             working_dir: Some(project.clone()),
             stdin_request_tx: None,
             graceful_shutdown_signal: None,
-            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+            execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+                crate::tool::TurnExecutionContext::standalone("todo-test"),
+            ),
         };
 
         // Open the group with a linked goal.

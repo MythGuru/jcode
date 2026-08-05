@@ -894,6 +894,7 @@ fn spawn_assigned_task_run(
             vec![],
             None,
             event_tx,
+            crate::tool::TurnExecutionContext::server_initiated("assigned-task"),
         )
         .await;
         let completion_report = if result.is_ok() {

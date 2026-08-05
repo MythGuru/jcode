@@ -208,7 +208,12 @@ async fn test_ambient_end_cycle_tool() -> Result<()> {
 
     let mut agent = Agent::new(provider, registry);
 
-    let response = agent.run_once_capture("Begin ambient cycle").await?;
+    let response = agent
+        .run_once_capture(
+            "Begin ambient cycle",
+            jcode::tool::TurnExecutionContext::standalone("e2e-ambient"),
+        )
+        .await?;
     assert_eq!(response, "Cycle complete.");
 
     // The tool should have stored a cycle result
@@ -268,7 +273,12 @@ async fn test_ambient_request_permission_tool() -> Result<()> {
     let ambient_session_id = agent.session_id().to_string();
     jcode::tool::ambient::register_ambient_session(ambient_session_id.clone());
 
-    let response = agent.run_once_capture("Request permission").await?;
+    let response = agent
+        .run_once_capture(
+            "Request permission",
+            jcode::tool::TurnExecutionContext::standalone("e2e-ambient"),
+        )
+        .await?;
     jcode::tool::ambient::unregister_ambient_session(&ambient_session_id);
     assert_eq!(response, "Permission requested.");
 
@@ -314,7 +324,12 @@ async fn test_ambient_schedule_tool() -> Result<()> {
 
     let mut agent = Agent::new(provider, registry);
 
-    let response = agent.run_once_capture("Schedule next cycle").await?;
+    let response = agent
+        .run_once_capture(
+            "Schedule next cycle",
+            jcode::tool::TurnExecutionContext::standalone("e2e-ambient"),
+        )
+        .await?;
     assert_eq!(response, "Scheduled next cycle.");
 
     Ok(())
@@ -593,7 +608,12 @@ async fn test_full_ambient_cycle_simulation() -> Result<()> {
     let mut agent = Agent::new(provider.clone(), registry);
     agent.set_system_prompt("You are the jcode ambient maintenance agent.");
 
-    let response = agent.run_once_capture("Begin your ambient cycle.").await?;
+    let response = agent
+        .run_once_capture(
+            "Begin your ambient cycle.",
+            jcode::tool::TurnExecutionContext::standalone("e2e-ambient"),
+        )
+        .await?;
 
     assert!(response.contains("Ambient cycle completed"));
 

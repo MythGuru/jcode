@@ -1033,7 +1033,7 @@ export -f cargo
             .do_reload(
                 context,
                 &ctx.session_id,
-                ctx.execution_mode,
+                ctx.execution_mode.clone(),
                 ctx.working_dir.as_deref(),
             )
             .await?;

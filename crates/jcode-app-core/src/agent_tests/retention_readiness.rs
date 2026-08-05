@@ -301,7 +301,10 @@ async fn retention_readiness_scorecard() {
     );
     let session_id = d0.session_id().to_string();
     let d0_answer = d0
-        .run_once_capture("D0_ACTIVATE explain this project")
+        .run_once_capture(
+            "D0_ACTIVATE explain this project",
+            crate::tool::TurnExecutionContext::standalone("retention-test"),
+        )
         .await
         .expect("D0 activation turn");
     d0.session.save().expect("persist D0 state");
@@ -316,7 +319,10 @@ async fn retention_readiness_scorecard() {
     let d1_registry = Registry::new(d1_provider.clone()).await;
     let mut d1 = Agent::new_with_session(d1_provider, d1_registry, persisted_d0, None);
     let d1_answer = d1
-        .run_once_capture("D1_RETURN continue without restating context")
+        .run_once_capture(
+            "D1_RETURN continue without restating context",
+            crate::tool::TurnExecutionContext::standalone("retention-test"),
+        )
         .await
         .expect("D1 return turn");
     d1.session.save().expect("persist D1 state");
@@ -338,7 +344,10 @@ async fn retention_readiness_scorecard() {
     let d7_registry = Registry::new(d7_provider.clone()).await;
     let mut d7 = Agent::new_with_session(d7_provider, d7_registry, persisted_d1, None);
     let outage = d7
-        .run_once_capture("D7_RECOVER finish the longitudinal task")
+        .run_once_capture(
+            "D7_RECOVER finish the longitudinal task",
+            crate::tool::TurnExecutionContext::standalone("retention-test"),
+        )
         .await;
     drop(d7);
 
@@ -353,7 +362,10 @@ async fn retention_readiness_scorecard() {
     let mut recovered =
         Agent::new_with_session(recovered_provider, recovered_registry, after_failure, None);
     let d7_answer = recovered
-        .run_once_capture("D7_RECOVER retry once")
+        .run_once_capture(
+            "D7_RECOVER retry once",
+            crate::tool::TurnExecutionContext::standalone("retention-test"),
+        )
         .await
         .expect("D7 recovery turn");
     recovered

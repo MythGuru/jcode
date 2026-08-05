@@ -957,7 +957,7 @@ impl BashTool {
     fn supports_reload_persistence(&self, ctx: &ToolContext) -> bool {
         matches!(
             ctx.execution_mode,
-            crate::tool::ToolExecutionMode::AgentTurn
+            crate::tool::ToolExecutionMode::AgentTurn(_)
         ) && ctx.stdin_request_tx.is_none()
             && ctx.graceful_shutdown_signal.is_some()
     }

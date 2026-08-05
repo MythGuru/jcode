@@ -1262,7 +1262,10 @@ async fn restore_agent_session_if_requested_restores_resumed_session() {
     let mut original = crate::agent::Agent::new(provider.clone(), registry);
     let original_session_id = original.session_id().to_string();
     original
-        .run_once_capture("seed session for resume test")
+        .run_once_capture(
+            "seed session for resume test",
+            crate::tool::TurnExecutionContext::standalone("cli-test"),
+        )
         .await
         .expect("seed session");
 

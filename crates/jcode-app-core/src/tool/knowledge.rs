@@ -232,7 +232,9 @@ mod tests {
             working_dir: working_dir.map(PathBuf::from),
             stdin_request_tx: None,
             graceful_shutdown_signal: None,
-            execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+            execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+                crate::tool::TurnExecutionContext::standalone("knowledge-test"),
+            ),
         }
     }
 

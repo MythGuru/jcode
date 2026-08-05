@@ -94,7 +94,12 @@ pub(super) async fn run_debug_message_with_timeout(
     let msg = msg.to_string();
     let mut handle = tokio::spawn(async move {
         let mut agent = agent.lock().await;
-        agent.run_once_capture(&msg).await
+        agent
+            .run_once_capture(
+                &msg,
+                crate::tool::TurnExecutionContext::server_initiated("debug-message"),
+            )
+            .await
     });
 
     tokio::select! {
@@ -145,7 +150,12 @@ pub(super) async fn execute_debug_command(
             return run_debug_message_with_timeout(agent, msg, timeout_secs).await;
         }
         let mut agent = agent.lock().await;
-        let output = agent.run_once_capture(msg).await?;
+        let output = agent
+            .run_once_capture(
+                msg,
+                crate::tool::TurnExecutionContext::server_initiated("debug-command"),
+            )
+            .await?;
         return Ok(output);
     }
 

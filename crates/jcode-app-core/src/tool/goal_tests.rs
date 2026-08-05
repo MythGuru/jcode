@@ -18,7 +18,9 @@ async fn initiative_tool_create_and_resume_round_trip() {
         working_dir: Some(project.clone()),
         stdin_request_tx: None,
         graceful_shutdown_signal: None,
-        execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+        execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+            crate::tool::TurnExecutionContext::standalone("goal-test"),
+        ),
     };
 
     let mut bus_rx = Bus::global().subscribe();
@@ -99,7 +101,9 @@ async fn initiative_tool_list_does_not_open_side_panel_by_default() {
         working_dir: Some(project.clone()),
         stdin_request_tx: None,
         graceful_shutdown_signal: None,
-        execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+        execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+            crate::tool::TurnExecutionContext::standalone("goal-test"),
+        ),
     };
 
     let list = tool
@@ -151,7 +155,9 @@ async fn initiative_tool_update_refreshes_open_overview_without_stealing_focus()
         working_dir: Some(project.clone()),
         stdin_request_tx: None,
         graceful_shutdown_signal: None,
-        execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+        execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+            crate::tool::TurnExecutionContext::standalone("goal-test"),
+        ),
     };
 
     // The user opens the overview explicitly (e.g. via /goals); the tool
@@ -262,7 +268,9 @@ fn graph_ctx(session: &str, project: &std::path::Path) -> ToolContext {
         working_dir: Some(project.to_path_buf()),
         stdin_request_tx: None,
         graceful_shutdown_signal: None,
-        execution_mode: crate::tool::ToolExecutionMode::AgentTurn,
+        execution_mode: crate::tool::ToolExecutionMode::AgentTurn(
+            crate::tool::TurnExecutionContext::standalone("goal-test"),
+        ),
     }
 }
 

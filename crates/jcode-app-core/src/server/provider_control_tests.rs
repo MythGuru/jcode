@@ -1165,7 +1165,10 @@ async fn auth_model_first_prompt_e2e_state_space_is_bounded_by_selection_source(
                     tokio::time::timeout(std::time::Duration::from_secs(2), async move {
                         let mut agent_guard = agent_for_prompt.lock().await;
                         agent_guard
-                            .run_once_capture("first prompt immediately after model selection")
+                            .run_once_capture(
+                                "first prompt immediately after model selection",
+                                crate::tool::TurnExecutionContext::standalone("provider-test"),
+                            )
                             .await
                     })
                     .await
@@ -1193,7 +1196,10 @@ async fn auth_model_first_prompt_e2e_state_space_is_bounded_by_selection_source(
         } else {
             let mut agent_guard = agent.lock().await;
             agent_guard
-                .run_once_capture("first prompt after auth/model selection")
+                .run_once_capture(
+                    "first prompt after auth/model selection",
+                    crate::tool::TurnExecutionContext::standalone("provider-test"),
+                )
                 .await
                 .unwrap_or_else(|error| panic!("{}: first prompt failed: {error:?}", scenario.name))
         };

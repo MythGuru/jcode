@@ -6,6 +6,88 @@ use jcode_tool_types::ToolOutput;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOrigin {
+    NormalUser,
+    PeerInbound { exchange_id: String },
+    ServerInitiated { kind: String },
+    Standalone { kind: String },
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct TurnCapability(String);
+
+impl TurnCapability {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for TurnCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TurnCapability([REDACTED])")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnExecutionContext {
+    pub origin: TurnOrigin,
+    pub server_session_id: Option<String>,
+    pub turn_generation: Option<u64>,
+    pub turn_capability: Option<TurnCapability>,
+}
+
+impl TurnExecutionContext {
+    pub fn normal_user(
+        server_session_id: String,
+        turn_generation: u64,
+        turn_capability: TurnCapability,
+    ) -> Self {
+        Self {
+            origin: TurnOrigin::NormalUser,
+            server_session_id: Some(server_session_id),
+            turn_generation: Some(turn_generation),
+            turn_capability: Some(turn_capability),
+        }
+    }
+
+    pub fn peer_inbound(
+        exchange_id: String,
+        server_session_id: String,
+        turn_generation: u64,
+        turn_capability: TurnCapability,
+    ) -> Self {
+        Self {
+            origin: TurnOrigin::PeerInbound { exchange_id },
+            server_session_id: Some(server_session_id),
+            turn_generation: Some(turn_generation),
+            turn_capability: Some(turn_capability),
+        }
+    }
+
+    pub fn server_initiated(kind: impl Into<String>) -> Self {
+        Self {
+            origin: TurnOrigin::ServerInitiated { kind: kind.into() },
+            server_session_id: None,
+            turn_generation: None,
+            turn_capability: None,
+        }
+    }
+
+    pub fn standalone(kind: impl Into<String>) -> Self {
+        Self {
+            origin: TurnOrigin::Standalone { kind: kind.into() },
+            server_session_id: None,
+            turn_generation: None,
+            turn_capability: None,
+        }
+    }
+}
+
 pub const TOOL_INTENT_DESCRIPTION: &str =
     "Required short label shown in the UI: why this call is being made.";
 
@@ -110,9 +192,9 @@ pub struct ToolContext {
     pub execution_mode: ToolExecutionMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolExecutionMode {
-    AgentTurn,
+    AgentTurn(TurnExecutionContext),
     Direct,
 }
 
@@ -125,7 +207,7 @@ impl ToolContext {
             working_dir: self.working_dir.clone(),
             stdin_request_tx: self.stdin_request_tx.clone(),
             graceful_shutdown_signal: self.graceful_shutdown_signal.clone(),
-            execution_mode: self.execution_mode,
+            execution_mode: self.execution_mode.clone(),
         }
     }
 
@@ -227,6 +309,41 @@ mod tests {
         let schema = serde_json::json!({"type": "string"});
         let out = ensure_intent_in_schema(schema.clone());
         assert_eq!(out, schema);
+    }
+
+    #[test]
+    fn turn_capability_debug_output_is_redacted() {
+        let capability = TurnCapability::new("server-secret-capability".to_string());
+
+        assert_eq!(format!("{capability:?}"), "TurnCapability([REDACTED])");
+        assert!(!format!("{capability:?}").contains(capability.expose_secret()));
+    }
+
+    #[test]
+    fn tool_subcalls_preserve_the_hidden_turn_execution_context() {
+        let execution = TurnExecutionContext::peer_inbound(
+            "exchange-1".to_string(),
+            "session-1".to_string(),
+            42,
+            TurnCapability::new("opaque-capability".to_string()),
+        );
+        let context = ToolContext {
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            tool_call_id: "parent-call".to_string(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::AgentTurn(execution.clone()),
+        };
+
+        let subcall = context.for_subcall("child-call".to_string());
+
+        assert_eq!(
+            subcall.execution_mode,
+            ToolExecutionMode::AgentTurn(execution)
+        );
+        assert_eq!(subcall.tool_call_id, "child-call");
     }
 }
 

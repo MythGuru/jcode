@@ -141,7 +141,12 @@ async fn test_simple_response() -> Result<()> {
     let registry = Registry::new(provider.clone()).await;
     let mut agent = Agent::new(provider, registry);
 
-    let response = agent.run_once_capture("Say hello").await?;
+    let response = agent
+        .run_once_capture(
+            "Say hello",
+            jcode::tool::TurnExecutionContext::standalone("e2e-session"),
+        )
+        .await?;
     let saved = Session::load(agent.session_id())?;
 
     assert_eq!(response, "Hello! How can I help?");

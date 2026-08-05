@@ -2678,7 +2678,12 @@ async fn run_single_message_command_plain_with_auto_poke(
     let mut confidence_spike_challenged = false;
     let mut gate_digest_delivered = false;
     loop {
-        agent.run_once(&next_message).await?;
+        agent
+            .run_once(
+                &next_message,
+                crate::tool::TurnExecutionContext::standalone("cli-plain"),
+            )
+            .await?;
         turns_completed += 1;
         if !run_command_auto_poke_enabled() {
             break;
@@ -2760,7 +2765,14 @@ async fn run_single_message_command_capture_with_auto_poke(
     let mut confidence_spike_challenged = false;
     let mut gate_digest_delivered = false;
     loop {
-        outputs.push(agent.run_once_capture(&next_message).await?);
+        outputs.push(
+            agent
+                .run_once_capture(
+                    &next_message,
+                    crate::tool::TurnExecutionContext::standalone("cli-capture"),
+                )
+                .await?,
+        );
         turns_completed += 1;
         if !run_command_auto_poke_enabled() {
             break;
@@ -2869,6 +2881,7 @@ async fn run_single_message_command_ndjson(
                 Vec::new(),
                 None,
                 event_tx.clone(),
+                crate::tool::TurnExecutionContext::standalone("cli-ndjson"),
             ));
             let mut run_result: Option<Result<()>> = None;
             loop {

@@ -1099,6 +1099,7 @@ impl Server {
                     vec![],
                     Some(reminder),
                     event_tx,
+                    crate::tool::TurnExecutionContext::server_initiated("reload-recovery"),
                 )
                 .await;
 
