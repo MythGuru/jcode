@@ -125,6 +125,25 @@ impl RawClient {
         }
     }
 
+    async fn resume_session(&mut self, session_id: &str) -> Result<()> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send_request(Request::ResumeSession {
+            id,
+            session_id: session_id.to_string(),
+            client_instance_id: None,
+            client_has_local_history: false,
+            allow_session_takeover: false,
+        })
+        .await?;
+        self.read_until(
+            Duration::from_secs(5),
+            |event| matches!(event, ServerEvent::Done { id: done_id } if *done_id == id),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn send_message(&mut self, content: &str) -> Result<u64> {
         let id = self.next_id;
         self.next_id += 1;
@@ -226,6 +245,11 @@ impl Provider for RoundTripProvider {
         let transcript = previews.join("\n");
 
         if transcript.contains("Verified peer message from Eve (`eve-project`)") {
+            if transcript.contains("A stale peer pin must not authorize this non-peer session.") {
+                return Ok(text_stream(
+                    "The stale-pin probe unexpectedly reached Atlas.",
+                ));
+            }
             if transcript.contains("Peer reply recorded for `peer_") {
                 self.state.atlas_reply_recorded.notify_one();
                 self.state.release_atlas.notified().await;
@@ -261,6 +285,23 @@ impl Provider for RoundTripProvider {
                     "action": "send",
                     "to": "Atlas",
                     "message": "Please review the deterministic round trip."
+                }),
+            ));
+        }
+
+        if transcript.contains("Probe peer authorization after the non-peer resume.") {
+            if transcript.contains("This project is not configured as a peer") {
+                return Ok(text_stream("The non-peer resume was refused as expected."));
+            }
+            if transcript.contains("stale-pin probe unexpectedly reached Atlas") {
+                return Ok(text_stream("The stale peer pin was incorrectly accepted."));
+            }
+            return Ok(tool_call_stream(
+                "stale-peer-send",
+                serde_json::json!({
+                    "action": "send",
+                    "to": "Atlas",
+                    "message": "A stale peer pin must not authorize this non-peer session."
                 }),
             ));
         }
@@ -310,7 +351,8 @@ async fn real_handler_completes_one_scripted_peer_round_trip_and_releases_both_s
     let runtime = root.path().join("runtime");
     let eve_dir = root.path().join("eve-project");
     let atlas_dir = root.path().join("atlas-project");
-    for directory in [&home, &runtime, &eve_dir, &atlas_dir] {
+    let non_peer_dir = root.path().join("not-a-peer-project");
+    for directory in [&home, &runtime, &eve_dir, &atlas_dir, &non_peer_dir] {
         std::fs::create_dir_all(directory).expect("create peer test directory");
     }
     let peer_config = serde_json::json!({
@@ -337,6 +379,13 @@ async fn real_handler_completes_one_scripted_peer_round_trip_and_releases_both_s
     let _peer_enabled = EnvGuard::set("JCODE_PEER_MESSAGING_ENABLED", "1");
     assert!(crate::config::config().features.peer_messaging);
 
+    let resumed_eve_session = "session_eve_explicit_resume_target";
+    let mut persisted_eve = Session::create_with_id(resumed_eve_session.to_string(), None, None);
+    persisted_eve.model = Some("peer-round-trip".to_string());
+    persisted_eve
+        .save()
+        .expect("persist explicit resume target");
+
     let state = Arc::new(RoundTripProviderState::default());
     let provider: Arc<dyn Provider> = Arc::new(RoundTripProvider {
         state: Arc::clone(&state),
@@ -362,8 +411,13 @@ async fn real_handler_completes_one_scripted_peer_round_trip_and_releases_both_s
         .expect("Atlas should connect");
     eve.subscribe(&eve_dir).await.expect("Eve subscribe");
     atlas.subscribe(&atlas_dir).await.expect("Atlas subscribe");
-    let eve_session = eve.session_id().await.expect("Eve session id");
+    let original_eve_session = eve.session_id().await.expect("original Eve session id");
+    eve.resume_session(resumed_eve_session)
+        .await
+        .expect("Eve explicit resume");
+    let eve_session = eve.session_id().await.expect("resumed Eve session id");
     let atlas_session = atlas.session_id().await.expect("Atlas session id");
+    assert_eq!(eve_session, resumed_eve_session);
     assert_ne!(eve_session, atlas_session);
 
     let eve_request_id = eve
@@ -498,6 +552,44 @@ async fn real_handler_completes_one_scripted_peer_round_trip_and_releases_both_s
         .begin_server_turn(&atlas_session, TurnOrigin::NormalUser)
         .expect("Atlas reservation should be released");
     drop((eve_probe, atlas_probe));
+
+    // The original Eve id still has its first subscribe pin. Move the current
+    // resumed session to a non-peer directory, then explicitly resume the old
+    // id. The resume path must invalidate that stale eligible pin instead of
+    // authorizing the old Eve identity in the new directory.
+    eve.subscribe(&non_peer_dir)
+        .await
+        .expect("move current session outside the peer allowlist");
+    eve.resume_session(&original_eve_session)
+        .await
+        .expect("resume the originally pinned session from a non-peer directory");
+    assert_eq!(
+        eve.session_id().await.expect("non-peer resumed session id"),
+        original_eve_session
+    );
+
+    let refusal_request_id = eve
+        .send_message("Probe peer authorization after the non-peer resume.")
+        .await
+        .expect("non-peer probe turn should start");
+    let refusal = eve
+        .read_until(
+            Duration::from_secs(10),
+            |event| matches!(event, ServerEvent::ToolDone { name, .. } if name == "peer"),
+        )
+        .await
+        .expect("non-peer resumed session should receive a peer tool result");
+    assert!(matches!(
+        refusal,
+        ServerEvent::ToolDone { error: Some(error), .. }
+            if error.contains("This project is not configured as a peer")
+    ));
+    eve.read_until(
+        Duration::from_secs(10),
+        |event| matches!(event, ServerEvent::Done { id } if *id == refusal_request_id),
+    )
+    .await
+    .expect("non-peer refusal turn should complete");
 
     server_task.abort();
     let _ = server_task.await;

@@ -1682,6 +1682,7 @@ pub(super) async fn handle_client(
                 client_has_local_history,
                 allow_session_takeover,
             } => {
+                let target_session_id = session_id.clone();
                 let resume_working_dir = {
                     let agent_guard = agent.lock().await;
                     agent_guard.working_dir().map(str::to_string)
@@ -1732,6 +1733,24 @@ pub(super) async fn handle_client(
                     ),
                 )
                 .await?;
+                if client_session_id == target_session_id {
+                    let resumed_working_dir = agent
+                        .try_lock()
+                        .ok()
+                        .and_then(|agent_guard| agent_guard.working_dir().map(str::to_string))
+                        .or_else(|| {
+                            crate::session::Session::load_startup_stub(&target_session_id)
+                                .ok()
+                                .and_then(|session| session.working_dir)
+                        });
+                    if let Some(working_dir) = resumed_working_dir {
+                        peer_exchanges.pin_or_invalidate_session(
+                            &target_session_id,
+                            Path::new(&working_dir),
+                            &peer_groups,
+                        );
+                    }
+                }
                 session_control = refresh_session_control_handle(
                     &client_session_id,
                     &agent,
