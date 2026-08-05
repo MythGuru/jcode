@@ -2586,6 +2586,19 @@ pub(in crate::tui::app) fn handle_server_event(
                 &message,
                 crate::config::config().display.compact_notifications,
             );
+            let peer_scope = matches!(
+                &notification_type,
+                crate::protocol::NotificationType::Message {
+                    scope: Some(scope),
+                    ..
+                } if scope == "peer"
+            );
+            if peer_scope {
+                app.push_display_message(DisplayMessage::peer(presentation.message.clone()));
+                persist_replay_display_message(app, "peer", None, &presentation.message);
+                app.set_status_notice(presentation.status_notice);
+                return false;
+            }
             // Plan bookkeeping churn (assignments, version bumps, approvals)
             // arrives constantly while a plan runs. It only needs to pass by
             // on the status line; the inline plan graph message already shows

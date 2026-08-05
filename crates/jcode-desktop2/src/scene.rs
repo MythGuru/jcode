@@ -795,12 +795,13 @@ fn draw_transcript(
             ) && message.delivery != Some(crate::ack::Delivery::Queued)
         })
         .filter(|_| model.stream.is_revealing())
-        .filter(|index| laid[*index].role != Role::User);
+        .filter(|index| !matches!(laid[*index].role, Role::User | Role::Peer));
 
     let now = std::time::Instant::now();
     for placed in &view.visible {
         let message_top = frame.body_top + placed.top;
         let is_user = placed.message.role == Role::User;
+        let is_peer = placed.message.role == Role::Peer;
         // The acknowledgement nod. Applied to the card *and* its text, so the
         // message moves as one object; it decays to zero, so nothing here can
         // leave the transcript permanently off its column.
@@ -833,7 +834,7 @@ fn draw_transcript(
         }
         // The user's card: the same fill and radius as the composer, so the
         // message and the field it came from are visibly one object.
-        if is_user {
+        if is_user || is_peer {
             if placed.sticky {
                 // The reply continues to scroll at its natural position behind
                 // the pinned prompt. Clear the prompt's full band first so text
@@ -855,7 +856,7 @@ fn draw_transcript(
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 Affine::scale(scale),
-                theme.wash,
+                if is_peer { theme.code_wash } else { theme.wash },
                 None,
                 &RoundedRect::new(
                     frame.left + wiggle,

@@ -617,8 +617,26 @@ fn to_transcript(messages: Vec<jcode_sdk::HistoryMessage>) -> crate::transcript:
         }
         transcript.push(match message.role.as_str() {
             "user" => crate::transcript::Message::user(text),
+            "peer" => crate::transcript::Message::peer(text),
             _ => crate::transcript::Message::assistant(text),
         });
     }
     transcript
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::to_transcript;
+    use crate::transcript::Role;
+
+    #[test]
+    fn peer_history_keeps_peer_provenance() {
+        let transcript = to_transcript(vec![jcode_sdk::HistoryMessage {
+            role: "peer".to_string(),
+            content: "Peer message from Eve (`healthview-app`)".to_string(),
+        }]);
+
+        assert_eq!(transcript.messages().len(), 1);
+        assert_eq!(transcript.messages()[0].role, Role::Peer);
+    }
 }

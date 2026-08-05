@@ -582,6 +582,31 @@ fn test_handle_server_event_soft_interrupt_injected_system_renders_system_messag
 }
 
 #[test]
+fn test_handle_server_event_soft_interrupt_injected_peer_renders_peer_message() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SoftInterruptInjected {
+            content: "Peer message from Eve (`healthview-app`)".to_string(),
+            display_role: Some("peer".to_string()),
+            point: "peer".to_string(),
+            tools_skipped: None,
+        },
+        &mut remote,
+    );
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("missing injected peer message");
+    assert_eq!(last.role, "peer");
+    assert!(last.content.contains("Eve (`healthview-app`)"));
+}
+
+#[test]
 fn test_handle_server_event_ack_removes_only_matching_unacked_soft_interrupt() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -771,6 +796,40 @@ fn test_handle_server_event_notification_background_task_scope_uses_card_renderi
         "background-task notifications should not render as generic swarm items:\n{}",
         text
     );
+}
+
+#[test]
+fn test_handle_server_event_notification_peer_scope_uses_peer_rendering() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Notification {
+            from_session: "session_eve".to_string(),
+            from_name: Some("Eve".to_string()),
+            notification_type: crate::protocol::NotificationType::Message {
+                scope: Some("peer".to_string()),
+                channel: None,
+                tldr: Some("Review tracker access history".to_string()),
+            },
+            message: "Peer message from Eve (`healthview-app`)\n\nPlease review the tracker access-history design."
+                .to_string(),
+        },
+        &mut remote,
+    );
+
+    let last = app
+        .display_messages()
+        .last()
+        .expect("missing peer notification message");
+    assert_eq!(last.role, "peer");
+    assert_eq!(last.title.as_deref(), Some("Peer"));
+    let parsed = jcode_tui_messages::parse_collapsible_swarm_content(&last.content)
+        .expect("peer notification should retain its collapsed body");
+    assert_eq!(parsed.tldr, "Review tracker access history");
+    assert!(parsed.body.contains("Eve (`healthview-app`)"));
 }
 
 #[test]

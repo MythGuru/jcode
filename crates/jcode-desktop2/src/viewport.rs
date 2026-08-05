@@ -72,7 +72,9 @@ impl<'a> Viewport<'a> {
         let content_top = top;
 
         let mut visible = Vec::new();
-        let latest_user = laid.iter().rposition(|message| message.role == Role::User);
+        let latest_user = laid
+            .iter()
+            .rposition(|message| matches!(message.role, Role::User | Role::Peer));
         let mut sticky_user = None;
         for (index, message) in laid.iter().enumerate() {
             let height = message.height;
@@ -147,7 +149,7 @@ pub fn adjacent_prompt_scroll(
     let mut top = 0.0;
     let mut anchors = Vec::new();
     for message in messages {
-        if message.role == Role::User {
+        if matches!(message.role, Role::User | Role::Peer) {
             anchors.push((max - top).clamp(0.0, max));
         }
         top += message.height + MESSAGE_GAP;

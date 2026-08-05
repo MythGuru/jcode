@@ -193,6 +193,11 @@ fn present_swarm_notification_inner(
                 message: compact_broadcast_message_body(trimmed),
                 status_notice: format!("Broadcast from {}", sender),
             },
+            Some("peer") => SwarmNotificationPresentation {
+                title: format!("Peer message from {}", sender),
+                message: trimmed.to_string(),
+                status_notice: format!("Peer message from {}", sender),
+            },
             Some("plan") => SwarmNotificationPresentation {
                 title: format!("Plan · {}", sender),
                 message: compact_plan_message_body(trimmed),
@@ -372,6 +377,31 @@ mod tests {
             jcode_tui_messages::parse_collapsible_swarm_content(&presentation.message).is_none()
         );
         assert_eq!(presentation.message, "short note");
+    }
+
+    #[test]
+    fn present_peer_notification_preserves_peer_identity_and_collapsed_body() {
+        let presentation = present_swarm_notification(
+            "Eve",
+            &NotificationType::Message {
+                scope: Some("peer".to_string()),
+                channel: None,
+                tldr: Some("Review tracker access history".to_string()),
+            },
+            "Peer message from Eve (`healthview-app`)\n\nPlease review the tracker access-history design.",
+            false,
+        );
+
+        assert_eq!(presentation.title, "Peer message from Eve");
+        assert!(
+            presentation
+                .status_notice
+                .starts_with("Peer message from Eve")
+        );
+        let parsed = jcode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
+            .expect("peer tldr should collapse the full visible body");
+        assert_eq!(parsed.tldr, "Review tracker access history");
+        assert!(parsed.body.contains("Eve (`healthview-app`)"));
     }
 
     #[test]

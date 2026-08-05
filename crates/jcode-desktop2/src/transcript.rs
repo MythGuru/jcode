@@ -33,6 +33,9 @@ use vello::peniko::{Brush, Color};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     User,
+    /// A prompt delivered by an allowlisted peer agent. It is prompt-like for
+    /// layout and navigation, but is never treated as input sent by Michael.
+    Peer,
     Assistant,
     /// The model's reasoning. Shown, because a long silent think is
     /// indistinguishable from a stall, but visibly subordinate to the answer:
@@ -104,6 +107,17 @@ impl Message {
     pub fn user(source: impl Into<String>) -> Self {
         Self {
             role: Role::User,
+            source: source.into(),
+            call_id: None,
+            delivery: None,
+            permille: None,
+            todo_states: Vec::new(),
+        }
+    }
+
+    pub fn peer(source: impl Into<String>) -> Self {
+        Self {
+            role: Role::Peer,
             source: source.into(),
             call_id: None,
             delivery: None,
@@ -381,7 +395,7 @@ impl Transcript {
     pub fn has_user_message(&self) -> bool {
         self.messages
             .iter()
-            .any(|message| message.role == Role::User)
+            .any(|message| matches!(message.role, Role::User | Role::Peer))
     }
 
     /// A short local heading while the daemon's generated session title is not
@@ -392,7 +406,7 @@ impl Transcript {
         let source = self
             .messages
             .iter()
-            .find(|message| message.role == Role::User)?
+            .find(|message| matches!(message.role, Role::User | Role::Peer))?
             .source
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -779,7 +793,7 @@ impl Transcript {
             // A notice is a status line, not prose arriving: it appears whole,
             // so it must not put the reveal back into a streaming state (which
             // would leave the failure fading in with nothing behind it).
-            Some(last) if !matches!(last.role, Role::User | Role::Notice) => {
+            Some(last) if !matches!(last.role, Role::User | Role::Peer | Role::Notice) => {
                 last.source.chars().count()
             }
             _ => 0,
@@ -831,7 +845,7 @@ impl LaidMessage {
     /// at.
     pub fn top_padding(&self) -> f64 {
         match self.role {
-            Role::User => USER_PAD_Y,
+            Role::User | Role::Peer => USER_PAD_Y,
             // A notice is a card too: it has to be visibly an interjection
             // from the app rather than a line the model wrote.
             Role::Tool | Role::Notice | Role::Progress => TOOL_PAD_Y,
@@ -1302,7 +1316,7 @@ pub fn lay_out_message_reusing(
     height += match message.role {
         // The user card and the tool card both reserve their padding, so the
         // tint can never crop the text it wraps.
-        Role::User => USER_PAD_Y * 2.0,
+        Role::User | Role::Peer => USER_PAD_Y * 2.0,
         Role::Tool | Role::Notice | Role::Edit => TOOL_PAD_Y * 2.0,
         // The bar is drawn under the label inside the same card, so the card
         // reserves its height here: measuring it anywhere else would let the

@@ -377,7 +377,10 @@ fn draw_preview(
         if source.is_empty() {
             continue;
         }
-        let user = message.role == crate::transcript::Role::User;
+        let user = matches!(
+            message.role,
+            crate::transcript::Role::User | crate::transcript::Role::Peer
+        );
         y += text.draw_paragraph_scaled(
             scene,
             source,

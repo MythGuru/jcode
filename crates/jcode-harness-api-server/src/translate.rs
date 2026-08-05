@@ -1802,9 +1802,15 @@ impl BridgeState {
                 if role != "user" && role != "assistant" {
                     return None;
                 }
+                let history_role =
+                    if role == "user" && message["display_role"].as_str() == Some("peer") {
+                        "peer"
+                    } else {
+                        role
+                    };
                 let content = flatten_content(&message["content"]);
                 (!content.trim().is_empty()).then(|| HistoryMessage {
-                    role: role.to_string(),
+                    role: history_role.to_string(),
                     content,
                 })
             })

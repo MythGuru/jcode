@@ -155,7 +155,10 @@ fn draw_card_thumbnail(
             width as f32,
             ParagraphStyle {
                 font_size: THUMB_SIZE,
-                color: if message.role == crate::transcript::Role::User {
+                color: if matches!(
+                    message.role,
+                    crate::transcript::Role::User | crate::transcript::Role::Peer
+                ) {
                     model.theme.muted
                 } else {
                     model.theme.faint
