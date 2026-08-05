@@ -421,6 +421,7 @@ pub(super) async fn handle_client(
                 if request.is_lightweight_control_request() {
                     handle_lightweight_control_request(
                         request,
+                        &mut reader,
                         Arc::clone(&writer),
                         LightweightControlContext {
                             sessions: &sessions,

@@ -29,7 +29,9 @@ use crate::protocol::{Request, ServerEvent};
 use crate::provider::Provider;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 pub(super) fn parse_swarm_spawn_mode(
@@ -82,6 +84,7 @@ pub(super) struct LightweightControlContext<'a> {
 
 pub(super) async fn handle_lightweight_control_request(
     request: Request,
+    reader: &mut BufReader<crate::transport::ReadHalf>,
     writer: Arc<Mutex<crate::transport::WriteHalf>>,
     context: LightweightControlContext<'_>,
 ) -> Result<()> {
@@ -138,20 +141,23 @@ pub(super) async fn handle_lightweight_control_request(
         | Request::PeerSend { .. }
         | Request::PeerReply { .. }
         | Request::PeerCancel { .. }) => {
-            handle_peer_request(
-                request,
-                &client_event_tx,
-                PeerServerContext {
-                    sessions,
-                    peer_groups,
-                    exchanges: peer_exchanges,
-                    swarm_members,
-                    swarms_by_id,
-                    event_history,
-                    event_counter,
-                    swarm_event_tx,
-                    turn_coordinator,
-                },
+            run_peer_request_until_disconnect(
+                reader,
+                handle_peer_request(
+                    request,
+                    &client_event_tx,
+                    PeerServerContext {
+                        sessions,
+                        peer_groups,
+                        exchanges: peer_exchanges,
+                        swarm_members,
+                        swarms_by_id,
+                        event_history,
+                        event_counter,
+                        swarm_event_tx,
+                        turn_coordinator,
+                    },
+                ),
             )
             .await;
         }
@@ -837,4 +843,95 @@ pub(super) async fn handle_lightweight_control_request(
     drop(client_event_tx);
     let _ = event_handle.await;
     Ok(())
+}
+
+async fn run_peer_request_until_disconnect<F>(
+    reader: &mut BufReader<crate::transport::ReadHalf>,
+    request: F,
+) where
+    F: Future<Output = ()>,
+{
+    tokio::pin!(request);
+    let mut line = String::new();
+    loop {
+        tokio::select! {
+            biased;
+            () = &mut request => return,
+            read = reader.read_line(&mut line) => match read {
+                Ok(0) | Err(_) => return,
+                Ok(_) => line.clear(),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::peer_exchange::{
+        PeerExchangeRegistry, PeerIdentity, RegisteredPeerExchange,
+    };
+    use crate::server::turn_coordinator::TurnCoordinator;
+    use crate::tool::TurnOrigin;
+    use std::time::Duration;
+    use tokio::io::BufReader;
+
+    #[tokio::test]
+    async fn lightweight_peer_wait_is_cancelled_when_sender_socket_closes() {
+        let coordinator = TurnCoordinator::default();
+        let sender_lease = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("sender turn");
+        let pending = coordinator
+            .begin_peer_turn(
+                sender_lease.context(),
+                "recipient",
+                "peer-socket-eof".to_string(),
+            )
+            .expect("peer reservation");
+        let registry = PeerExchangeRegistry::new(coordinator, Duration::from_secs(600));
+        let registered = registry
+            .register(
+                pending,
+                PeerIdentity {
+                    session_id: "sender".to_string(),
+                    alias: "Eve".to_string(),
+                    project_name: "sender-project".to_string(),
+                },
+                PeerIdentity {
+                    session_id: "recipient".to_string(),
+                    alias: "Atlas".to_string(),
+                    project_name: "recipient-project".to_string(),
+                },
+            )
+            .expect("registered peer exchange");
+        let RegisteredPeerExchange {
+            recipient_cancellation,
+            recipient_lease,
+            waiter,
+            ..
+        } = registered;
+
+        let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
+        let (server_reader, _server_writer) = server_stream.into_split();
+        let mut server_reader = BufReader::new(server_reader);
+
+        let wait = async move {
+            let _recipient_lease = recipient_lease;
+            let _ = waiter.wait().await;
+        };
+        drop(client_stream);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            run_peer_request_until_disconnect(&mut server_reader, wait),
+        )
+        .await
+        .expect("socket EOF should abandon peer wait promptly");
+
+        assert!(
+            recipient_cancellation.is_set(),
+            "abandoning the sender socket must cancel the recipient peer turn"
+        );
+        drop(sender_lease);
+    }
 }
