@@ -14,10 +14,37 @@
 use super::TraceEvent;
 use serde_json::Value;
 
-/// Longest label kept for a resource or summary. Transcripts contain whole file
-/// bodies and command output; unbounded labels would make lifted graphs
+/// Longest label kept for a human-readable summary. Transcripts contain whole
+/// file bodies and command output; unbounded labels would make lifted graphs
 /// unreadable and bloat persisted plans.
 const MAX_LABEL: usize = 120;
+
+/// Longest resource *identity* retained. Identity must not use [`MAX_LABEL`]:
+/// truncating an identity merges every resource sharing a long prefix, which
+/// fabricates dependencies between unrelated files. This bound exists only to
+/// stop a pathological transcript from bloating memory, and anything longer is
+/// dropped rather than truncated, because a missing resource costs one missed
+/// edge while a truncated one corrupts the graph.
+const MAX_RESOURCE_ID: usize = 400;
+
+/// Namespace prefix for a filesystem path resource.
+const FILE_NS: &str = "file:";
+/// Namespace prefix for a command-identity resource.
+const CMD_NS: &str = "cmd:";
+/// Namespace prefix for a fetched URL resource.
+const URL_NS: &str = "url:";
+
+/// Tag a resource with its namespace so unlike things cannot collide.
+///
+/// Without this, a local write to `src/lib.rs` and a fetch of
+/// `https://host/reference/src/lib.rs` compare equal under suffix matching and
+/// produce an edge between two entirely unrelated actions.
+fn namespaced(prefix: &str, value: &str) -> Option<String> {
+    if value.is_empty() || value.chars().count() > MAX_RESOURCE_ID {
+        return None;
+    }
+    Some(format!("{prefix}{value}"))
+}
 
 /// Extract an ordered trace from a parsed session document.
 ///
@@ -130,7 +157,7 @@ fn resources(tool: &str, input: &Value) -> (Vec<String>, Vec<String>) {
     let mut paths: Vec<String> = Vec::new();
     for key in ["file_path", "path", "notebook_path", "file", "target"] {
         if let Some(value) = input.get(key).and_then(Value::as_str) {
-            paths.push(normalize_path(value));
+            paths.extend(file_resource(value));
         }
     }
     // Patch-style tools carry their targets inside the patch body.
@@ -150,9 +177,19 @@ fn resources(tool: &str, input: &Value) -> (Vec<String>, Vec<String>) {
         return command_resources(command);
     }
     if let Some(url) = input.get("url").and_then(Value::as_str) {
-        return (vec![truncate(url)], Vec::new());
+        // A fetched URL lives in its own namespace: a page whose address ends in
+        // `src/lib.rs` is not the local file of that name.
+        return (
+            namespaced(URL_NS, url.trim()).into_iter().collect(),
+            Vec::new(),
+        );
     }
     (Vec::new(), Vec::new())
+}
+
+/// A namespaced filesystem-path resource, or nothing if the path is unusable.
+fn file_resource(path: &str) -> Option<String> {
+    namespaced(FILE_NS, &normalize_path(path))
 }
 
 /// Split a command line into tokens, keeping quoted spans whole.
@@ -256,7 +293,9 @@ fn program_name(program: &str) -> String {
 /// it merely mentions.
 fn command_resources(command: &str) -> (Vec<String>, Vec<String>) {
     let resolved = resolve_command(command);
-    let mut reads = vec![command_key(command)];
+    let mut reads: Vec<String> = namespaced(CMD_NS, &command_key(command))
+        .into_iter()
+        .collect();
     let mut writes = Vec::new();
     let mut tokens = tokenize(&resolved).into_iter().peekable();
     let mut seen_program = false;
@@ -293,7 +332,8 @@ fn command_resources(command: &str) -> (Vec<String>, Vec<String>) {
                 continue;
             }
             // The first bare token is the program itself, which is already
-            // covered by the command key.
+            // covered by the command key. A bare script path (`scripts/x.py`)
+            // is not a known interpreter, so its own operands stay unread.
             seen_program = true;
             operands_are_paths = takes_file_operands(&token);
             continue;
@@ -351,9 +391,11 @@ fn push_path(paths: &mut Vec<String>, token: &str) {
     if !plausible {
         return;
     }
-    let normalized = normalize_path(cleaned);
-    if !paths.contains(&normalized) {
-        paths.push(normalized);
+    let Some(resource) = file_resource(cleaned) else {
+        return;
+    };
+    if !paths.contains(&resource) {
+        paths.push(resource);
     }
 }
 
@@ -365,7 +407,7 @@ fn patch_targets(patch: &str) -> Vec<String> {
             let line = line.trim();
             for prefix in ["*** Update File:", "*** Add File:", "*** Delete File:"] {
                 if let Some(rest) = line.strip_prefix(prefix) {
-                    return Some(normalize_path(rest.trim()));
+                    return file_resource(rest.trim());
                 }
             }
             None
@@ -409,10 +451,13 @@ fn command_key(command: &str) -> String {
             break;
         }
     }
+    // The key is an identity, so it is never truncated: shortening it would
+    // merge every command sharing a long prefix. `namespaced` drops
+    // pathological lengths outright instead.
     if key.is_empty() {
-        truncate(&resolved)
+        resolved
     } else {
-        truncate(&key.join(" "))
+        key.join(" ")
     }
 }
 
@@ -498,20 +543,24 @@ fn top_level_segments(command: &str) -> Vec<(usize, usize)> {
     segments
 }
 
-/// Normalize a path for comparison so that the same file referred to as an
-/// absolute path in one call and a relative path in another still links up.
+/// Normalize a path for comparison so that the same file referred to with
+/// different separators or a trailing slash still compares equal.
+///
+/// Crucially this preserves the *whole* path. An earlier version kept only the
+/// last three components, which made `packages/frontend/src/components/Button.tsx`
+/// and `packages/admin/src/components/Button.tsx` identical and produced an edge
+/// between unrelated files. Two spellings of one file are reconciled later, by
+/// suffix matching in the lifter, which is a comparison rather than a
+/// destructive rewrite and so cannot merge distinct fully-qualified paths.
 fn normalize_path(path: &str) -> String {
     let unified = path.replace('\\', "/");
-    let trimmed = unified.trim_end_matches('/');
-    // Keep the last three components: enough to disambiguate same-named files
-    // across directories without depending on where the repo is checked out.
-    let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
-    let tail = if parts.len() > 3 {
-        parts[parts.len() - 3..].join("/")
-    } else {
-        parts.join("/")
-    };
-    truncate(&tail)
+    let trimmed = unified.trim().trim_end_matches('/');
+    // Collapse empty and `.` components so `./a//b` and `a/b` agree.
+    let parts: Vec<&str> = trimmed
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    parts.join("/")
 }
 
 fn summarize(tool: &str, input: &Value) -> String {
@@ -542,6 +591,15 @@ fn truncate(text: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Resource labels are namespaced, so expectations name the namespace too.
+    fn file(path: &str) -> String {
+        format!("{FILE_NS}{path}")
+    }
+
+    fn cmd(key: &str) -> String {
+        format!("{CMD_NS}{key}")
+    }
 
     fn tool_use(id: &str, name: &str, input: Value) -> Value {
         json!({"type": "tool_use", "id": id, "name": name, "input": input})
@@ -581,7 +639,7 @@ mod tests {
         let trace = trace_from_session(&session);
         assert_eq!(trace.len(), 1);
         assert_eq!(trace[0].tool, "Read");
-        assert_eq!(trace[0].reads, vec!["src/lib.rs"]);
+        assert_eq!(trace[0].reads, vec![file("src/lib.rs")]);
     }
 
     #[test]
@@ -608,9 +666,9 @@ mod tests {
             tool_use("b", "Read", json!({"file_path": "a.rs"})),
         ])]});
         let trace = trace_from_session(&session);
-        assert_eq!(trace[0].writes, vec!["a.rs"]);
+        assert_eq!(trace[0].writes, vec![file("a.rs")]);
         assert!(trace[0].reads.is_empty());
-        assert_eq!(trace[1].reads, vec!["a.rs"]);
+        assert_eq!(trace[1].reads, vec![file("a.rs")]);
         assert!(trace[1].writes.is_empty());
     }
 
@@ -624,17 +682,31 @@ mod tests {
             json!({"patch_text": patch}),
         )])]});
         let trace = trace_from_session(&session);
-        assert_eq!(trace[0].writes, vec!["a/src/lib.rs"]);
+        assert_eq!(trace[0].writes, vec![file("crates/a/src/lib.rs")]);
     }
 
     #[test]
-    fn paths_normalize_across_absolute_and_relative_spellings() {
+    fn separators_and_redundant_components_normalize_but_depth_is_preserved() {
+        // Separator style and `./` noise are spelling; the identity is the same
+        // file. Depth is *not* spelling: an absolute and a relative path are
+        // kept distinct here and reconciled later by the lifter's suffix
+        // matching, which can refuse when the reference is ambiguous. Folding
+        // them together at this layer would silently merge same-named files in
+        // different trees.
         let session = json!({"messages": [assistant(vec![
-            tool_use("a", "Write", json!({"file_path": "C:\\dev\\jcode\\crates\\p\\src\\lib.rs"})),
-            tool_use("b", "Read", json!({"file_path": "crates/p/src/lib.rs"})),
+            tool_use("a", "Write", json!({"file_path": "crates\\p\\src\\lib.rs"})),
+            tool_use("b", "Read", json!({"file_path": "./crates/p//src/lib.rs"})),
+            tool_use("c", "Read", json!({"file_path": "C:/dev/jcode/crates/p/src/lib.rs"})),
         ])]});
         let trace = trace_from_session(&session);
-        assert_eq!(trace[0].writes, trace[1].reads);
+        assert_eq!(
+            trace[0].writes, trace[1].reads,
+            "separator and ./ differences are spelling only"
+        );
+        assert_ne!(
+            trace[0].writes, trace[2].reads,
+            "a fully qualified path keeps its qualification"
+        );
     }
 
     #[test]
@@ -696,12 +768,8 @@ mod tests {
             tool_use("b", "Bash", json!({"command": "node C:\\tmp\\work\\recompute.js"})),
         ])]});
         let trace = trace_from_session(&session);
-        assert_eq!(trace[0].writes, vec!["tmp/work/recompute.js"]);
-        assert!(
-            trace[1]
-                .reads
-                .contains(&"tmp/work/recompute.js".to_string())
-        );
+        assert_eq!(trace[0].writes, vec![file("C:/tmp/work/recompute.js")]);
+        assert!(trace[1].reads.contains(&file("C:/tmp/work/recompute.js")));
     }
 
     #[test]
@@ -709,11 +777,11 @@ mod tests {
         // `git commit -m "fix a.rs bug"` merely mentions a file; treating the
         // mention as a dependency would fabricate structure.
         let (reads, writes) = command_resources("git commit -m \"fix a.rs bug\"");
-        assert_eq!(reads, vec!["git commit"]);
+        assert_eq!(reads, vec![cmd("git commit")]);
         assert!(writes.is_empty());
 
         let (reads, _) = command_resources("python scripts/build.py");
-        assert!(reads.contains(&"scripts/build.py".to_string()));
+        assert!(reads.contains(&file("scripts/build.py")));
     }
 
     #[test]
@@ -730,13 +798,13 @@ mod tests {
     #[test]
     fn redirection_targets_are_writes_for_any_command() {
         let (_, writes) = command_resources("cargo test -p jcode-plan > target/out.txt 2>&1");
-        assert_eq!(writes, vec!["target/out.txt"]);
+        assert_eq!(writes, vec![file("target/out.txt")]);
 
         let (_, appended) = command_resources("echo hi >> notes/log.txt");
-        assert_eq!(appended, vec!["notes/log.txt"]);
+        assert_eq!(appended, vec![file("notes/log.txt")]);
 
         let (_, spaced) = command_resources("cargo build > target/build.log");
-        assert_eq!(spaced, vec!["target/build.log"]);
+        assert_eq!(spaced, vec![file("target/build.log")]);
     }
 
     #[test]
@@ -746,8 +814,8 @@ mod tests {
             tool_use("b", "Read", json!({"file_path": "target/out.txt"})),
         ])]});
         let trace = trace_from_session(&session);
-        assert_eq!(trace[0].writes, vec!["target/out.txt"]);
-        assert_eq!(trace[1].reads, vec!["target/out.txt"]);
+        assert_eq!(trace[0].writes, vec![file("target/out.txt")]);
+        assert_eq!(trace[1].reads, vec![file("target/out.txt")]);
     }
 
     #[test]
@@ -771,8 +839,8 @@ mod tests {
             })),
         ])]});
         let trace = trace_from_session(&session);
-        assert_eq!(trace[0].writes, vec!["work/s/plan.sh"]);
-        assert!(trace[1].reads.contains(&"work/s/plan.sh".to_string()));
+        assert_eq!(trace[0].writes, vec![file("work/s/plan.sh")]);
+        assert!(trace[1].reads.contains(&file("work/s/plan.sh")));
     }
 
     #[test]
@@ -810,8 +878,8 @@ mod tests {
         // make every command sharing that variable look like one resource.
         assert_eq!(command_key("SANDBOX='/tmp/x' node b2.js"), "node b2.js");
         let (reads, _) = command_resources("cd s && SANDBOX='/tmp/x' node b2.js");
-        assert!(reads.contains(&"b2.js".to_string()));
-        assert!(reads.contains(&"node b2.js".to_string()));
+        assert!(reads.contains(&file("b2.js")));
+        assert!(reads.contains(&cmd("node b2.js")));
     }
 
     #[test]
@@ -822,16 +890,33 @@ mod tests {
     }
 
     #[test]
-    fn labels_are_truncated_so_lifted_graphs_stay_readable() {
+    fn summaries_truncate_but_identities_are_dropped_rather_than_shortened() {
+        // Summaries are prose and may be shortened. Identities may not: a
+        // truncated identity silently merges every resource sharing a prefix.
         let long = "x".repeat(500);
         let session = json!({"messages": [assistant(vec![tool_use(
             "a",
             "Bash",
-            json!({"command": long}),
+            json!({"command": long.clone()}),
         )])]});
         let trace = trace_from_session(&session);
         assert!(trace[0].summary.chars().count() <= MAX_LABEL);
-        assert!(trace[0].reads[0].chars().count() <= MAX_LABEL);
+        for resource in trace[0].reads.iter().chain(trace[0].writes.iter()) {
+            assert!(
+                !resource.ends_with('…'),
+                "identities are never elided: {resource}"
+            );
+        }
+
+        // An identity past the hard cap is dropped entirely.
+        let huge = format!("cat {}.txt", "y".repeat(MAX_RESOURCE_ID + 50));
+        let (reads, _) = command_resources(&huge);
+        assert!(
+            reads
+                .iter()
+                .all(|r| r.chars().count() <= MAX_RESOURCE_ID + CMD_NS.len()),
+            "oversized identities are dropped, not truncated: {reads:?}"
+        );
     }
 
     #[test]

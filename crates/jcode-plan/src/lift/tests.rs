@@ -7,12 +7,20 @@
 use super::*;
 use crate::dag::NodeStatus;
 
+/// Resource labels are namespaced by the adapter, and the lifter's matching
+/// rules depend on that namespace, so the helpers apply it exactly as
+/// [`super::session`] does. Tests that used bare paths would exercise a shape
+/// no real transcript produces.
+fn file(path: &str) -> String {
+    format!("{FILE_NS}{path}")
+}
+
 fn read(seq: usize, turn: usize, path: &str) -> TraceEvent {
-    TraceEvent::new(seq, turn, "Read", format!("Read {path}")).reads([path])
+    TraceEvent::new(seq, turn, "Read", format!("Read {path}")).reads([file(path)])
 }
 
 fn write(seq: usize, turn: usize, path: &str) -> TraceEvent {
-    TraceEvent::new(seq, turn, "Write", format!("Write {path}")).writes([path])
+    TraceEvent::new(seq, turn, "Write", format!("Write {path}")).writes([file(path)])
 }
 
 fn build(seq: usize, turn: usize, ok: bool) -> TraceEvent {
@@ -34,7 +42,7 @@ fn dep_ids(report: &LiftReport, node: &str) -> Vec<String> {
 fn empty_trace_lifts_to_empty_graph() {
     let report = lift(&[]);
     assert!(report.graph.is_empty());
-    assert_eq!(report.parallel_width(), 0);
+    assert_eq!(report.parallel_width().value, 0);
     assert_eq!(report.critical_path(), 0);
 }
 
@@ -88,7 +96,7 @@ fn unrelated_work_gets_no_edges_so_parallelism_is_visible() {
     // Nothing in the second pair depends on anything in the first.
     assert!(dep_ids(&report, "explore.2").is_empty());
     assert_eq!(dep_ids(&report, "implement.2"), vec!["explore.2"]);
-    assert_eq!(report.parallel_width(), 2);
+    assert_eq!(report.parallel_width().value, 2);
     assert_eq!(report.critical_path(), 2);
 }
 
@@ -98,7 +106,10 @@ fn read_after_write_creates_an_edge() {
     let report = lift(&events);
     assert_eq!(dep_ids(&report, "explore.1"), vec!["implement.1"]);
     assert_eq!(report.edges[0].reason, EdgeReason::ReadAfterWrite);
-    assert_eq!(report.edges[0].resource.as_deref(), Some("a.rs"));
+    assert_eq!(
+        report.edges[0].resource.as_deref(),
+        Some(file("a.rs").as_str())
+    );
 }
 
 #[test]
@@ -114,7 +125,7 @@ fn a_path_matches_the_same_file_spelled_at_a_different_depth() {
     assert_eq!(dep_ids(&report, "explore.1"), vec!["implement.1"]);
     assert_eq!(
         report.edges[0].resource.as_deref(),
-        Some("tmp/work/showlines.js"),
+        Some(file("tmp/work/showlines.js").as_str()),
         "the more qualified label is reported as the evidence"
     );
 }
@@ -128,6 +139,136 @@ fn suffix_matching_respects_component_boundaries() {
     assert!(
         report.edges.is_empty(),
         "no edge between distinct files sharing a name ending"
+    );
+}
+
+#[test]
+fn an_ambiguous_bare_name_yields_no_edge_rather_than_a_guess() {
+    // Two distinct files share a basename and a later step names only the
+    // basename. The trace genuinely does not say which was meant, so resolving
+    // it either way would fabricate a dependency. Regression for a case that
+    // previously linked the reader to *both* writers.
+    let events = vec![
+        write(0, 0, "a/src/lib.rs"),
+        write(1, 0, "b/src/lib.rs"),
+        read(2, 1, "lib.rs"),
+    ];
+    let report = lift(&events);
+    assert!(
+        report.edges.is_empty(),
+        "ambiguous reference must not resolve to an arbitrary candidate"
+    );
+}
+
+#[test]
+fn same_basename_in_different_trees_is_not_one_resource() {
+    // Regression: path identity was truncated to its last three components, so
+    // these two distinct files compared equal and produced an edge.
+    let events = vec![
+        write(0, 0, "packages/frontend/src/components/Button.tsx"),
+        read(1, 1, "packages/admin/src/components/Button.tsx"),
+    ];
+    let report = lift(&events);
+    assert!(
+        report.edges.is_empty(),
+        "deep paths that differ early are different files"
+    );
+}
+
+#[test]
+fn resources_of_different_kinds_never_match() {
+    // A fetched URL ending in `src/lib.rs` is not the local file of that name.
+    let events = vec![
+        write(0, 0, "src/lib.rs"),
+        TraceEvent::new(1, 1, "webfetch", "fetch docs")
+            .reads(["url:https://example.invalid/reference/src/lib.rs"]),
+    ];
+    let report = lift(&events);
+    assert!(
+        report.edges.is_empty(),
+        "a URL and a file are not the same resource"
+    );
+}
+
+#[test]
+fn parallel_width_is_the_true_antichain_not_the_widest_layer() {
+    // Exhaustive search found this shape: one node fans out to two, plus one
+    // isolated node. Depth layers are {a,d} and {b,c}, so the widest layer is 2,
+    // but {b,c,d} are mutually independent, so the true width is 3. Reporting
+    // the layer count would understate available parallelism.
+    let events = vec![
+        write(0, 0, "a.rs"),         // implement.1  (a)
+        read(1, 1, "a.rs"),          // explore.1    (b) depends on a
+        read(2, 2, "a.rs"),          // explore.2    (c) depends on a
+        write(3, 3, "unrelated.rs"), // implement.2 (d) independent
+    ];
+    let report = lift(&events);
+    assert_eq!(report.critical_path(), 2);
+    let width = report.parallel_width();
+    assert!(width.exact, "small graphs get the exact answer");
+    assert_eq!(width.value, 3, "true maximum antichain spans depths");
+    assert_eq!(
+        report.layer_width(),
+        2,
+        "the layer bound is strictly weaker"
+    );
+}
+
+#[test]
+fn parallel_width_of_a_chain_is_one() {
+    let events = vec![
+        write(0, 0, "a.rs"),
+        write(1, 1, "a.rs"),
+        write(2, 2, "a.rs"),
+    ];
+    let report = lift(&events);
+    assert_eq!(
+        report.parallel_width().value,
+        1,
+        "a chain has no parallelism"
+    );
+}
+
+#[test]
+fn verification_is_not_attributed_to_a_change_from_an_earlier_turn() {
+    // Editing README in one turn and running an unrelated test suite in the
+    // next is temporal adjacency, not evidence. Regression: the fallback used
+    // to link any preceding change regardless of turn.
+    let events = vec![write(0, 0, "README.md"), build(1, 1, true)];
+    let report = lift(&events);
+    assert!(
+        report.edges.is_empty(),
+        "cross-turn verification is adjacency, not dataflow"
+    );
+}
+
+#[test]
+fn verification_is_still_attributed_within_one_turn() {
+    // The narrow case the fallback exists for: one instruction, change then
+    // check. Both belong to a single intent, so the attribution is warranted.
+    let events = vec![write(0, 0, "a.rs"), build(1, 0, true)];
+    let report = lift(&events);
+    assert_eq!(dep_ids(&report, "verify.1"), vec!["implement.1"]);
+    assert_eq!(report.edges[0].reason, EdgeReason::VerifiesChange);
+}
+
+#[test]
+fn edge_evidence_survives_into_the_persisted_node() {
+    // The graph is the artifact that outlives the report, so a dependency it
+    // asserts must carry its own justification.
+    let events = vec![write(0, 0, "a.rs"), read(1, 1, "a.rs")];
+    let report = lift(&events);
+    let artifact = report
+        .graph
+        .get("explore.1")
+        .and_then(|node| node.output.clone())
+        .expect("lifted node carries an artifact");
+    assert!(
+        artifact.evidence.iter().any(
+            |line| line.contains("depends on implement.1") && line.contains("read-after-write")
+        ),
+        "edge reasons are persisted, got {:?}",
+        artifact.evidence
     );
 }
 
@@ -160,7 +301,7 @@ fn verification_depends_on_the_nearest_change_only() {
 fn verification_with_real_dataflow_prefers_the_dataflow_edge() {
     let events = vec![
         write(0, 0, "a.rs"),
-        TraceEvent::new(1, 1, "Bash", "cargo test").reads(["a.rs"]),
+        TraceEvent::new(1, 1, "Bash", "cargo test").reads([file("a.rs")]),
     ];
     let report = lift(&events);
     assert_eq!(report.edges.len(), 1);
@@ -185,7 +326,7 @@ fn transitive_edges_are_reduced_away_but_kept_as_evidence() {
             .any(|e| e.from == "implement.1" && e.to == "implement.3")
     );
     assert_eq!(report.critical_path(), 3);
-    assert_eq!(report.parallel_width(), 1);
+    assert_eq!(report.parallel_width().value, 1);
 }
 
 #[test]

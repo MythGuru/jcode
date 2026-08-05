@@ -217,12 +217,64 @@ pub struct LiftReport {
     pub events_considered: usize,
 }
 
+/// Largest node count for which the exact maximum antichain is computed.
+///
+/// The exact computation is a bipartite matching over the transitive closure,
+/// which is quadratic in memory and worse in time. Beyond this size the report
+/// falls back to the layer-width lower bound and says so, because a slow lift is
+/// a broken tool and a silently approximated headline number is a dishonest one.
+pub const MAX_EXACT_WIDTH_NODES: usize = 512;
+
+/// How much of the session could have run concurrently, and how sure we are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParallelWidth {
+    /// The number of mutually independent nodes.
+    pub value: usize,
+    /// Whether `value` is the true maximum antichain (`true`) or a lower bound
+    /// derived from the widest depth layer (`false`).
+    pub exact: bool,
+}
+
+impl std::fmt::Display for ParallelWidth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.exact {
+            write!(f, "{}", self.value)
+        } else {
+            write!(f, ">={} (approximate)", self.value)
+        }
+    }
+}
+
 impl LiftReport {
     /// Widest set of nodes that were mutually independent, i.e. how much of this
     /// session could have run in parallel. This is the headline number a lifted
     /// graph exists to produce: a chain has width 1, and anything above that is
     /// concurrency the emergent run left on the table.
-    pub fn parallel_width(&self) -> usize {
+    ///
+    /// This is the true maximum antichain, obtained via Dilworth's theorem: the
+    /// largest antichain equals the minimum chain cover, which equals
+    /// `n - maximum bipartite matching` over the reachability relation. The
+    /// cheaper widest-depth-layer count is only a lower bound, because an
+    /// antichain may span several depths, so reporting it as the answer would
+    /// understate available parallelism. Above [`MAX_EXACT_WIDTH_NODES`] the
+    /// bound is returned instead, flagged as inexact.
+    pub fn parallel_width(&self) -> ParallelWidth {
+        let count = self.graph.len();
+        if count > MAX_EXACT_WIDTH_NODES {
+            return ParallelWidth {
+                value: self.layer_width(),
+                exact: false,
+            };
+        }
+        ParallelWidth {
+            value: self.maximum_antichain(),
+            exact: true,
+        }
+    }
+
+    /// Lower bound on [`Self::parallel_width`]: the most nodes sharing a depth.
+    /// Every depth layer is an antichain, so this never exceeds the true width.
+    pub fn layer_width(&self) -> usize {
         let depths = self.depths();
         let mut by_depth: HashMap<usize, usize> = HashMap::new();
         for depth in depths.values() {
@@ -232,9 +284,58 @@ impl LiftReport {
     }
 
     /// Longest dependency chain, i.e. the minimum number of sequential rounds
-    /// this work needed.
+    /// this work needed. Nodes are unit cost: this counts rounds, not time.
     pub fn critical_path(&self) -> usize {
         self.depths().values().copied().max().map_or(0, |d| d + 1)
+    }
+
+    /// Maximum antichain via Dilworth's theorem.
+    fn maximum_antichain(&self) -> usize {
+        let nodes = self.graph.nodes();
+        let count = nodes.len();
+        if count == 0 {
+            return 0;
+        }
+        let index: HashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(position, node)| (node.id.as_str(), position))
+            .collect();
+        // Ancestors of each node. Dependencies always point backward in trace
+        // order, so one in-order pass settles every row: a node's ancestors are
+        // its parents plus their already-settled ancestors.
+        let mut ancestors: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); count];
+        for (position, node) in nodes.iter().enumerate() {
+            let mut acc = BTreeSet::new();
+            for dep in &node.depends_on {
+                let Some(&parent) = index.get(dep.as_str()) else {
+                    continue;
+                };
+                acc.insert(parent);
+                let inherited: Vec<usize> = ancestors[parent].iter().copied().collect();
+                acc.extend(inherited);
+            }
+            ancestors[position] = acc;
+        }
+        // Invert into the comparability relation used by the matching: `reach[a]`
+        // is every node strictly after `a` in the partial order.
+        let mut reach: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (descendant, row) in ancestors.iter().enumerate() {
+            for &ancestor in row {
+                reach[ancestor].push(descendant);
+            }
+        }
+        // Minimum chain cover = n - maximum bipartite matching (Kuhn's
+        // algorithm); by Dilworth that cover size is the maximum antichain.
+        let mut matched_right: Vec<Option<usize>> = vec![None; count];
+        let mut matching = 0usize;
+        for left in 0..count {
+            let mut seen = vec![false; count];
+            if augment(left, &reach, &mut matched_right, &mut seen) {
+                matching += 1;
+            }
+        }
+        count - matching
     }
 
     fn depths(&self) -> HashMap<&str, usize> {
@@ -252,6 +353,28 @@ impl LiftReport {
         }
         depths
     }
+}
+
+/// One augmenting-path step of Kuhn's bipartite matching.
+fn augment(
+    left: usize,
+    reach: &[Vec<usize>],
+    matched_right: &mut [Option<usize>],
+    seen: &mut [bool],
+) -> bool {
+    for index in 0..reach[left].len() {
+        let right = reach[left][index];
+        if seen[right] {
+            continue;
+        }
+        seen[right] = true;
+        let free = matched_right[right].is_none();
+        if free || augment(matched_right[right].unwrap(), reach, matched_right, seen) {
+            matched_right[right] = Some(left);
+            return true;
+        }
+    }
+    false
 }
 
 /// Classify a tool invocation into an activity class.
@@ -370,8 +493,49 @@ fn segment(events: &[TraceEvent]) -> Vec<Segment> {
     segments
 }
 
+/// Namespace prefix marking a resource as a filesystem path. Only file
+/// resources participate in suffix matching; commands and URLs must match
+/// exactly, since a URL ending in `src/lib.rs` is not that file.
+pub(crate) const FILE_NS: &str = "file:";
+
+/// Short paths that cannot be resolved to a single qualified path, and so must
+/// never match by suffix.
+///
+/// Ambiguity is a property of the whole trace, not of one comparison. A bare
+/// `lib.rs` compared against `a/src/lib.rs` looks unambiguous in isolation and
+/// again unambiguous against `b/src/lib.rs`, yet linking it to both fabricates
+/// a dependency. Resolution is therefore decided once, over every resource the
+/// trace mentions, before any pair is considered.
+#[derive(Debug, Default)]
+struct Ambiguity {
+    unresolvable: BTreeSet<String>,
+}
+
+impl Ambiguity {
+    fn from_segments(segments: &[Segment]) -> Self {
+        let mut all: BTreeSet<&str> = BTreeSet::new();
+        for segment in segments {
+            all.extend(segment.reads());
+            all.extend(segment.writes());
+        }
+        let files: Vec<&str> = all.into_iter().filter(|r| is_file(r)).collect();
+        let mut unresolvable = BTreeSet::new();
+        for short in &files {
+            let mut candidates = files.iter().filter(|long| is_path_suffix(short, long));
+            if candidates.next().is_some() && candidates.next().is_some() {
+                unresolvable.insert((*short).to_string());
+            }
+        }
+        Self { unresolvable }
+    }
+
+    fn is_resolvable(&self, resource: &str) -> bool {
+        !self.unresolvable.contains(resource)
+    }
+}
+
 /// Find a resource shared by two sets, tolerating differences in how deeply a
-/// path was spelled.
+/// *file path* was spelled.
 ///
 /// A command run from a working directory names `showlines.js` while the write
 /// that created it named `tmp/work/showlines.js`. These are the same file, and
@@ -379,18 +543,28 @@ fn segment(events: &[TraceEvent]) -> Vec<Segment> {
 /// match is also accepted when one label is a component-aligned suffix of the
 /// other.
 ///
-/// The residual risk is a bare filename colliding with a same-named file in
-/// another directory. That is accepted deliberately: the alternative is losing
-/// the most common dataflow signal in shell-driven sessions, and adjacency in
-/// the trace already makes the co-reference the likelier reading.
-fn shared_resource<'a>(left: &BTreeSet<&'a str>, right: &BTreeSet<&'a str>) -> Option<&'a str> {
+/// Suffix matching is only sound when the short name resolves to exactly one
+/// qualified path across the whole trace; `ambiguity` decides that beforehand.
+/// Unresolvable names are skipped, because a missed edge understates a
+/// dependency while a wrong one corrupts the artifact.
+fn shared_resource<'a>(
+    left: &BTreeSet<&'a str>,
+    right: &BTreeSet<&'a str>,
+    ambiguity: &Ambiguity,
+) -> Option<&'a str> {
     // Exact matches first, so the reported resource is the most specific one
     // available and the result does not depend on iteration incidentals.
     if let Some(exact) = left.intersection(right).next() {
         return Some(exact);
     }
-    for candidate in left {
-        for other in right {
+    for candidate in left
+        .iter()
+        .filter(|r| is_file(r) && ambiguity.is_resolvable(r))
+    {
+        for other in right
+            .iter()
+            .filter(|r| is_file(r) && ambiguity.is_resolvable(r))
+        {
             if is_path_suffix(candidate, other) || is_path_suffix(other, candidate) {
                 // Report the more qualified label; it is the more informative one.
                 return Some(if candidate.len() >= other.len() {
@@ -404,10 +578,21 @@ fn shared_resource<'a>(left: &BTreeSet<&'a str>, right: &BTreeSet<&'a str>) -> O
     None
 }
 
+fn is_file(resource: &str) -> bool {
+    resource.starts_with(FILE_NS)
+}
+
 /// Whether `short` is a component-aligned suffix of `long`, e.g. `src/lib.rs` of
 /// `crates/p/src/lib.rs`. Character-level suffix matching would wrongly link
 /// `lib.rs` to `mylib.rs`.
+///
+/// Both sides carry the same namespace prefix, which is stripped first so the
+/// prefix itself cannot satisfy the component boundary.
 fn is_path_suffix(short: &str, long: &str) -> bool {
+    let (Some(short), Some(long)) = (short.strip_prefix(FILE_NS), long.strip_prefix(FILE_NS))
+    else {
+        return false;
+    };
     if short.is_empty() || short.len() >= long.len() {
         return false;
     }
@@ -417,6 +602,9 @@ fn is_path_suffix(short: &str, long: &str) -> bool {
 
 /// Find every justified dependency between segments.
 fn infer_edges(segments: &[Segment]) -> Vec<LiftedEdge> {
+    // Which short names can be resolved at all is a whole-trace question, so it
+    // is settled once up front rather than per comparison.
+    let ambiguity = Ambiguity::from_segments(segments);
     let mut edges = Vec::new();
     for (index, later) in segments.iter().enumerate() {
         let later_reads = later.reads();
@@ -425,7 +613,7 @@ fn infer_edges(segments: &[Segment]) -> Vec<LiftedEdge> {
             let earlier_writes = earlier.writes();
             // Read-after-write is the primary dataflow signal: the later work
             // consumed something the earlier work produced.
-            if let Some(resource) = shared_resource(&earlier_writes, &later_reads) {
+            if let Some(resource) = shared_resource(&earlier_writes, &later_reads, &ambiguity) {
                 edges.push(LiftedEdge {
                     from: earlier.id.clone(),
                     to: later.id.clone(),
@@ -436,7 +624,7 @@ fn infer_edges(segments: &[Segment]) -> Vec<LiftedEdge> {
             }
             // Write-after-write is weaker but still binding: two edits to the
             // same file cannot be reordered freely.
-            if let Some(resource) = shared_resource(&earlier_writes, &later_writes) {
+            if let Some(resource) = shared_resource(&earlier_writes, &later_writes, &ambiguity) {
                 edges.push(LiftedEdge {
                     from: earlier.id.clone(),
                     to: later.id.clone(),
@@ -447,7 +635,7 @@ fn infer_edges(segments: &[Segment]) -> Vec<LiftedEdge> {
             }
             // Read-then-edit: the earlier segment inspected what the later one
             // changed, so the inspection is part of how the change was decided.
-            if let Some(resource) = shared_resource(&earlier.reads(), &later_writes) {
+            if let Some(resource) = shared_resource(&earlier.reads(), &later_writes, &ambiguity) {
                 edges.push(LiftedEdge {
                     from: earlier.id.clone(),
                     to: later.id.clone(),
@@ -456,14 +644,19 @@ fn infer_edges(segments: &[Segment]) -> Vec<LiftedEdge> {
                 });
             }
         }
-        // A verification with no resource link still depends on the change it
-        // was run against. Only the nearest preceding change qualifies: linking
-        // a build to every edit ever made would bury the real structure.
+        // A verification in the same turn as a preceding change is attributed to
+        // it. This is the one edge not backed by observed dataflow, so it is
+        // deliberately narrow: only the nearest preceding change, only within
+        // the same turn (a turn is a single user instruction, so the two are
+        // part of one intent), and only when no dataflow edge already explains
+        // the verification. Across turns the pairing would be mere temporal
+        // adjacency, which this module refuses to treat as evidence.
         if later.activity == Activity::Verify
             && !edges.iter().any(|edge| edge.to == later.id)
             && let Some(change) = segments[..index]
                 .iter()
                 .rev()
+                .take_while(|seg| seg.turn == later.turn)
                 .find(|seg| seg.activity == Activity::Implement)
         {
             edges.push(LiftedEdge {
@@ -559,7 +752,7 @@ fn build_graph(segments: &[Segment], edges: &[LiftedEdge]) -> TaskGraph {
             is_gate: false,
             planner: None,
             priority: 0,
-            output: Some(node_artifact(segment)),
+            output: Some(node_artifact(segment, edges)),
             origin: Some(NodeOrigin::Lift),
         });
     }
@@ -587,7 +780,11 @@ fn segment_subject(segment: &Segment) -> String {
             .map(|e| e.summary.clone())
             .unwrap_or_else(|| "unlabelled work".to_string());
     }
-    let names: Vec<&str> = touched.iter().take(3).copied().collect();
+    let names: Vec<String> = touched
+        .iter()
+        .take(3)
+        .map(|r| display_resource(r))
+        .collect();
     let extra = touched.len().saturating_sub(names.len());
     if extra == 0 {
         names.join(", ")
@@ -596,12 +793,45 @@ fn segment_subject(segment: &Segment) -> String {
     }
 }
 
-fn node_artifact(segment: &Segment) -> HandoffArtifact {
-    let evidence: Vec<String> = segment
+/// A resource stripped of its namespace, for text a human reads. Namespaces
+/// exist to keep identities apart during matching, not to be shown.
+fn display_resource(resource: &str) -> String {
+    for prefix in [FILE_NS, "cmd:", "url:"] {
+        if let Some(rest) = resource.strip_prefix(prefix) {
+            return rest.to_string();
+        }
+    }
+    resource.to_string()
+}
+
+/// The node's persisted artifact.
+///
+/// Evidence carries the incoming edge justifications as well as the resources
+/// touched. Without this the reasoning behind a dependency would live only in
+/// the in-memory [`LiftReport`], so a persisted lifted graph would assert
+/// dependencies a reviewer could not audit, which is precisely the opacity the
+/// lift exists to cure.
+fn node_artifact(segment: &Segment, edges: &[LiftedEdge]) -> HandoffArtifact {
+    let mut evidence: Vec<String> = segment
         .writes()
         .union(&segment.reads())
         .map(|r| (*r).to_string())
         .collect();
+    evidence.extend(
+        edges
+            .iter()
+            .filter(|edge| edge.to == segment.id)
+            .map(|edge| match &edge.resource {
+                Some(resource) => {
+                    format!(
+                        "depends on {} [{}] via {resource}",
+                        edge.from,
+                        edge.reason.as_str()
+                    )
+                }
+                None => format!("depends on {} [{}]", edge.from, edge.reason.as_str()),
+            }),
+    );
     HandoffArtifact {
         findings: format!(
             "{} tool call(s) in turn {}: {}",
