@@ -24,7 +24,7 @@ use super::client_session::{
 use super::client_state::{
     handle_get_compacted_history, handle_get_history, handle_get_model_catalog, handle_get_state,
 };
-use super::client_writer::write_direct_event;
+use super::client_writer::{log_event_write_failure, write_direct_event};
 use super::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
 use super::comm_control::{
     handle_client_debug_command, handle_client_debug_response, handle_comm_assign_next,
@@ -630,14 +630,12 @@ pub(super) async fn handle_client(
             let json = encode_event(&event);
             let mut w = writer_clone.lock().await;
             if let Err(error) = w.write_all(json.as_bytes()).await {
-                // A broken pipe here is routine (client reload/disconnect mid
-                // broadcast), so keep the line short: a full Debug dump of e.g.
-                // a SwarmStatus event prints every member and floods the log.
-                let event_desc = crate::logging::truncate_for_log(&format!("{:?}", event), 200);
-                crate::logging::warn(&format!(
-                    "event_forwarder write failed for connection {} while sending {}: {}",
-                    client_connection_id_for_events, event_desc, error
-                ));
+                log_event_write_failure(
+                    "event_forwarder",
+                    Some(&client_connection_id_for_events),
+                    &event,
+                    &error,
+                );
                 break;
             }
         }

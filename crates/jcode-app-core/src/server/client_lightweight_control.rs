@@ -4,7 +4,7 @@ use super::client_comm::{
     handle_comm_unsubscribe_channel,
 };
 use super::client_peer::{PeerServerContext, handle_peer_request};
-use super::client_writer::write_direct_event;
+use super::client_writer::{log_event_write_failure, write_direct_event};
 use super::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
 use super::comm_control::{
     handle_comm_assign_next, handle_comm_assign_role, handle_comm_assign_task,
@@ -124,13 +124,7 @@ pub(super) async fn handle_lightweight_control_request(
     let event_handle = tokio::spawn(async move {
         while let Some(event) = client_event_rx.recv().await {
             if let Err(error) = write_direct_event(&writer_clone, &event).await {
-                // Routine on client reload/disconnect; avoid dumping the full
-                // event (an await response can embed whole completion reports).
-                let event_desc = crate::logging::truncate_for_log(&format!("{:?}", event), 200);
-                crate::logging::warn(&format!(
-                    "lightweight control writer failed while sending {}: {}",
-                    event_desc, error
-                ));
+                log_event_write_failure("lightweight_control", None, &event, &error);
                 break;
             }
         }
