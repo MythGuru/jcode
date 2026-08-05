@@ -799,6 +799,108 @@ async fn busy_unpinned_subscribe_refuses_reported_peer_identity_until_agent_move
     drop(sender_lease);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deferred_subscribe_cannot_change_a_replacement_sessions_working_directory() {
+    let home = tempfile::TempDir::new().expect("peer config home");
+    let eve_dir = tempfile::TempDir::new().expect("Eve project");
+    let atlas_dir = tempfile::TempDir::new().expect("Atlas project");
+    let stale_deferred_dir = tempfile::TempDir::new().expect("stale deferred project");
+    let config = serde_json::json!({
+        "version": 1,
+        "groups": [{
+            "name": "reviewers",
+            "members": [
+                { "alias": "Eve", "working_dir": eve_dir.path() },
+                { "alias": "Atlas", "working_dir": atlas_dir.path() }
+            ]
+        }]
+    });
+    std::fs::write(
+        home.path().join("peer-groups.json"),
+        serde_json::to_vec(&config).expect("serialize peer config"),
+    )
+    .expect("write peer config");
+    let peer_groups = jcode_base::peer_groups::PeerGroups::load_from_jcode_home(home.path())
+        .expect("load peer groups");
+
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let old_session_id = "deferred-old-session";
+    let replacement_session_id = "deferred-replacement-session";
+    let sender_id = "deferred-sender";
+    let recipient_agent = Arc::new(Mutex::new(build_test_agent_with_id(
+        provider.clone(),
+        registry.clone(),
+        old_session_id,
+        Vec::new(),
+    )));
+    let mut recipient_guard = recipient_agent.lock().await;
+
+    let coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+    let peer_exchanges = crate::server::peer_exchange::PeerExchangeRegistry::new(
+        coordinator.clone(),
+        std::time::Duration::from_secs(60),
+    );
+
+    // Force the subscribe update into its deferred task, then replace the Agent
+    // stored in the same Arc before that task can acquire the lock. This is what
+    // clear/resume can do after a busy subscribe has returned to the request loop.
+    apply_or_defer_subscribe_working_dir(
+        &recipient_agent,
+        &stale_deferred_dir.path().to_string_lossy(),
+        old_session_id,
+        &peer_groups,
+        &peer_exchanges,
+    );
+    *recipient_guard =
+        build_test_agent_with_id(provider, registry, replacement_session_id, Vec::new());
+    recipient_guard.set_working_dir(&atlas_dir.path().to_string_lossy());
+    peer_exchanges.pin_or_invalidate_session(
+        replacement_session_id,
+        atlas_dir.path(),
+        &peer_groups,
+    );
+
+    // Let the spawned task queue behind our guard. Tokio's FIFO mutex then
+    // guarantees it runs before the verification lock below.
+    tokio::task::yield_now().await;
+    drop(recipient_guard);
+    let actual_dir = recipient_agent
+        .lock()
+        .await
+        .working_dir()
+        .map(str::to_string);
+    assert_eq!(
+        actual_dir.as_deref(),
+        Some(atlas_dir.path().to_string_lossy().as_ref()),
+        "a deferred subscribe for the old session changed the replacement session"
+    );
+
+    peer_exchanges.pin_or_invalidate_session(sender_id, eve_dir.path(), &peer_groups);
+    let sender_lease = coordinator
+        .begin_server_turn(sender_id, crate::tool::TurnOrigin::NormalUser)
+        .expect("sender turn");
+    let authorization = peer_exchanges.resolve_and_register(
+        sender_lease.context(),
+        "Atlas",
+        &peer_groups,
+        [sender_id, replacement_session_id],
+        |_| true,
+    );
+    match authorization {
+        Err(crate::server::peer_exchange::PeerStartError::TargetOffline(alias)) => {
+            assert_eq!(alias, "Atlas")
+        }
+        Err(other) => panic!("expected replaced Atlas session to be ineligible, got {other:?}"),
+        Ok(start) => {
+            let exchange_id = start.exchange_id.clone();
+            drop(start);
+            let _ = peer_exchanges.cancel_exchange(&exchange_id);
+            panic!("wrong-identity authorization succeeded after deferred session replacement");
+        }
+    }
+}
+
 #[path = "client_session_tests/clear.rs"]
 mod clear_tests;
 #[path = "client_session_tests/reload.rs"]

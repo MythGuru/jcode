@@ -552,8 +552,18 @@ fn apply_or_defer_subscribe_working_dir(
     let agent = Arc::clone(agent);
     let working_dir = working_dir.to_string();
     let session_id = session_id.to_string();
+    let peer_exchanges = peer_exchanges.clone();
     tokio::spawn(async move {
         let mut agent_guard = agent.lock().await;
+        if agent_guard.session_id() != session_id {
+            let replacement_session_id = agent_guard.session_id().to_string();
+            peer_exchanges.invalidate_session(&replacement_session_id);
+            crate::logging::warn(&format!(
+                "Skipped deferred subscribe working directory for replaced session {}; current session is {}",
+                session_id, replacement_session_id
+            ));
+            return;
+        }
         match subscribe_working_dir_replacement(
             agent_guard.working_dir(),
             &working_dir,
