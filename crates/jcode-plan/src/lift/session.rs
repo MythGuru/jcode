@@ -320,27 +320,22 @@ fn command_resources(command: &str) -> (Vec<String>, Vec<String>) {
     let mut reads: Vec<String> = namespaced(CMD_NS, &command_key(command))
         .into_iter()
         .collect();
-    // Redirection is scanned over the *whole* command, not just its effective
-    // segment: `cargo test > out.log` puts the redirect in the same segment,
-    // but `cd x && cargo test > out.log` and chains that redirect in a later
-    // segment do not, and missing those loses the most common way one step
-    // hands its output to the next.
+    // Redirection is scanned over the whole command, segment by segment, so a
+    // redirect in a later link of a chain is found and resolved against the
+    // directory in effect *at that point*. Scanning tokens instead would both
+    // miss later segments and mistake quoted text for an operator.
     let mut writes = Vec::new();
-    {
-        let mut all = tokenize(command).into_iter().peekable();
-        while let Some(token) = all.next() {
-            if let Some(target) = redirect_target(&token, &mut all) {
-                push_path(&mut writes, &target, base);
-            }
-        }
-    }
+    collect_redirects(command, &mut writes);
     let mut tokens = tokenize(&resolved).into_iter().peekable();
     let mut seen_program = false;
     let mut operands_are_paths = false;
     while let Some(token) = tokens.next() {
-        // Redirections were already collected above; skip them here so their
-        // targets are not also read as operands.
-        if redirect_target(&token, &mut tokens).is_some() {
+        // Redirections were already collected above; skip the operator and its
+        // target so the target is not also read as an operand.
+        if is_redirect_operator(&token) {
+            if token.ends_with('>') {
+                tokens.next();
+            }
             continue;
         }
         if token.starts_with('-') {
@@ -374,48 +369,143 @@ fn command_resources(command: &str) -> (Vec<String>, Vec<String>) {
     (reads, writes)
 }
 
-/// The redirection target named by `token`, if it contains one.
+/// Collect every redirection target in a command, resolved against the working
+/// directory in effect where each appears.
 ///
-/// Handles `>x`, `> x`, `>>x`, `>> x`, descriptor forms such as `2>x`, and the
-/// unspaced form `echo hi>x` where the redirection is glued to the preceding
-/// word. `2>&1` and `>&2` duplicate a stream rather than naming a file and so
-/// yield nothing.
-fn redirect_target(
-    token: &str,
-    rest: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
-) -> Option<String> {
-    // Take the last `>` so `a>b>c` resolves to the final target, and so any
-    // preceding text (a word or a file descriptor) is simply skipped.
-    let arrow = token.rfind('>')?;
-    let tail = &token[arrow + 1..];
-    // `&1` duplicates a descriptor; there is no file involved.
-    if tail.starts_with('&') {
+/// Scanning must be done on the raw text rather than on tokens, for two reasons
+/// found in review. Tokenizing strips quotes, so `echo "a>note.log"` (text, not
+/// a redirect) becomes indistinguishable from a real one. And each segment of a
+/// chain may follow its own `cd`, so `cd a && echo ok > out.log` writes
+/// `a/out.log` while a later segment's redirect belongs to that segment's
+/// directory.
+fn collect_redirects(command: &str, writes: &mut Vec<String>) {
+    let trimmed = command.trim();
+    let mut base: Option<&str> = None;
+    for (start, end) in top_level_segments(trimmed) {
+        let segment = trimmed[start..end].trim();
+        if segment.is_empty() {
+            continue;
+        }
+        // A `cd` sets the directory for this segment and those that follow it
+        // in the same chain.
+        if let Some(dir) = directory_change(segment) {
+            base = Some(dir);
+            continue;
+        }
+        for target in segment_redirects(segment) {
+            push_path(writes, &target, base);
+        }
+    }
+}
+
+/// Redirection targets inside one chain segment, ignoring quoted text.
+fn segment_redirects(segment: &str) -> Vec<String> {
+    // Inside `[[ ... ]]` and `[ ... ]`, `>` is string comparison rather than
+    // redirection, so `[[ a > b ]]` names no file at all.
+    if segment.starts_with("[[") || segment.starts_with("[ ") {
+        return Vec::new();
+    }
+    let mut targets = Vec::new();
+    let mut quote: Option<char> = None;
+    let chars: Vec<char> = segment.chars().collect();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let ch = chars[index];
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '>' => {
+                // `->` and `=>` are arrows in prose or code, not redirections,
+                // and `>>` is one operator rather than two.
+                let previous = index.checked_sub(1).map(|i| chars[i]);
+                if matches!(previous, Some('-') | Some('=')) {
+                    index += 1;
+                    continue;
+                }
+                if previous == Some('>') {
+                    index += 1;
+                    continue;
+                }
+                let mut cursor = index + 1;
+                if chars.get(cursor) == Some(&'>') {
+                    cursor += 1;
+                }
+                // `2>&1` duplicates a descriptor; no file is named.
+                if chars.get(cursor) == Some(&'&') {
+                    index = cursor;
+                    continue;
+                }
+                while chars.get(cursor).is_some_and(|c| c.is_whitespace()) {
+                    cursor += 1;
+                }
+                let mut target = String::new();
+                while let Some(&c) = chars.get(cursor) {
+                    if c.is_whitespace() || c == '>' {
+                        break;
+                    }
+                    target.push(c);
+                    cursor += 1;
+                }
+                if !target.is_empty() {
+                    targets.push(target);
+                }
+                index = cursor;
+                continue;
+            }
+            None => {}
+        }
+        index += 1;
+    }
+    targets
+}
+
+/// Whether a token is purely a redirection operator, so the operand loop can
+/// skip it and, for a trailing `>`, the separate target token after it.
+fn is_redirect_operator(token: &str) -> bool {
+    let core = token.trim_start_matches(|c: char| c.is_ascii_digit());
+    matches!(core, ">" | ">>") || core.starts_with(">&")
+}
+
+/// The directory a segment changes into, if the segment is a `cd`.
+///
+/// Returns the directory as written. An earlier version located the token by
+/// searching the segment text for it, which found the *first* occurrence: in
+/// `cd cd/x` that is the `cd` command itself rather than its argument.
+fn directory_change(segment: &str) -> Option<&str> {
+    let tokens = tokenize(segment);
+    if tokens.first().map(String::as_str) != Some("cd") {
         return None;
     }
-    if tail.is_empty() {
-        rest.next()
-    } else {
-        Some(tail.to_string())
-    }
+    // Skip `/d` and similar switches used by cmd.
+    let dir = tokens
+        .into_iter()
+        .skip(1)
+        .find(|token| !token.starts_with('/') && !token.starts_with('-'))?;
+    // Locate the token by scanning token spans rather than by substring search,
+    // so a directory that repeats an earlier word resolves correctly.
+    token_span(segment, &dir)
+}
+
+/// The slice of `text` corresponding to the first token equal to `needle`,
+/// skipping the leading `cd` and any switches. Returns a borrowed slice so the
+/// caller can keep using `&str` bases.
+fn token_span<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+    // Search from after the first whitespace run, i.e. past the `cd` itself.
+    let after_command = text.find(char::is_whitespace)?;
+    let tail = &text[after_command..];
+    let offset = tail.find(needle)?;
+    Some(&tail[offset..offset + needle.len()])
 }
 
 /// The directory a command changes into before doing its work, if any.
 ///
-/// Only a leading `cd` counts. A later `cd` in the chain applies to segments
-/// this function's caller does not analyze, so honoring it would resolve
-/// operands against the wrong base.
+/// Only a leading `cd` counts here, because this base is applied to the
+/// effective command's operands, which come from a single segment.
 fn leading_directory(command: &str) -> Option<&str> {
     let trimmed = command.trim();
     let (start, end) = *top_level_segments(trimmed).first()?;
-    let first = trimmed[start..end].trim();
-    let mut tokens = tokenize(first).into_iter();
-    if tokens.next().as_deref() != Some("cd") {
-        return None;
-    }
-    // Skip `/d` and similar switches used by cmd.
-    let dir = tokens.find(|token| !token.starts_with('/') && !token.starts_with('-'))?;
-    let offset = first.find(&dir)?;
-    Some(&first[offset..offset + dir.len()])
+    directory_change(trimmed[start..end].trim())
 }
 
 /// Programs whose bare operands are reliably file paths. Deliberately short: a
@@ -494,21 +584,34 @@ fn is_relative(path: &str) -> bool {
 /// Paths a patch body says it modifies.
 ///
 /// Two formats appear in transcripts: Codex-style `*** Update File:` headers and
-/// ordinary unified diffs (`+++ b/path`). Only headers count. Context lines
-/// inside a hunk can contain text that looks like a header, so a line is a
-/// header only where the format allows one: `*** ...` lines must not be indented
-/// or prefixed by a diff marker, and `+++` targets are taken from the diff
-/// header rather than from added content.
+/// ordinary unified diffs (`+++ b/path`). Only genuine headers count, and inside
+/// a hunk there are none. That matters because hunk content is prefixed by `+`
+/// or `-`, so an *added line* reading `+++ b/victim.rs` is byte-for-byte a
+/// header, and believing it would attribute a write to a file the patch never
+/// touched.
 fn patch_targets(patch: &str) -> Vec<String> {
     let mut targets = Vec::new();
+    let mut in_hunk = false;
     for line in patch.lines() {
-        // A leading space, `+` or `-` marks hunk content, never a header.
+        if line.starts_with("@@") {
+            in_hunk = true;
+            continue;
+        }
+        if in_hunk {
+            // A hunk runs until the next file header or the patch terminator.
+            if line.starts_with("diff --git") || line.starts_with("*** ") {
+                in_hunk = false;
+            } else {
+                continue;
+            }
+        }
         if line.starts_with([' ', '\t']) {
             continue;
         }
         for prefix in ["*** Update File:", "*** Add File:", "*** Delete File:"] {
             if let Some(rest) = line.strip_prefix(prefix)
                 && let Some(resource) = file_resource(rest.trim())
+                && !targets.contains(&resource)
             {
                 targets.push(resource);
             }
@@ -1107,6 +1210,90 @@ mod tests {
                 .all(|r| r.chars().count() <= MAX_RESOURCE_ID + CMD_NS.len()),
             "oversized identities are dropped, not truncated: {reads:?}"
         );
+    }
+
+    #[test]
+    fn quoted_text_and_arrows_are_not_redirections() {
+        // Tokenizing strips quotes, so scanning tokens made `echo "a>note.log"`
+        // indistinguishable from a real redirect and invented a write.
+        let (_, quoted) = command_resources("echo \"a>note.log\"");
+        assert!(
+            quoted.is_empty(),
+            "quoted text is not a redirect: {quoted:?}"
+        );
+
+        let (_, spaced) = command_resources("echo 'a > spaced.log'");
+        assert!(spaced.is_empty(), "got {spaced:?}");
+
+        // Arrows in prose or code are not operators.
+        let (_, thin) = command_resources("echo a->arrow.log");
+        assert!(thin.is_empty(), "-> is an arrow: {thin:?}");
+
+        let (_, fat) = command_resources("node -e \"x=>load('arrow.js')\"");
+        assert!(fat.is_empty(), "=> is an arrow: {fat:?}");
+
+        // Inside `[[ ]]`, `>` compares strings rather than redirecting.
+        let (_, compare) = command_resources("[[ a > compare.log ]]");
+        assert!(
+            compare.is_empty(),
+            "comparison is not redirection: {compare:?}"
+        );
+    }
+
+    #[test]
+    fn a_redirect_resolves_against_the_directory_of_its_own_segment() {
+        // `cd a && echo ok > out.log` writes `a/out.log`. Applying only the
+        // leading `cd` to every redirect put later output in the wrong place.
+        let (_, first) = command_resources("cd a && echo ok > out.log");
+        assert_eq!(first, vec![file("a/out.log")]);
+
+        let (_, later) = command_resources("echo one && cd b && echo two > out.log");
+        assert_eq!(later, vec![file("b/out.log")], "the later cd applies");
+    }
+
+    #[test]
+    fn a_directory_that_repeats_the_command_word_resolves_correctly() {
+        // Locating the argument by substring search found the leading `cd`
+        // itself, so `cd cd/x` resolved against the wrong directory.
+        let (reads, _) = command_resources("cd cd/x && node y.js");
+        assert!(
+            reads.contains(&file("cd/x/y.js")),
+            "the argument, not the command word: {reads:?}"
+        );
+    }
+
+    #[test]
+    fn added_lines_inside_a_hunk_cannot_pose_as_diff_headers() {
+        // Hunk content is prefixed by `+`, so an added line reading
+        // `+++ b/victim.rs` is byte-for-byte a header.
+        let patch = [
+            "diff --git a/real.rs b/real.rs",
+            "--- a/real.rs",
+            "+++ b/real.rs",
+            "@@ -1 +1 @@",
+            "-old",
+            "+++ b/victim.rs",
+        ]
+        .join("\n");
+        let session = json!({"messages": [assistant(vec![tool_use(
+            "a",
+            "patch",
+            json!({"patch_text": patch}),
+        )])]});
+        let trace = trace_from_session(&session);
+        assert_eq!(
+            trace[0].writes,
+            vec![file("real.rs")],
+            "hunk content is not a header"
+        );
+    }
+
+    #[test]
+    fn dot_dot_cannot_escape_above_a_root() {
+        assert_eq!(normalize_path("/"), "/");
+        assert_eq!(normalize_path("C:\\"), "c:/");
+        assert_eq!(normalize_path("/../../a.rs"), "/a.rs");
+        assert_eq!(normalize_path("C:/../a.rs"), "c:/a.rs");
     }
 
     #[test]
