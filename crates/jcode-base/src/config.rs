@@ -6,12 +6,13 @@
 pub use jcode_config_types::{
     AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
     CompactionMode, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
-    DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HooksConfig, KeybindingsConfig,
-    LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode,
-    NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
-    NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode, PowerConfig, ProviderConfig,
-    ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
-    SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
+    DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HookCommands, HooksConfig,
+    KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
+    MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
+    NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
+    PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
+    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
+    WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -31,6 +32,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_ACP_PROFILE",
     "JCODE_ACP_TOOL_PROFILE",
     "JCODE_ACTIVE_SESSIONS_MANAGER",
+    "JCODE_EXTERNAL_SESSIONS",
     "JCODE_AMBIENT_ENABLED",
     "JCODE_AMBIENT_MAX_INTERVAL",
     "JCODE_AMBIENT_MIN_INTERVAL",
@@ -39,10 +41,12 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_AMBIENT_PROVIDER",
     "JCODE_AMBIENT_VISIBLE",
     "JCODE_ANIMATION_FPS",
+    "JCODE_AUTO_POKE",
     "JCODE_AUTOJUDGE_ENABLED",
     "JCODE_AUTOJUDGE_MODEL",
     "JCODE_AUTOREVIEW_ENABLED",
     "JCODE_AUTOREVIEW_MODEL",
+    "JCODE_AUTO_POKE",
     "JCODE_AUTO_SERVER_RELOAD",
     "JCODE_BING_API_KEY",
     "JCODE_BING_API_KEY_ENV",
@@ -141,6 +145,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_PRESERVE_REASONING_CONTEXT",
     "JCODE_PERFORMANCE",
     "JCODE_PIN_IMAGES",
+    "JCODE_PIN_TODOS",
     "JCODE_PREVENT_SLEEP_WHILE_STREAMING",
     "JCODE_PROVIDER",
     "JCODE_PROMPT_ENTRY_ANIMATION",
@@ -415,6 +420,7 @@ pub fn invalidate_config_cache() {
 }
 
 fn notify_config_reloaded() {
+    CONFIG_RELOAD_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     for listener in CONFIG_RELOAD_LISTENERS
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -422,6 +428,20 @@ fn notify_config_reloaded() {
     {
         listener();
     }
+}
+
+/// Monotonic counter bumped every time the config cache reloads.
+///
+/// Callers that snapshot config-derived state (e.g. the TUI's parsed
+/// keybindings) can poll this cheaply and re-derive their snapshot when the
+/// generation changes, giving instant hot-reload of config edits without a
+/// restart.
+static CONFIG_RELOAD_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Current config reload generation. Increments after every cache reload.
+pub fn config_reload_generation() -> u64 {
+    CONFIG_RELOAD_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Listeners invoked after the config cache reloads.
@@ -717,7 +737,11 @@ mod env_overrides;
 #[path = "config_tests.rs"]
 mod tests;
 
-/// Whether partner discovery settings carry no information beyond the shipped
+#[cfg(test)]
+#[path = "config_color_tests.rs"]
+mod color_tests;
+
+/// Whether integration discovery settings carry no information beyond the shipped
 /// default, so `[sponsors]` can be left out of written config files.
 ///
 /// Discovery originally shipped opt-in with `enabled = false`, and because

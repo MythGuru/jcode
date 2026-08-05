@@ -57,6 +57,11 @@ run_ratchet() {
 }
 
 echo "=== Format ==="
+# Before rustfmt: a `mod x;` with no file makes rustfmt fail with "Error writing
+# files: failed to resolve mod", which reads like a formatting problem and hides
+# every gate behind it. Naming the real cause first turns a confusing Format
+# failure into an obvious one (221159294).
+run_gate "module declarations resolve" python3 scripts/check_module_files.py
 if $FIX; then
     cargo fmt --all
 fi
@@ -95,6 +100,15 @@ run_gate "wildcard re-export ratchet" python3 scripts/check_wildcard_reexport_bu
 # runs on the slow path is a perf gate that does not run.
 run_gate "desktop2 frame budget (state-space sweep)" \
     cargo test --profile selfdev -p jcode-desktop2 -j "$JOBS" profile:: -- --test-threads=1
+
+# Onboarding state-space invariants. The onboarding flow is a graph, and the
+# properties that keep users unstuck (no dead ends, every failure has a recovery
+# edge, an escape hatch everywhere, bounded keystrokes to a settled state) are
+# checkable in microseconds. Every onboarding bug we have shipped was a violated
+# invariant that nobody could see by reading one screen's code, so this gate is
+# cheap insurance against the whole class.
+run_gate "onboarding state-space invariants" \
+    cargo test --profile selfdev -p jcode-tui -j "$JOBS" onboarding_graph::
 
 if $SKIP_SLOW; then
     :

@@ -12,6 +12,10 @@ impl App {
         let Some((updates, _)) = self.harness.as_ref() else {
             return;
         };
+        // Whether a turn boundary went by in this batch. Queued messages are
+        // sent at the boundary, after the drain: the flush needs `&mut self`,
+        // which the loop's borrow of the update channel forbids.
+        let mut turn_ended = false;
         while let Ok(update) = updates.try_recv() {
             match update {
                 harness::HarnessUpdate::Status(status) => self.model.status = status,
@@ -30,11 +34,17 @@ impl App {
                     // leaving a reveal in flight would fade the failure in
                     // behind an animation that has nothing left to animate.
                     self.model.stream.reveal_all();
+                    // A failure ends the turn as surely as `TurnDone` (the
+                    // daemon sends `error` *instead of* `done`), so a message
+                    // queued behind the failed turn gets its chance now
+                    // rather than waiting forever.
+                    turn_ended = true;
                 }
                 harness::HarnessUpdate::Attached {
                     session_id,
                     working_dir,
                 } => {
+                    let reconnected = self.model.failure.is_some();
                     self.model.status = format!("attached: {session_id}");
                     // A successful attach is the proof the failure is over: a
                     // reconnected window must not keep reporting the outage it
@@ -45,10 +55,19 @@ impl App {
                     self.model.strip.focus_session(&session_id);
                     self.model.session_id = Some(session_id);
                     self.model.working_dir = working_dir;
+                    if reconnected {
+                        self.model.set_notice("reconnected");
+                    }
                     self.retitle();
                 }
                 harness::HarnessUpdate::Model { provider, model } => {
                     self.model.model = Some(ModelId { provider, model });
+                }
+                harness::HarnessUpdate::Models { models, current } => {
+                    self.model.model_picker.set_models(models, current);
+                }
+                harness::HarnessUpdate::ModelSelected(model) => {
+                    self.model.model_picker.mark_selected(model);
                 }
                 harness::HarnessUpdate::Text(text) => {
                     self.model.transcript.append_assistant(&text);
@@ -88,6 +107,64 @@ impl App {
                         std::time::Instant::now(),
                     );
                 }
+                harness::HarnessUpdate::Edit(card) => {
+                    // The one tool result that stays: an edit changed the
+                    // user's files, so the transcript keeps its intent and its
+                    // diff where the user can scroll back to them.
+                    self.model.transcript.push_edit(&card);
+                    self.model.stream.extend_to(
+                        self.model.transcript.streaming_len(),
+                        std::time::Instant::now(),
+                    );
+                }
+                harness::HarnessUpdate::Todo(card) => {
+                    self.model.transcript.set_todo(&card);
+                    self.model.stream.reveal_all();
+                }
+                harness::HarnessUpdate::MessageAccepted => {
+                    // The agent has the oldest message still in flight. Marking
+                    // it here rather than on the first token is the point of
+                    // the whole mechanism: "received" and "answered" are
+                    // different facts, and the user is owed the first one now.
+                    self.model
+                        .transcript
+                        .acknowledge_oldest_pending(std::time::Instant::now());
+                }
+                // A background task the agent is waiting on. The card lands in
+                // the transcript's live status band rather than in the footnote:
+                // the footnote is one line shared with failures and the model
+                // caption, and a turn can be waiting on several tasks at once.
+                harness::HarnessUpdate::Progress {
+                    task_id,
+                    label,
+                    summary,
+                    percent,
+                    done,
+                } => {
+                    if done {
+                        self.model.transcript.clear_progress(&task_id);
+                    } else {
+                        self.model
+                            .transcript
+                            .set_progress(&task_id, &label, &summary, percent);
+                    }
+                    // One clock for every bar on screen, started when the first
+                    // card appears and stopped when the last one leaves: an
+                    // indeterminate bar sweeps off it, and an idle window with
+                    // no cards must not be asking for frames.
+                    self.model.progress_clock = self.model.transcript.has_progress().then(|| {
+                        self.model
+                            .progress_clock
+                            .unwrap_or(std::time::Instant::now())
+                    });
+                    // A card appearing changes the transcript's height, and the
+                    // reveal counts characters, so the sweep is told about the
+                    // new tail rather than being left to animate a stale one.
+                    self.model.stream.extend_to(
+                        self.model.transcript.streaming_len(),
+                        std::time::Instant::now(),
+                    );
+                }
                 harness::HarnessUpdate::TurnDone => {
                     self.model.busy = false;
                     self.model.activity.finish();
@@ -95,6 +172,11 @@ impl App {
                     // there is none, and a card left behind would claim work
                     // is still happening.
                     self.model.transcript.clear_live_tool();
+                    // Progress cards deliberately survive the turn: a
+                    // backgrounded build keeps running after the agent stops
+                    // waiting on it, and its own completion event is what
+                    // retires the bar.
+                    turn_ended = true;
                 }
                 harness::HarnessUpdate::Peek {
                     session_id,
@@ -114,6 +196,67 @@ impl App {
                 }
             }
         }
+        // The turn is over and the channel is drained: if the user typed
+        // while the agent was busy, the oldest waiting message goes now. Its
+        // card leaves the queued tone, and the send is exactly the one the
+        // submit would have made had the agent been free.
+        if turn_ended && !self.model.busy {
+            self.flush_queued_message();
+        }
+        // The horizontal workspace keeps neighboring pages visible even when
+        // the overview is closed. Fetch their tails as soon as the session list
+        // is known; `Peeks` deduplicates this call across ordinary redraws.
+        self.request_peek();
+    }
+
+    /// Drop everything that belonged to the session being left.
+    ///
+    /// Shared by attaching to an existing session and by creating a new one:
+    /// both put a different conversation on screen, and a transcript, a
+    /// reveal, or a progress clock carried across from the old one would be
+    /// output attributed to the wrong session.
+    pub(crate) fn clear_for_session_change(&mut self) {
+        // Switching sessions changes the conversation, not the user's view
+        // preferences: the thinking-display mode is carried across so a new
+        // session does not silently revert to the structural default.
+        let reasoning = self.model.transcript.reasoning_mode();
+        self.model.transcript = transcript::Transcript::default();
+        self.model.transcript.set_reasoning_mode(reasoning);
+        self.model.stream.reveal_all();
+        self.model.busy = false;
+        self.model.activity.finish();
+        // The fresh transcript took the bars with it (they belong to the
+        // session being left), so the clock they animate off stops too, or an
+        // empty page would keep asking for frames.
+        self.model.progress_clock = None;
+        self.model.scroll = 0.0;
+        // Attaching is a jump, not a scroll: easing here would sweep through
+        // the previous session's layout.
+        self.model.smooth.settle();
+        // A catalog and its open menu belong to the session that produced it.
+        self.model.model_picker = crate::model_picker::Picker::default();
+    }
+
+    /// Start a fresh session and attach to it.
+    ///
+    /// The id is the daemon's to assign, so the app clears the page now and
+    /// adopts whatever comes back on the `Attached` event. Until then the
+    /// session id is `None`, which is the same state the app boots in, so
+    /// every consumer already handles it.
+    pub(crate) fn new_session(&mut self) {
+        let Some((_, outgoing)) = self.harness.as_ref() else {
+            self.model.notice = Some("not connected: cannot start a session".into());
+            return;
+        };
+        if outgoing.send(harness::Command::New).is_err() {
+            self.model.notice = Some("not connected: cannot start a session".into());
+            return;
+        }
+        self.clear_for_session_change();
+        self.model.session_id = None;
+        self.model.working_dir = None;
+        self.model.status = "starting a new session...".into();
+        self.retitle();
     }
 
     /// Switch to whichever session the strip now points at.
@@ -129,14 +272,15 @@ impl App {
         if self.model.session_id.as_deref() == Some(target.as_str()) {
             return;
         }
-        self.model.transcript = transcript::Transcript::default();
-        self.model.stream.reveal_all();
-        self.model.busy = false;
-        self.model.activity.finish();
-        self.model.scroll = 0.0;
-        // Attaching is a jump, not a scroll: easing here would sweep through
-        // the previous session's layout.
-        self.model.smooth.settle();
+        // Once this model becomes a neighbor it must show the conversation the
+        // user just left, not an older daemon peek. The live transcript is the
+        // freshest cache entry and remains read-only while the target attaches.
+        if let Some(current) = self.model.session_id.clone() {
+            self.model
+                .peeks
+                .insert(&current, self.model.transcript.clone());
+        }
+        self.clear_for_session_change();
         self.model.status = format!("attaching: {target}");
         self.model.session_id = Some(target.clone());
         // The new session's directory arrives with its `Attached` event; until

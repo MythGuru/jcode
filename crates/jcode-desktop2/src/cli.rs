@@ -7,7 +7,7 @@
 
 use crate::{
     App, DONUT_GRID, Model, ModelId, build_scene, capture, donut, harness, keymap, layout, paint,
-    profile, scroll_bench, states, transcript,
+    profile, scroll_bench, scroll_profile, states, transcript,
 };
 use anyhow::Result;
 use vello::Scene;
@@ -33,10 +33,13 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         Some("--profile-states") => Some(run_profile_states(&args[1..])),
         Some("--bench-stream") => Some(bench_stream(&args[1..])),
         Some("--bench-scroll") => Some(bench_scroll()),
+        Some("--profile-scroll") => Some(profile_scroll()),
         Some("--bench-donut") => Some(bench_donut()),
         Some("--capture") => Some(run_capture(&args[1..])),
+        Some("--check-clipboard-image") => Some(check_clipboard_image()),
         Some("--check-primary-selection") => Some(check_primary_selection()),
         Some("--check-reconnect") => Some(check_reconnect()),
+        Some("--check-resume-scan") => Some(check_resume_scan()),
         Some("--e2e") => Some(run_e2e(
             args.get(1)
                 .map(String::as_str)
@@ -44,6 +47,30 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         )),
         _ => None,
     }
+}
+
+/// `--check-clipboard-image`: prove Ctrl+V's image path against the *real*
+/// compositor.
+///
+/// The unit tests keep the system clipboard sandboxed so they cannot read or
+/// clobber a developer's clipboard, which means nothing in the suite exercises
+/// Wayland image negotiation at all. That is exactly where pasting a screenshot
+/// breaks without a single test failing, so this reads whatever image is on the
+/// clipboard right now and reports its type, size, and payload cost.
+fn check_clipboard_image() -> Result<()> {
+    let mut clipboard = crate::clipboard::Clipboard::system();
+    let image = clipboard
+        .get_image()
+        .map_err(|error| anyhow::anyhow!("clipboard image unavailable: {error}"))?
+        .ok_or_else(|| anyhow::anyhow!("clipboard does not contain an image"))?;
+    println!(
+        "clipboard image ok: {} {}, {} bytes, {} base64 chars",
+        image.media_type,
+        image.label(),
+        image.bytes.len(),
+        crate::png::base64(&image.bytes).len()
+    );
+    Ok(())
 }
 
 /// `--check-primary-selection`: prove auto-copy against the *real* compositor.
@@ -125,11 +152,11 @@ fn run_profile_states(args: &[String]) -> Result<()> {
 ///
 ///   jcode-desktop2 --script 'type:alpha beta' ctrl+a shift+right shift+right
 ///
-/// The gesture verbs drive the same handlers the window does, so the held-Super
-/// overview is checkable without a compositor:
+/// The gesture verbs drive the same handlers the window does. Super+hjkl is
+/// direct niri-style motion by default; the held-Super overview stays behind
+/// its bench flag:
 ///
-///   jcode-desktop2 --script 'sessions:a=jcode,b=jcode,c=site' super-down \
-///       'settle' super+h super-up
+///   jcode-desktop2 --script 'sessions:a=jcode,b=jcode,c=site' super+l super+j
 fn run_script(steps: &[String]) -> Result<()> {
     let mut app = App::default();
     app.model.session_id = Some("session_script".into());
@@ -151,6 +178,7 @@ fn run_script(steps: &[String]) -> Result<()> {
                     let (id, project) = part.split_once('=').unwrap_or((part, "project"));
                     crate::strip::Entry {
                         session_id: id.to_string(),
+                        title: None,
                         working_dir: Some(format!("/w/{project}")),
                         busy: false,
                         weight: 1_000.0 * (index as f64 + 1.0),
@@ -171,6 +199,28 @@ fn run_script(steps: &[String]) -> Result<()> {
             "super-up" => {
                 app.modifiers -= winit::keyboard::ModifiersState::SUPER;
                 app.on_super_changed(false, clock);
+                // The debounce window that absorbs a remapper's synthetic
+                // Super lift also has to expire before the release resolves,
+                // and a script has no frames of its own to expire it on.
+                clock += crate::SUPER_BOUNCE;
+                app.settle_super_release(clock);
+                continue;
+            }
+            // `super-bounce:<chord>` replays exactly what keyd and friends
+            // emit for a rewritten Super chord: Super up, the substituted key,
+            // Super back down. Without this verb the flicker it used to cause
+            // was only reproducible on a machine with a remapper installed.
+            other if other.starts_with("super-bounce:") => {
+                let inner = other.trim_start_matches("super-bounce:");
+                let (key, _) = keymap::parse_chord(inner)
+                    .ok_or_else(|| anyhow::anyhow!("unknown chord '{inner}'"))?;
+                app.modifiers -= winit::keyboard::ModifiersState::SUPER;
+                app.on_super_changed(false, clock);
+                app.key_pressed(&key, None);
+                clock += std::time::Duration::from_millis(1);
+                app.modifiers |= winit::keyboard::ModifiersState::SUPER;
+                app.on_super_changed(true, clock);
+                app.settle_super_release(clock);
                 continue;
             }
             // Run the zoom to rest and move the clock past the tap window, so
@@ -267,7 +317,10 @@ fn run_e2e(message: &str) -> Result<()> {
                 model.status = format!("attached: {session_id}");
                 model.session_id = Some(session_id);
                 model.transcript.push(transcript::Message::user(message));
-                outgoing.send(harness::Command::Send(message.to_string()))?;
+                outgoing.send(harness::Command::Send {
+                    content: message.to_string(),
+                    images: vec![],
+                })?;
                 sent = true;
             }
             // The e2e probe drives one session, so another session's tail is
@@ -282,6 +335,12 @@ fn run_e2e(message: &str) -> Result<()> {
                     provider,
                     model: id,
                 });
+            }
+            harness::HarnessUpdate::Models { models, current } => {
+                model.model_picker.set_models(models, current);
+            }
+            harness::HarnessUpdate::ModelSelected(selected) => {
+                model.model_picker.mark_selected(selected);
             }
             harness::HarnessUpdate::Text(text) => {
                 print!("{text}");
@@ -314,7 +373,38 @@ fn run_e2e(message: &str) -> Result<()> {
                 println!("[e2e] tool: {label}");
                 model.transcript.set_live_tool(&call_id, &label);
             }
+            harness::HarnessUpdate::Edit(card) => {
+                println!("[e2e] edit: +{} -{}", card.added, card.removed);
+                model.transcript.push_edit(&card);
+            }
+            harness::HarnessUpdate::Todo(card) => {
+                println!("[e2e] plan updated");
+                model.transcript.set_todo(&card);
+            }
             harness::HarnessUpdate::Sessions(_) => {}
+            // Background progress is folded into the model so the captured
+            // frame is the one a user would see, bar and all.
+            harness::HarnessUpdate::Progress {
+                task_id,
+                label,
+                summary,
+                percent,
+                done,
+            } => {
+                println!("[e2e] progress: {label} · {summary}");
+                if done {
+                    model.transcript.clear_progress(&task_id);
+                } else {
+                    model
+                        .transcript
+                        .set_progress(&task_id, &label, &summary, percent);
+                }
+            }
+            // The probe asserts on the reply, so delivery of the prompt is a
+            // log line rather than a state change.
+            harness::HarnessUpdate::MessageAccepted => {
+                println!("[e2e] message accepted");
+            }
         }
     }
     anyhow::bail!("e2e timed out")
@@ -457,7 +547,25 @@ fn run_capture(args: &[String]) -> Result<()> {
     const SCALE: f64 = 2.0;
     const WIDTH: u32 = 2200;
     const HEIGHT: u32 = 1440;
-    let node = args.first().map(String::as_str).unwrap_or("all");
+    // Nodes pin the light palette so a capture cannot depend on the machine
+    // that ran it. Dark is still a shipped theme, and a state nobody can
+    // render is a state nobody reviews, so `--dark` re-tints the node after
+    // it is built. It stays an explicit flag rather than reading the system
+    // preference, for the same determinism reason.
+    let dark = args.iter().any(|arg| arg == "--dark");
+    let positional: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| !arg.starts_with("--"))
+        .collect();
+    let node = positional.first().copied().unwrap_or("all");
+    let retint = move |mut model: Model| -> Model {
+        if dark {
+            model.theme = crate::theme::Theme::print_dark();
+            model.theme_preference = crate::theme::ThemeMode::Dark;
+        }
+        model
+    };
     let mut painter = paint::Painter::default();
     let mut render_node = |name: &str, model: &Model, path: &std::path::Path| -> Result<()> {
         let mut scene = Scene::new();
@@ -467,23 +575,24 @@ fn run_capture(args: &[String]) -> Result<()> {
         Ok(())
     };
     if node == "all" {
-        let dir = std::path::PathBuf::from(args.get(1).map(String::as_str).unwrap_or("captures"));
+        let dir = std::path::PathBuf::from(positional.get(1).copied().unwrap_or("captures"));
         std::fs::create_dir_all(&dir)?;
         for name in states::names() {
-            let model = states::by_name(name).expect("listed node");
+            let model = retint(states::by_name(name).expect("listed node"));
             render_node(name, &model, &dir.join(format!("{name}.png")))?;
         }
         return Ok(());
     }
-    let Some(model) = states::by_name(node) else {
+    let Some(model) = states::by_name(node).map(retint) else {
         anyhow::bail!(
             "unknown node '{node}'; available: {}",
             states::names().join(", ")
         );
     };
     let out = std::path::PathBuf::from(
-        args.get(1)
-            .cloned()
+        positional
+            .get(1)
+            .map(|path| (*path).to_string())
             .unwrap_or_else(|| format!("{node}.png")),
     );
     render_node(node, &model, &out)
@@ -496,6 +605,63 @@ fn run_capture(args: &[String]) -> Result<()> {
 /// there accepting input into nothing. Checked against the real runtime because
 /// the bug was in the wiring, not in a pure function: attach, drop the bridge,
 /// then require both a reported failure and a re-attach to *the same* session.
+/// Scan the real session store the way Ctrl+R does, and report what it found.
+///
+/// A unit test scans a directory it wrote itself, which proves the parser and
+/// nothing about the store on this machine: record shapes have changed over
+/// months of sessions, and a picker that silently resolved no working
+/// directories would look like an empty store rather than a parse that stopped
+/// matching. This is the check that runs against the real thing.
+fn check_resume_scan() -> Result<()> {
+    let dir = crate::resume::sessions_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot locate the session store: no HOME"))?;
+    let started = std::time::Instant::now();
+    let records = crate::resume::scan(&dir, crate::resume::SCAN_LIMIT);
+    let elapsed = started.elapsed();
+    if records.is_empty() {
+        anyhow::bail!("scanned {} and found no sessions", dir.display());
+    }
+    let picker = crate::resume::Picker::pinned(records.clone(), 0, "");
+    let rows = picker.rows();
+    let projects = rows
+        .iter()
+        .filter(|row| matches!(row, crate::resume::Row::Group { .. }))
+        .count();
+    let with_dir = records
+        .iter()
+        .filter(|record| record.working_dir.is_some())
+        .count();
+    println!(
+        "resume scan ok: {} sessions in {} projects from {} in {:.0}ms; {} resolved a directory",
+        records.len(),
+        projects,
+        dir.display(),
+        elapsed.as_secs_f64() * 1000.0,
+        with_dir,
+    );
+    for row in rows.iter().take(12) {
+        match row {
+            crate::resume::Row::Group { label, count, .. } => println!("  {label} ({count})"),
+            crate::resume::Row::Session { index } => {
+                if let Some(record) = records.get(*index) {
+                    println!(
+                        "    {} · {}",
+                        record.label(),
+                        crate::resume::human_bytes(record.bytes)
+                    );
+                }
+            }
+        }
+    }
+    // A store where nothing resolved a directory is a parse that stopped
+    // matching the records, not a user with no projects: the picker would file
+    // every session under "(unknown project)" and be useless.
+    if with_dir == 0 {
+        anyhow::bail!("no session resolved a working directory; the record shape may have changed");
+    }
+    Ok(())
+}
+
 fn check_reconnect() -> Result<()> {
     // Its own *bridge* socket, on the shared daemon. The check works by killing
     // the bridge, and the developer's live desktop windows talk to the shared
@@ -602,6 +768,20 @@ fn bench_scroll() -> Result<()> {
     let reports = scroll_bench::sweep();
     if !scroll_bench::report(&reports) {
         anyhow::bail!("the scroll misbehaved on one or more gestures");
+    }
+    Ok(())
+}
+
+/// `--profile-scroll`: attribute a scroll frame's cost to its phases, swept
+/// over history length.
+///
+/// Separate from `--bench-scroll` because the two answer different questions:
+/// that one says whether the motion is right, this one says where the frame's
+/// time went and whether any of it grows with how long the session is.
+fn profile_scroll() -> Result<()> {
+    let costs = scroll_profile::sweep();
+    if !scroll_profile::report(&costs) {
+        anyhow::bail!("scroll frames are re-laying text or scale with history length");
     }
     Ok(())
 }

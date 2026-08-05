@@ -39,19 +39,22 @@ const MAX_ROW_HEIGHT: f64 = 132.0;
 /// Room reserved above each row for its label, in logical units.
 pub const ROW_LABEL_BAND: f64 = 20.0;
 
-/// The region the field is laid out in: the page inside its margins.
+/// The bounded overlay region the field is laid out in.
 ///
 /// One definition shared by the renderer and by pointer hit-testing, for the
 /// same reason [`crate::layout::Frame`] is: if the two ever disagreed, clicks
 /// would land on a different card than the one under the cursor.
 pub fn area(frame: &crate::layout::Frame) -> (f64, f64, f64, f64) {
-    let inset = (frame.width * 0.04).clamp(16.0, 56.0);
-    // The overview replaces the page rather than sitting in the transcript's
-    // slot, so it gets the window from the top margin down to the hint row.
-    // Anchoring the top at `body_top` left the field crowded into the lower
-    // two thirds with a band of blank paper above it.
-    let bottom = frame.height - crate::layout::FOOTNOTE_HEIGHT * 2.5;
-    (inset, inset, frame.width - inset, bottom.max(inset + 1.0))
+    // Deliberately leave a substantial ring of the current page visible. The
+    // session picker is a temporary object over the conversation, not a route
+    // away from it. Caps keep the panel readable on a large monitor, while the
+    // fractions make it gracefully fill a small window without touching its
+    // edges.
+    let width = (frame.width * 0.84).min(960.0).max(1.0);
+    let height = (frame.height * 0.68).min(620.0).max(1.0);
+    let left = (frame.width - width) / 2.0;
+    let top = (frame.height - height) / 2.0;
+    (left, top, left + width, top + height)
 }
 
 /// A direction for keyboard navigation across the field.
@@ -138,11 +141,12 @@ impl Field {
 
     /// The session a directional move from `from` should land on.
     ///
-    /// Left and right walk the row, wrapping, exactly as the session strip
-    /// does: a row is a ring of a handful of items, and hitting an invisible
-    /// wall at the end reads as the key being broken. Up and down move
-    /// between rows, landing on the card whose centre is nearest the one you
-    /// left, which is the compositor's own column-preserving motion.
+    /// Left and right walk the row and *stop at its ends*: wrapping made a
+    /// keystroke at the edge teleport to the far side of the row, which reads
+    /// as the highlight jumping rather than moving. Up and down move between
+    /// rows, also clamped at the top and bottom, landing on the card whose
+    /// centre is nearest the one you left, which is the compositor's own
+    /// column-preserving motion.
     pub fn neighbor(&self, from: &str, dir: Dir) -> Option<&Card> {
         let (row, at) = self.locate(from).or_else(|| {
             self.cards
@@ -151,20 +155,27 @@ impl Field {
         })?;
         let members = &self.members[row];
         match dir {
-            Dir::Left | Dir::Right => {
-                if members.len() <= 1 {
+            Dir::Left => {
+                let next = at.checked_sub(1)?;
+                Some(&self.cards[members[next]])
+            }
+            Dir::Right => {
+                let next = at + 1;
+                if next >= members.len() {
                     return None;
                 }
-                let step = if dir == Dir::Right { 1isize } else { -1 };
-                let next = (at as isize + step).rem_euclid(members.len() as isize) as usize;
                 Some(&self.cards[members[next]])
             }
             Dir::Up | Dir::Down => {
-                if self.members.len() <= 1 {
-                    return None;
-                }
-                let step = if dir == Dir::Down { 1isize } else { -1 };
-                let target = (row as isize + step).rem_euclid(self.members.len() as isize) as usize;
+                let target = if dir == Dir::Down {
+                    let below = row + 1;
+                    if below >= self.members.len() {
+                        return None;
+                    }
+                    below
+                } else {
+                    row.checked_sub(1)?
+                };
                 let from_x = self.cards[members[at]].center().0;
                 self.members[target]
                     .iter()
@@ -175,6 +186,25 @@ impl Field {
                             .total_cmp(&(b.center().0 - from_x).abs())
                     })
             }
+        }
+    }
+
+    /// Whether a directional move from `from` could never go anywhere in this
+    /// field, as opposed to merely being at an edge right now: a row of one
+    /// makes left/right dead, and a single row makes up/down dead. The caller
+    /// uses this to tell "broken axis, fall back to something useful" apart
+    /// from "edge of the field, stay put".
+    pub fn axis_is_dead(&self, from: &str, dir: Dir) -> bool {
+        let Some((row, _)) = self.locate(from).or_else(|| {
+            self.cards
+                .first()
+                .and_then(|card| self.locate(&card.session_id))
+        }) else {
+            return true;
+        };
+        match dir {
+            Dir::Left | Dir::Right => self.members[row].len() <= 1,
+            Dir::Up | Dir::Down => self.members.len() <= 1,
         }
     }
 
@@ -524,6 +554,7 @@ mod tests {
     fn entry(id: &str, dir: &str, weight: f64) -> Entry {
         Entry {
             session_id: id.into(),
+            title: None,
             working_dir: Some(dir.into()),
             busy: false,
             weight,
@@ -652,28 +683,50 @@ mod tests {
         assert_eq!(field(), field());
     }
 
-    /// Left and right walk the row, wrapping, exactly like the session strip.
+    /// Left and right walk the row and stop at its ends: no wrapping around,
+    /// which read as the highlight teleporting to the far side.
     #[test]
-    fn left_and_right_wrap_within_the_row() {
+    fn left_and_right_stop_at_the_rows_ends() {
         let field = field();
         assert_eq!(field.neighbor("a1", Dir::Right).unwrap().session_id, "a2");
-        assert_eq!(field.neighbor("a3", Dir::Right).unwrap().session_id, "a1");
-        assert_eq!(field.neighbor("a1", Dir::Left).unwrap().session_id, "a3");
+        assert_eq!(field.neighbor("a2", Dir::Left).unwrap().session_id, "a1");
+        // The edges are walls, not portals.
+        assert!(field.neighbor("a3", Dir::Right).is_none());
+        assert!(field.neighbor("a1", Dir::Left).is_none());
         // Never into another row: the row is the ring.
-        for id in ["a1", "a2", "a3"] {
+        for id in ["a1", "a2"] {
             let right = field.neighbor(id, Dir::Right).unwrap();
             assert_eq!(right.label, "jcode", "{id} wrapped into another row");
         }
     }
 
-    /// Up and down move between rows, wrapping, like the strip's groups.
+    /// Up and down move between rows and stop at the top and bottom.
     #[test]
     fn up_and_down_change_rows() {
         let field = field();
         assert_eq!(field.neighbor("a1", Dir::Down).unwrap().label, "site");
         assert_eq!(field.neighbor("b1", Dir::Up).unwrap().label, "jcode");
-        // Wraps at the edges rather than dying.
-        assert_eq!(field.neighbor("a1", Dir::Up).unwrap().label, "site");
+        // Clamps at the edges rather than wrapping around.
+        assert!(field.neighbor("a1", Dir::Up).is_none());
+        assert!(field.neighbor("b1", Dir::Down).is_none());
+    }
+
+    /// A dead axis (one row, or a row of one) is distinguishable from a live
+    /// axis at its edge, so the caller can fall back only where a key could
+    /// never work.
+    #[test]
+    fn dead_axes_are_reported_but_edges_are_not() {
+        let field = field();
+        // Two rows and three cards in "jcode": nothing is dead here, even at
+        // the edges.
+        for dir in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
+            assert!(!field.axis_is_dead("a1", dir), "{dir:?} reported dead");
+        }
+        // One row of one card: everything is dead.
+        let solo = layout(&[entry("solo", "/tmp", 1.0)], Some("solo"), None, AREA);
+        for dir in [Dir::Left, Dir::Right, Dir::Up, Dir::Down] {
+            assert!(solo.axis_is_dead("solo", dir), "{dir:?} reported live");
+        }
     }
 
     /// A vertical move lands on the card nearest the one you left, so moving
@@ -832,5 +885,22 @@ mod tests {
         overview.advance(0.02);
         overview.open(Some("a1"));
         assert_eq!(overview.focus(), Some("a3"));
+    }
+
+    #[test]
+    fn session_field_is_a_bounded_overlay_with_page_visible_around_it() {
+        for size in [(420, 540), (1280, 800), (1920, 1080)] {
+            let frame = crate::layout::Frame::new(size, 1.0);
+            let (left, top, right, bottom) = area(&frame);
+            assert!(
+                left > 0.0 && top > 0.0,
+                "overlay touched the top or left at {size:?}"
+            );
+            assert!(
+                right < frame.width && bottom < frame.height,
+                "overlay filled the page at {size:?}"
+            );
+            assert!(right - left <= 960.0 && bottom - top <= 620.0);
+        }
     }
 }

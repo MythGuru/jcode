@@ -386,6 +386,55 @@ impl AnthropicProvider {
         usage.five_hour >= 0.99 && usage.seven_day >= 0.99
     }
 
+    fn best_available_opus_model(exclude: &str) -> Option<String> {
+        let mut models = jcode_base::provider::cached_anthropic_model_ids()
+            .unwrap_or_else(jcode_base::provider::known_anthropic_model_ids);
+        models.retain(|model| {
+            let key = strip_1m_suffix(model).to_ascii_lowercase();
+            key.contains("claude-opus")
+                && strip_1m_suffix(model) != strip_1m_suffix(exclude)
+                && !anthropic_model_is_retired(model)
+        });
+        models.sort_by_key(|model| anthropic_model_quality_rank(model));
+        models.into_iter().next()
+    }
+
+    fn fallback_for_model_scoped_usage(
+        selected_model: &str,
+        usage: &jcode_base::usage::UsageData,
+    ) -> Option<String> {
+        (selected_model.to_ascii_lowercase().contains("fable")
+            && usage.model_scoped_exhausted(selected_model))
+        .then(|| Self::best_available_opus_model(selected_model))
+        .flatten()
+    }
+
+    async fn model_after_oauth_quota_check(
+        &self,
+        token: &str,
+        is_oauth: bool,
+        selected_model: String,
+    ) -> String {
+        if !is_oauth || !selected_model.to_ascii_lowercase().contains("fable") {
+            return selected_model;
+        }
+        let Ok(usage) = jcode_base::usage::fetch_usage_for_access_token(token).await else {
+            return selected_model;
+        };
+        let Some(fallback) = Self::fallback_for_model_scoped_usage(&selected_model, &usage) else {
+            return selected_model;
+        };
+        jcode_base::logging::warn(&format!(
+            "Anthropic OAuth model-scoped weekly quota for '{}' is exhausted; routing to '{}'",
+            selected_model, fallback
+        ));
+        *self
+            .model
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = fallback.clone();
+        fallback
+    }
+
     /// Resolve a usable access token (OAuth or API key) and whether it is OAuth.
     ///
     /// Exposed for the provider-doctor's native Claude driver so it can validate
@@ -581,17 +630,22 @@ impl AnthropicProvider {
     }
 
     /// Default reasoning effort to apply when the user has *not* explicitly
-    /// configured one. Claude Opus models are reasoning-heavy flagships, so we
-    /// default them to `xhigh` where supported (Opus 4.7/4.8), clamped to
-    /// `high` on older Opus. Deliberately NOT `max`: Anthropic recommends
-    /// `xhigh` as the starting point for coding/agentic work and reserves
-    /// `max` for frontier problems (it costs much more and can overthink).
-    /// Claude Fable 5 defaults to `high`: it benefits from deeper reasoning
-    /// on coding/agentic work. Every other model keeps the model's own
-    /// default (no forced effort) so cheaper models stay cheap.
+    /// configured one. Claude Opus 5 defaults to `low`: it is strong enough
+    /// at low effort for day-to-day coding/agentic work, and users can cycle
+    /// up when they want deeper reasoning. Older Claude Opus models are
+    /// reasoning-heavy flagships, so we default them to `xhigh` where
+    /// supported (Opus 4.7/4.8), clamped to `high` on older Opus.
+    /// Deliberately NOT `max`: Anthropic recommends `xhigh` as the starting
+    /// point for coding/agentic work and reserves `max` for frontier problems
+    /// (it costs much more and can overthink). Claude Fable 5 defaults to
+    /// `high`: it benefits from deeper reasoning on coding/agentic work.
+    /// Every other model keeps the model's own default (no forced effort) so
+    /// cheaper models stay cheap.
     fn default_reasoning_effort_for_model(model: &str) -> Option<String> {
         let key = Self::normalized_model_key(model);
-        if key.contains("claude-opus") {
+        if key.contains("claude-opus-5") {
+            Some("low".to_string())
+        } else if key.contains("claude-opus") {
             Some(if Self::model_supports_xhigh_effort(model) {
                 "xhigh".to_string()
             } else {
@@ -1015,11 +1069,14 @@ impl Provider for AnthropicProvider {
             )
             .await?;
         }
-        let model = self
+        let selected_model = self
             .model
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let model = self
+            .model_after_oauth_quota_check(&token, is_oauth, selected_model)
+            .await;
         let api_model = strip_1m_suffix(&model).to_string();
 
         // Format request
@@ -1376,11 +1433,14 @@ impl Provider for AnthropicProvider {
             )
             .await?;
         }
-        let model = self
+        let selected_model = self
             .model
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let model = self
+            .model_after_oauth_quota_check(&token, is_oauth, selected_model)
+            .await;
         let api_model = strip_1m_suffix(&model).to_string();
 
         // Format request
@@ -1601,6 +1661,38 @@ async fn run_stream_with_retries(
                         .send(Ok(StreamEvent::StatusDetail {
                             detail: format!(
                                 "⚠ '{}' is unavailable; falling back to '{}'",
+                                strip_1m_suffix(&model_name),
+                                strip_1m_suffix(&fallback)
+                            ),
+                        }))
+                        .await;
+                    request.model = strip_1m_suffix(&fallback).to_string();
+                    *model_state
+                        .write()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = fallback.clone();
+                    tried_models.push(fallback.clone());
+                    model_name = fallback;
+                    last_error = Some(e);
+                    continue;
+                }
+
+                // Anthropic OAuth can reject Fable with a model-scoped weekly
+                // quota error before the usage cache observes the exhausted
+                // window. This is terminal for Fable, not a transient 429.
+                if is_oauth
+                    && !saw_output
+                    && is_fable_scoped_limit_error(&model_name, &error_str)
+                    && let Some(fallback) =
+                        AnthropicProvider::best_available_opus_model(&model_name)
+                {
+                    jcode_base::logging::warn(&format!(
+                        "Anthropic Fable weekly quota is exhausted ({}); retrying with '{}'",
+                        e, fallback
+                    ));
+                    let _ = tx
+                        .send(Ok(StreamEvent::StatusDetail {
+                            detail: format!(
+                                "⚠ '{}' weekly limit reached; switching to '{}'",
                                 strip_1m_suffix(&model_name),
                                 strip_1m_suffix(&fallback)
                             ),
@@ -1928,6 +2020,24 @@ fn is_retryable_error(error_str: &str) -> bool {
         // API-level server errors (SSE error events)
         || error_str.contains("api_error")
         || error_str.contains("internal server error")
+}
+
+fn is_fable_scoped_limit_error(model: &str, error: &str) -> bool {
+    let model = strip_1m_suffix(model).to_ascii_lowercase();
+    if !model.contains("fable") {
+        return false;
+    }
+    let error = error.to_ascii_lowercase();
+    let is_limit = error.contains("rate_limit")
+        || error.contains("rate limit")
+        || error.contains("usage_limit")
+        || error.contains("usage limit");
+    let is_scoped = error.contains("fable")
+        || error.contains("weekly")
+        || error.contains("week limit")
+        || error.contains("7-day")
+        || error.contains("7 day");
+    is_limit && is_scoped
 }
 
 /// Detect an Anthropic "model not found" rejection.

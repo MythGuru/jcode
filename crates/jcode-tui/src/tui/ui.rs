@@ -194,6 +194,11 @@ static LAST_DIFF_PANE_MAX_SCROLL: AtomicUsize = AtomicUsize::new(0);
 /// put instead of teleporting to the new absolute top).
 #[cfg(not(test))]
 static LAST_TOTAL_WRAPPED_LINES: AtomicUsize = AtomicUsize::new(0);
+/// Height (rows) of the chat messages viewport on the most recent frame.
+/// Terminal-style clear (Ctrl+L) sizes its blank spacer block from this so the
+/// visible screen ends up exactly empty.
+#[cfg(not(test))]
+static LAST_CHAT_VIEWPORT_HEIGHT: AtomicUsize = AtomicUsize::new(0);
 /// The chat scroll offset the renderer actually used on the most recent frame
 /// (after clamping and after resolving any pending history anchor). Scroll
 /// handlers adopt this so manual scrolling resumes from the on-screen position.
@@ -225,6 +230,7 @@ thread_local! {
     static TEST_LAST_DIFF_PANE_EFFECTIVE_SCROLL: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_DIFF_PANE_MAX_SCROLL: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_TOTAL_WRAPPED_LINES: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_VIEWPORT_HEIGHT: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_RESOLVED_CHAT_SCROLL: Cell<usize> = const { Cell::new(0) };
     static TEST_TAIL_CATCHUP_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static TEST_TAIL_FOLLOW_SNAP_PENDING: Cell<bool> = const { Cell::new(false) };
@@ -423,6 +429,31 @@ pub(crate) fn set_last_total_wrapped_lines(value: usize) {
     #[cfg(not(test))]
     {
         LAST_TOTAL_WRAPPED_LINES.store(value, Ordering::Relaxed);
+    }
+}
+
+/// Height (rows) of the chat messages viewport on the most recent frame.
+/// Returns 0 if no frame has been rendered yet.
+pub(crate) fn last_chat_viewport_height() -> usize {
+    #[cfg(test)]
+    {
+        return TEST_LAST_CHAT_VIEWPORT_HEIGHT.with(Cell::get);
+    }
+    #[cfg(not(test))]
+    {
+        LAST_CHAT_VIEWPORT_HEIGHT.load(Ordering::Relaxed)
+    }
+}
+
+pub(crate) fn set_last_chat_viewport_height(value: usize) {
+    #[cfg(test)]
+    {
+        TEST_LAST_CHAT_VIEWPORT_HEIGHT.with(|cell| cell.set(value));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        LAST_CHAT_VIEWPORT_HEIGHT.store(value, Ordering::Relaxed);
     }
 }
 
@@ -1409,15 +1440,72 @@ pub fn last_layout_snapshot() -> Option<LayoutSnapshot> {
 /// appeared only under parallelism (same root cause as issue #593). Both now
 /// delegate here.
 #[cfg(test)]
-pub(crate) fn render_state_test_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn render_state_test_lock() -> RenderStateTestGuard {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    let guard = LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    RENDER_STATE_LOCK_HELD.with(|held| held.set(true));
+    RenderStateTestGuard { _guard: guard }
+}
+
+/// Guard for [`render_state_test_lock`] that also records ownership on this
+/// thread, so a nested `clear_test_render_state_for_tests` can tell it is
+/// already inside the lock instead of deadlocking on it.
+#[cfg(test)]
+pub(crate) struct RenderStateTestGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for RenderStateTestGuard {
+    fn drop(&mut self) {
+        RENDER_STATE_LOCK_HELD.with(|held| held.set(false));
+    }
+}
+
+/// Take the render-state lock unless this thread already holds it.
+///
+/// `clear_test_render_state_for_tests` mutates the same globals the lock
+/// protects, but it is called from both locked contexts (rendering tests) and
+/// unlocked ones (`create_test_app`, used by ~570 tests). Acquiring
+/// unconditionally would deadlock the former; not acquiring at all lets the
+/// latter wipe state from under the former, which is the race behind
+/// jcode-tui's intermittent layout failures.
+///
+/// Tracking ownership per thread lets one function serve both: the outermost
+/// holder owns the guard, and nested calls become no-ops.
+#[cfg(test)]
+fn with_render_state_lock<T>(body: impl FnOnce() -> T) -> T {
+    if render_state_lock_held() {
+        return body();
+    }
+
+    let _guard = render_state_test_lock();
+    body()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether this thread currently holds the render-state lock. Set by
+    /// [`render_state_test_lock`]'s guard so nested clears can detect it.
+    static RENDER_STATE_LOCK_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn render_state_lock_held() -> bool {
+    RENDER_STATE_LOCK_HELD.with(|held| held.get())
 }
 
 #[cfg(test)]
 pub(crate) fn clear_test_render_state_for_tests() {
+    with_render_state_lock(clear_test_render_state_locked)
+}
+
+/// The actual reset, run with the render-state lock held.
+#[cfg(test)]
+fn clear_test_render_state_locked() {
     set_last_max_scroll(0);
     set_pinned_pane_total_lines(0);
     set_last_diff_pane_effective_scroll(0);
@@ -2509,10 +2597,12 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
         Ok(()) => {}
         Err(payload) => render_recovered_panic_frame(frame, &payload),
     }
-    // Adapt the finished frame for light terminal backgrounds (no-op on dark).
-    // Doing this at the buffer level covers every widget and overlay without
-    // touching individual color call sites.
+    // Adapt the finished frame for light backgrounds, then apply the user's
+    // configured colors, which must not be luminance-flipped. Working at the
+    // buffer level covers every widget and overlay without touching individual
+    // color call sites. See `palette::adapt_buffer_for_palette` for the ordering.
     jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+    jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
     adapt_buffer_for_emoji_preference(frame.buffer_mut());
     // Cache eviction/clearing can outlive the last visible image. Carry Kitty
     // deletion commands on any completed frame so terminal-side pixel storage
@@ -3023,8 +3113,23 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let prep_elapsed = prep_start.elapsed();
     let content_height = prepared.total_wrapped_lines().max(1) as u16;
 
+    // Terminal-style clear (Ctrl+L): the trailing spacer makes every visible
+    // transcript row blank, so a normal bottom-anchored layout would park the
+    // status line and numbered prompt at the *bottom* of a screenful of
+    // blanks. Collapse the messages area instead, exactly like a terminal
+    // after `clear`: the prompt sits at the top and the history is one scroll
+    // away. Scrolling up, new output, or streaming all end the state (see
+    // `terminal_clear_collapsed`) and restore the normal layout.
+    let terminal_clear_collapsed = !swarm_page_active && app.terminal_clear_collapsed();
+    let content_height = if terminal_clear_collapsed {
+        0
+    } else {
+        content_height
+    };
+
     // Use packed layout when content fits, scrolling layout otherwise
-    let use_packed = !swarm_page_active && content_height + fixed_height <= available_height;
+    let use_packed = terminal_clear_collapsed
+        || (!swarm_page_active && content_height + fixed_height <= available_height);
 
     // Layout: messages (includes header), queued, status, notification, inline UI, gap, input, donut
     // All vertical chunks are within the chat_area (left column).
@@ -3032,16 +3137,20 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         .direction(Direction::Vertical)
         .constraints(if use_packed {
             vec![
-                Constraint::Length(content_height.max(1)), // 0 Messages (exact height)
-                Constraint::Length(queued_height),         // 1 Queued messages (above status)
-                Constraint::Length(swarm_strip_height),    // 2 Swarm strip (above status)
-                Constraint::Length(1),                     // 3 Status line
-                Constraint::Length(notification_height),   // 4 Notification line
-                Constraint::Length(inline_block_height),   // 5 Inline UI
-                Constraint::Length(inline_ui_gap_height),  // 6 Inline UI/input spacing
-                Constraint::Length(input_height),          // 7 Input
-                Constraint::Length(overscroll_height),     // 8 Overscroll status line
-                Constraint::Length(donut_height),          // 9 Donut animation
+                Constraint::Length(if terminal_clear_collapsed {
+                    0
+                } else {
+                    content_height.max(1)
+                }), // 0 Messages (exact height; 0 when terminal-cleared)
+                Constraint::Length(queued_height), // 1 Queued messages (above status)
+                Constraint::Length(swarm_strip_height), // 2 Swarm strip (above status)
+                Constraint::Length(1),             // 3 Status line
+                Constraint::Length(notification_height), // 4 Notification line
+                Constraint::Length(inline_block_height), // 5 Inline UI
+                Constraint::Length(inline_ui_gap_height), // 6 Inline UI/input spacing
+                Constraint::Length(input_height),  // 7 Input
+                Constraint::Length(overscroll_height), // 8 Overscroll status line
+                Constraint::Length(donut_height),  // 9 Donut animation
             ]
         } else {
             vec![
@@ -3179,6 +3288,18 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             right_widths: Vec::new(),
             left_widths: Vec::new(),
             centered: false,
+            ..Default::default()
+        }
+    } else if terminal_clear_collapsed {
+        // Collapsed terminal-style clear: the messages chunk is zero-height, so
+        // there is nothing to draw. Deliberately skip `draw_messages` so it does
+        // not publish a zero-height viewport/max-scroll geometry that the scroll
+        // handlers would then resolve against; the last real geometry stays
+        // authoritative until the first scroll-up restores the full layout.
+        info_widget::Margins {
+            right_widths: Vec::new(),
+            left_widths: Vec::new(),
+            centered: app.centered_mode(),
             ..Default::default()
         }
     } else {
@@ -3407,6 +3528,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // over existing rows (blank space, pinned footer, or the transcript tail)
     // instead of reserving layout height and shoving everything around.
     input_ui::draw_command_suggestions_overlay(frame, app, chunks[7]);
+
+    // Ctrl+R reverse prompt-history search overlay (drawn after the command
+    // palette so it wins when both could be visible).
+    input_ui::draw_prompt_history_search_overlay(frame, app, chunks[7]);
 
     // Observe the rendered messages area for the anchor-stability (smoothness)
     // report. Runs on the final buffer so it sees exactly what the user sees.

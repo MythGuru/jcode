@@ -289,6 +289,11 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if app.prompt_history_search.is_some() {
+        app.handle_prompt_history_search_key(code, modifiers);
+        return Ok(());
+    }
+
     if app.changelog_scroll.is_some() {
         return app.handle_changelog_key(code);
     }
@@ -527,6 +532,12 @@ async fn handle_remote_key_internal(
                 app.paste_from_clipboard();
                 return Ok(());
             }
+            // Cmd+L mirrors Ctrl+L: terminal-style clear (blank spacer
+            // pushes the transcript up into scrollback).
+            KeyCode::Char('l') => {
+                app.clear_view_terminal_style();
+                return Ok(());
+            }
             _ => {}
         }
     }
@@ -610,6 +621,9 @@ async fn handle_remote_key_internal(
                 }
                 return Ok(());
             }
+            KeyCode::Char('d') if input::try_ctrl_d_forward_delete(app) => {
+                return Ok(());
+            }
             KeyCode::Char('c') | KeyCode::Char('d') => {
                 if app.is_processing {
                     remote.cancel_with_reason("keyboard_ctrl_c_or_d").await?;
@@ -620,10 +634,16 @@ async fn handle_remote_key_internal(
                 return Ok(());
             }
             KeyCode::Char('r') => {
-                app.recover_session_without_tools();
+                app.open_prompt_history_search();
                 return Ok(());
             }
             KeyCode::Char('l') => {
+                // Terminal-style clear: a viewport-height blank spacer pushes
+                // the transcript up into scrollback, leaving a clean prompt.
+                // Nothing is deleted; /cls does the actual view wipe. The
+                // diagram/diff focus handler above wins while a pane is
+                // available.
+                app.clear_view_terminal_style();
                 return Ok(());
             }
             KeyCode::Char('u') => {
@@ -1925,6 +1945,7 @@ async fn handle_remote_key_internal(
                     || trimmed == "/commit-push"
                     || trimmed == "/commit-and-push"
                     || trimmed == "/fast-release"
+                    || trimmed == "/fast-macos-release"
                     || trimmed == "/remote-release"
                     || trimmed == "/cut-release"
                     || trimmed == "/commit-push-release"
@@ -1937,11 +1958,14 @@ async fn handle_remote_key_internal(
                         "/fast-release" | "/cut-release" | "/commit-push-release"
                     );
                     let is_remote_release = trimmed == "/remote-release";
+                    let is_fast_macos_release = trimmed == "/fast-macos-release";
                     let is_push = trimmed != "/commit";
                     let prompt = if is_triage {
                         app_mod::commands::build_triage_prompt(
                             trimmed.strip_prefix("/triage").unwrap_or_default(),
                         )
+                    } else if is_fast_macos_release {
+                        app_mod::commands::build_fast_macos_release_prompt()
                     } else if is_fast_release {
                         app_mod::commands::build_fast_release_prompt()
                     } else if is_remote_release {
@@ -1954,6 +1978,8 @@ async fn handle_remote_key_internal(
                     let launch_notice = |interrupted: bool| {
                         if is_triage {
                             app_mod::commands::triage_launch_notice(interrupted)
+                        } else if is_fast_macos_release {
+                            app_mod::commands::fast_macos_release_launch_notice(interrupted)
                         } else if is_fast_release {
                             app_mod::commands::fast_release_launch_notice(interrupted)
                         } else if is_remote_release {
@@ -1966,6 +1992,8 @@ async fn handle_remote_key_internal(
                     };
                     let cmd_label = if is_triage {
                         "/triage"
+                    } else if is_fast_macos_release {
+                        "/fast-macos-release"
                     } else if is_fast_release {
                         "/fast-release"
                     } else if is_remote_release {

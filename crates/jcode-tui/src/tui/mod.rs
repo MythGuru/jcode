@@ -221,6 +221,16 @@ pub trait TuiState {
     fn scroll_offset(&self) -> usize;
     /// Whether auto-scroll to bottom is paused (user scrolled up during streaming)
     fn auto_scroll_paused(&self) -> bool;
+    /// Whether the screen is currently in the terminal-style cleared state
+    /// produced by Ctrl+L / Cmd+L: the transcript ends in a blank spacer, the
+    /// view is pinned to the bottom, and nothing is streaming. In that state
+    /// the renderer collapses the (entirely blank) messages viewport so the
+    /// status line and numbered prompt sit at the *top* of the screen, exactly
+    /// like a terminal after `clear`, instead of floating at the bottom under
+    /// a screenful of blanks.
+    fn terminal_clear_collapsed(&self) -> bool {
+        false
+    }
     /// When older compacted history is being loaded in, this is the reader's
     /// captured distance (in wrapped lines) from the bottom of the transcript.
     /// The renderer uses it to keep the viewport anchored to the same content as
@@ -307,6 +317,11 @@ pub trait TuiState {
     fn advance_command_suggestions_epoch(&self) {}
     fn command_suggestion_selected(&self) -> usize {
         0
+    }
+    /// Snapshot of the Ctrl+R reverse prompt-history search overlay, or None
+    /// when the overlay is closed.
+    fn prompt_history_search(&self) -> Option<PromptHistorySearchView> {
+        None
     }
     fn active_skill(&self) -> Option<String>;
     fn subagent_status(&self) -> Option<String>;
@@ -872,6 +887,15 @@ pub enum PickerKind {
     Account,
     Login,
     Usage,
+}
+
+/// Render snapshot of the Ctrl+R reverse prompt-history search overlay.
+/// `matches` are single-line previews, newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptHistorySearchView {
+    pub query: String,
+    pub matches: Vec<String>,
+    pub selected: usize,
 }
 
 /// What the first-run onboarding welcome screen should render in its body,

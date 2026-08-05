@@ -2100,6 +2100,12 @@ pub async fn run_server_reload_command(force: bool, emit_json: bool) -> Result<(
 
     let mut client = crate::server::Client::connect().await?;
 
+    // The server requires `Subscribe` as the first frame and rejects any other
+    // opening request with "Client must Subscribe with a working_dir before
+    // sending stateful requests", so `reload` alone always failed (issue #648).
+    // `subscribe()` defaults `working_dir` to the current directory.
+    client.subscribe().await?;
+
     // Before asking the (possibly older) daemon to reload, repair a stale
     // `shared-server` channel from the client side. The running server resolves
     // its reload target from that channel; if it still points at the server's
@@ -2421,7 +2427,7 @@ fn run_command_auto_poke_enabled() -> bool {
             let value = value.trim().to_ascii_lowercase();
             !matches!(value.as_str(), "0" | "false" | "off" | "no")
         })
-        .unwrap_or(true)
+        .unwrap_or_else(|| crate::config::config().features.auto_poke)
 }
 
 /// Whether headless `jcode run` should load MCP servers from `~/.jcode/mcp.json`.
@@ -2521,8 +2527,6 @@ fn run_command_auto_poke_limit_reached(turns_completed: usize, max_turns: Option
         .map(|max_turns| turns_completed >= max_turns)
         .unwrap_or(false)
 }
-
-const RUN_TODO_CONFIDENCE_THRESHOLD: u8 = 90;
 
 #[derive(Debug)]
 enum RunAutoPokeFollowUp {
@@ -2637,10 +2641,9 @@ fn build_run_todo_validation_message(
         return None;
     }
 
-    let completion_confidence_needs_validation = completed.iter().any(|todo| {
-        todo.completion_confidence
-            .is_none_or(|score| score < RUN_TODO_CONFIDENCE_THRESHOLD)
-    });
+    let completion_confidence_needs_validation = completed
+        .iter()
+        .any(|todo| !crate::todo::completion_confidence_passes(todo.completion_confidence));
     let confidence_spike_detected =
         allow_confidence_spike_challenge && !crate::todo::spike_completed_todos(todos).is_empty();
 

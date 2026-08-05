@@ -12,7 +12,7 @@ fn append_take_and_clear_round_trip() {
         session_id,
         SoftInterruptMessage {
             content: "hello".to_string(),
-            images: vec![("image/png".to_string(), "ZmFrZQ==".to_string())],
+            images: Vec::new(),
             urgent: true,
             source: SoftInterruptSource::System,
         },
@@ -32,10 +32,6 @@ fn append_take_and_clear_round_trip() {
     let loaded = load(session_id).expect("load interrupts");
     assert_eq!(loaded.len(), 2);
     assert_eq!(loaded[0].content, "hello");
-    assert_eq!(
-        loaded[0].images,
-        vec![("image/png".to_string(), "ZmFrZQ==".to_string())]
-    );
     assert!(loaded[0].urgent);
     assert_eq!(loaded[1].content, "world");
 

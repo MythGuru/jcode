@@ -806,7 +806,7 @@ fn openai_compatible_profiles_with_unverified_live_catalogs_have_static_fallback
 }
 
 #[test]
-fn comtegra_profile_uses_endpoint_default_max_tokens() {
+fn profiles_use_endpoint_default_max_tokens() {
     let _lock = ENV_LOCK.lock();
     let _override = EnvVarGuard::remove("JCODE_OPENROUTER_MAX_TOKENS");
 
@@ -816,6 +816,10 @@ fn comtegra_profile_uses_endpoint_default_max_tokens() {
     );
     assert_eq!(
         OpenRouterProvider::configured_max_tokens(Some("deepseek")),
+        None
+    );
+    assert_eq!(
+        OpenRouterProvider::configured_max_tokens(Some("celeris")),
         None
     );
 }
@@ -2978,3 +2982,37 @@ model_catalog = false
     jcode_base::config::invalidate_config_cache();
 }
 include!("openrouter_stream_options_tests.rs");
+
+/// A named OpenAI-compatible profile keeps the stable machine-facing
+/// `Provider::name()` and surfaces its identity through `display_name()`.
+///
+/// Issue #691 proposed returning `profile_id` from `name()`. That would regress
+/// the contract documented on the trait and settled in #329: billing, routing,
+/// and provider-class matching key off `name()`, so it must stay constant for a
+/// provider class, while user-visible labels come from `display_name()`. This
+/// pins both halves so the split cannot be undone by accident.
+#[test]
+fn named_openai_compatible_provider_keeps_stable_name_and_profile_display_name() {
+    let _lock = ENV_LOCK.lock();
+    let _namespace = EnvVarGuard::remove("JCODE_OPENROUTER_CACHE_NAMESPACE");
+
+    let profile = jcode_base::config::NamedProviderConfig {
+        base_url: "https://llm.example.com/v1".to_string(),
+        auth: jcode_base::config::NamedProviderAuth::None,
+        default_model: Some("example-model".to_string()),
+        ..Default::default()
+    };
+
+    let provider = OpenRouterProvider::new_named_openai_compatible("example-compat", &profile)
+        .expect("named profile should initialize");
+
+    // Machine-facing identity: stable per provider class.
+    assert_eq!(
+        Provider::name(&provider),
+        "openrouter",
+        "billing/routing key off name(); it must not become the profile id"
+    );
+    // User-facing identity: the profile the user configured.
+    assert_eq!(provider.runtime_display_name(), "example-compat");
+    assert_eq!(Provider::display_name(&provider), "example-compat");
+}

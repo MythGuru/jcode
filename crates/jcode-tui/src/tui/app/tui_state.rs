@@ -585,6 +585,10 @@ impl crate::tui::TuiState for App {
         &self.streaming.streaming_text
     }
 
+    fn pinned_todos_payload(&self) -> Option<&str> {
+        self.pinned_todos_payload_ref()
+    }
+
     fn input(&self) -> &str {
         &self.input
     }
@@ -615,6 +619,10 @@ impl crate::tui::TuiState for App {
 
     fn auto_scroll_paused(&self) -> bool {
         self.auto_scroll_paused
+    }
+
+    fn terminal_clear_collapsed(&self) -> bool {
+        self.terminal_clear_collapsed()
     }
 
     fn pending_history_anchor_lines_from_bottom(&self) -> Option<usize> {
@@ -763,6 +771,10 @@ impl crate::tui::TuiState for App {
 
     fn command_suggestion_selected(&self) -> usize {
         self.command_suggestion_selected
+    }
+
+    fn prompt_history_search(&self) -> Option<crate::tui::PromptHistorySearchView> {
+        self.prompt_history_search_view()
     }
 
     fn active_skill(&self) -> Option<String> {

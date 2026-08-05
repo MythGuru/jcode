@@ -82,6 +82,36 @@ impl App {
         }
     }
 
+    /// Re-parse keybinding snapshots when the config cache has reloaded.
+    ///
+    /// The parsed bindings are cached on `App` for cheap per-keystroke lookup,
+    /// so without this poll a config.toml keybinding edit would only take
+    /// effect after a restart. Called from the idle tick in both local and
+    /// remote run loops; the generation check makes the no-change path a
+    /// single atomic load. Returns true when bindings were re-parsed.
+    pub(super) fn refresh_keybindings_if_config_reloaded(&mut self) -> bool {
+        // config() performs the throttled file-fingerprint staleness check and
+        // bumps the reload generation when config.toml changed on disk.
+        crate::config::config();
+        let generation = crate::config::config_reload_generation();
+        if generation == self.keybindings_config_generation {
+            return false;
+        }
+        self.keybindings_config_generation = generation;
+        self.model_switch_keys = keybind::load_model_switch_keys();
+        self.effort_switch_keys = keybind::load_effort_switch_keys();
+        self.centered_toggle_keys = keybind::load_centered_toggle_key();
+        self.toggle_keys = keybind::load_toggle_keys();
+        self.workspace_navigation_keys = keybind::load_workspace_navigation_keys();
+        self.dictation_key = keybind::load_dictation_key();
+        self.new_terminal_key = keybind::load_new_terminal_key();
+        self.open_resume_key = keybind::load_open_resume_key();
+        self.fallback_switch_key = keybind::load_fallback_switch_key();
+        self.scroll_keys = keybind::load_scroll_keys();
+        crate::logging::info("KEYBINDINGS: reloaded from config change");
+        true
+    }
+
     pub(super) async fn begin_remote_send(
         &mut self,
         remote: &mut backend::RemoteConnection,
@@ -415,7 +445,8 @@ impl App {
             last_api_completed_model: None,
             last_turn_input_tokens: None,
             pending_turn: false,
-            auto_poke_incomplete_todos: true,
+            auto_poke_incomplete_todos: features.auto_poke,
+            auto_poke_default_on: features.auto_poke,
             todo_confidence_spike_challenged: false,
             todo_gate_digest_delivered: false,
             todo_completion_gate_attempts: 0,
@@ -462,6 +493,7 @@ impl App {
             onboarding_sim: None,
             onboarding_flow: None,
             onboarding_auto_model_selection_active: Arc::new(AtomicBool::new(false)),
+            onboarding_auto_model_selection_baseline: Arc::new(std::sync::Mutex::new(None)),
             onboarding_startup_checked: false,
             onboarding_import_in_progress: None,
             onboarding_import_error: None,
@@ -621,6 +653,7 @@ impl App {
             open_resume_key: keybind::load_open_resume_key(),
             fallback_switch_key: keybind::load_fallback_switch_key(),
             scroll_keys: keybind::load_scroll_keys(),
+            keybindings_config_generation: crate::config::config_reload_generation(),
             dictation_session: None,
             dictation_in_flight: false,
             dictation_request_id: None,
@@ -634,7 +667,6 @@ impl App {
             learn_hint_shown_this_session: false,
             terminal_setup_hint_shown_this_session: false,
             swarm_hint_shown_this_session: false,
-            sponsor_disclosure_shown_this_session: false,
             subscribe_nudge: Default::default(),
             hotkey_feedback: None,
             hotkey_usage: None,
@@ -710,6 +742,8 @@ impl App {
             productivity_refreshing: false,
             last_overnight_card_refresh: None,
             workspace_client: crate::tui::workspace_client::WorkspaceClientState::default(),
+            prompt_history_search: None,
+            persisted_prompt_history: None,
         };
 
         for notice in app.provider.drain_startup_notices() {
@@ -852,7 +886,8 @@ impl App {
             last_api_completed_model: None,
             last_turn_input_tokens: None,
             pending_turn: false,
-            auto_poke_incomplete_todos: true,
+            auto_poke_incomplete_todos: features.auto_poke,
+            auto_poke_default_on: features.auto_poke,
             todo_confidence_spike_challenged: false,
             todo_gate_digest_delivered: false,
             todo_completion_gate_attempts: 0,
@@ -899,6 +934,7 @@ impl App {
             onboarding_sim: None,
             onboarding_flow: None,
             onboarding_auto_model_selection_active: Arc::new(AtomicBool::new(false)),
+            onboarding_auto_model_selection_baseline: Arc::new(std::sync::Mutex::new(None)),
             onboarding_startup_checked: false,
             onboarding_import_in_progress: None,
             onboarding_import_error: None,
@@ -1058,6 +1094,7 @@ impl App {
             open_resume_key: keybind::load_open_resume_key(),
             fallback_switch_key: keybind::load_fallback_switch_key(),
             scroll_keys: keybind::load_scroll_keys(),
+            keybindings_config_generation: crate::config::config_reload_generation(),
             dictation_session: None,
             dictation_in_flight: false,
             dictation_request_id: None,
@@ -1071,7 +1108,6 @@ impl App {
             learn_hint_shown_this_session: false,
             terminal_setup_hint_shown_this_session: false,
             swarm_hint_shown_this_session: false,
-            sponsor_disclosure_shown_this_session: false,
             subscribe_nudge: Default::default(),
             hotkey_feedback: None,
             hotkey_usage: None,
@@ -1147,6 +1183,8 @@ impl App {
             productivity_refreshing: false,
             last_overnight_card_refresh: None,
             workspace_client: crate::tui::workspace_client::WorkspaceClientState::default(),
+            prompt_history_search: None,
+            persisted_prompt_history: None,
         };
 
         for notice in app.provider.drain_startup_notices() {

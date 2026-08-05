@@ -251,6 +251,44 @@ fn model_picker_is_favorite(
         .contains(&model_picker_usage_key(model_name, route, effort))
 }
 
+/// Return the filtered position of the favorite after the current model in a
+/// stable identity order. The runtime picker itself is sorted with the current
+/// model first, so using its row order after reopening the picker can only
+/// alternate between the current model and the highest-ranked other favorite.
+fn next_model_favorite_after_current(picker: &InlineInteractiveState) -> Option<usize> {
+    let mut favorites: Vec<(String, usize, bool)> = picker
+        .filtered
+        .iter()
+        .enumerate()
+        .filter_map(|(filtered_pos, &entry_idx)| {
+            let entry = picker.entries.get(entry_idx)?;
+            if !entry.is_favorite || !matches!(entry.action, PickerAction::Model) {
+                return None;
+            }
+            let route = entry.active_option()?;
+            Some((
+                model_picker_usage_key(
+                    &model_entry_base_name(entry),
+                    route,
+                    entry.effort.as_deref(),
+                ),
+                filtered_pos,
+                entry.is_current,
+            ))
+        })
+        .collect();
+    favorites.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let next = favorites
+        .iter()
+        .position(|(_, _, is_current)| *is_current)
+        .map(|current| (current + 1) % favorites.len())
+        .unwrap_or(0);
+    favorites
+        .get(next)
+        .map(|(_, filtered_pos, _)| *filtered_pos)
+}
+
 fn picker_is_runtime_model_picker(picker: &InlineInteractiveState) -> bool {
     picker.kind == PickerKind::Model
         && picker
@@ -427,6 +465,31 @@ fn model_picker_route_provider_matches_key(
         route_provider_label,
         desired_provider,
     )
+}
+
+/// Whether an effort-qualified picker entry matches the persisted reasoning
+/// effort for its route's provider family. Entries without an effort always
+/// match. When no effort is persisted for the family, every variant matches
+/// (legacy model-level behavior) so we never hide the `default` marker
+/// entirely (issue #675).
+fn model_picker_effort_matches_default(
+    provider_key: Option<&str>,
+    entry_effort: Option<&str>,
+    anthropic_effort: Option<&str>,
+    openai_effort: Option<&str>,
+) -> bool {
+    let Some(effort) = entry_effort else {
+        return true;
+    };
+    let stored = match provider_key {
+        Some("claude-oauth") | Some("claude-api") => anthropic_effort,
+        Some("openai-oauth") | Some("openai-api") => openai_effort,
+        _ => None,
+    };
+    match stored {
+        Some(stored) => stored.eq_ignore_ascii_case(effort),
+        None => true,
+    }
 }
 
 fn model_picker_route_is_default(
@@ -1341,18 +1404,33 @@ impl App {
         let config = crate::config::config();
         let config_default_model = config.provider.default_model.clone();
         let config_default_provider = config.provider.default_provider.clone();
+        let config_anthropic_effort = config.provider.anthropic_reasoning_effort.clone();
+        let config_openai_effort = config.provider.openai_reasoning_effort.clone();
         let current_effort = if self.is_remote {
             self.remote_reasoning_effort.clone()
         } else {
             self.provider.reasoning_effort()
         };
 
-        let is_config_default = |name: &str, route: &PickerOption| -> bool {
-            model_picker_route_is_default(
+        let is_config_default = |name: &str, route: &PickerOption, effort: Option<&str>| -> bool {
+            if !model_picker_route_is_default(
                 name,
                 route,
                 config_default_model.as_deref(),
                 config_default_provider.as_deref(),
+            ) {
+                return false;
+            }
+            let selection = crate::provider::MultiProvider::default_model_selection_from_route(
+                name,
+                &route.api_method,
+                &route.provider,
+            );
+            model_picker_effort_matches_default(
+                selection.provider_key.as_deref(),
+                effort,
+                config_anthropic_effort.as_deref(),
+                config_openai_effort.as_deref(),
             )
         };
 
@@ -1574,7 +1652,7 @@ impl App {
                                 && or_created.map(|t| t < old_threshold_secs).unwrap_or(false),
                             created_date: or_created.map(format_created),
                             effort: Some(effort.to_string()),
-                            is_default: is_config_default(name, route),
+                            is_default: is_config_default(name, route, Some(effort)),
                             is_favorite: model_picker_is_favorite(
                                 &favorites_store,
                                 name,
@@ -1597,7 +1675,7 @@ impl App {
                         &current_model,
                         &current_provider,
                     );
-                    let is_default = is_config_default(name, &route);
+                    let is_default = is_config_default(name, &route, None);
                     entries.push(PickerEntry {
                         name: name.clone(),
                         options: vec![route.clone()],
@@ -2953,6 +3031,28 @@ impl App {
         }
     }
 
+    fn cycle_model_favorite_after_current(&mut self) {
+        let selected_name = (|| {
+            let picker = self.inline_interactive_state.as_mut()?;
+            if !picker_is_runtime_model_picker(picker) || picker.filtered.is_empty() {
+                return None;
+            }
+            let next = next_model_favorite_after_current(picker)?;
+            let entry_idx = picker.filtered[next];
+            picker.selected = next;
+            picker.column = 0;
+            picker
+                .entries
+                .get(entry_idx)
+                .map(|entry| entry.name.clone())
+        })();
+        if let Some(entry_name) = selected_name {
+            self.set_status_notice(format!("Favorite → {}", entry_name));
+        } else {
+            self.set_status_notice("No favorited models yet. Use Ctrl+N to favorite one.");
+        }
+    }
+
     pub(super) fn cycle_model_favorite_hotkey(&mut self) {
         if self
             .inline_interactive_state
@@ -2974,7 +3074,7 @@ impl App {
             self.set_status_notice("Model favorites unavailable until model routes finish loading");
             return;
         }
-        self.cycle_selected_model_favorite();
+        self.cycle_model_favorite_after_current();
         let _ = self.handle_inline_interactive_key(KeyCode::Enter, KeyModifiers::NONE);
     }
 
@@ -3121,6 +3221,7 @@ impl App {
                     let route = entry.options.get(entry.selected_option);
 
                     let bare_name = model_entry_base_name(entry);
+                    let entry_effort = entry.effort.clone();
 
                     let (model_spec, provider_key) = if let Some(r) = route {
                         let selection =
@@ -3145,6 +3246,31 @@ impl App {
                         provider_key.as_deref(),
                     ) {
                         Ok(()) => {
+                            // Persist the effort variant the user picked, so an
+                            // effort-qualified entry (e.g. "Claude Opus 5 (high)")
+                            // survives restarts instead of silently dropping the
+                            // effort (issue #675).
+                            if let Some(effort) = entry_effort.as_deref() {
+                                let save_result = match provider_key.as_deref() {
+                                    Some("claude-oauth") | Some("claude-api") => {
+                                        Some(crate::config::Config::set_anthropic_reasoning_effort(
+                                            Some(effort),
+                                        ))
+                                    }
+                                    Some("openai-oauth") | Some("openai-api") => {
+                                        Some(crate::config::Config::set_openai_reasoning_effort(
+                                            Some(effort),
+                                        ))
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(Err(e)) = save_result {
+                                    self.push_display_message(DisplayMessage::error(format!(
+                                        "Saved default model, but failed to save effort: {}",
+                                        e
+                                    )));
+                                }
+                            }
                             self.invalidate_model_picker_cache();
                             if let Some(ref mut picker) = self.inline_interactive_state {
                                 for entry in &mut picker.entries {
@@ -3556,8 +3682,9 @@ mod tests {
         REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS, REMOTE_MODEL_CATALOG_CACHE_VERSION,
         REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES, RemoteModelCatalogCache,
         filter_routes_by_provider_allowlist, key_char_eq_ignore_ascii_case,
-        model_picker_route_is_current, model_picker_route_is_default,
-        model_picker_route_is_recommended, picker_is_runtime_model_picker,
+        model_picker_effort_matches_default, model_picker_route_is_current,
+        model_picker_route_is_default, model_picker_route_is_recommended,
+        next_model_favorite_after_current, picker_is_runtime_model_picker,
         remote_model_catalog_cache_is_fresh, remote_model_catalog_cache_origin,
         remote_model_catalog_snapshot_is_safe, route_supports_reasoning_effort,
     };
@@ -3632,6 +3759,70 @@ mod tests {
 
         assert!(picker_is_runtime_model_picker(&runtime));
         assert!(!picker_is_runtime_model_picker(&agent));
+    }
+
+    #[test]
+    fn favorite_cycle_reaches_every_favorite_across_fresh_picker_sorts() {
+        let favorite_specs = [
+            ("claude-opus-5", "high", 2550),
+            ("claude-opus-4-8", "high", 950),
+            ("claude-opus-4-8", "medium", 0),
+            ("claude-opus-4-8", "low", 0),
+        ];
+        let mut current_name = "claude-opus-5 (high)".to_string();
+        let mut visited = Vec::new();
+
+        for _ in 0..favorite_specs.len() {
+            // Rebuild and re-sort the picker exactly as each hotkey press does:
+            // the newly current model moves to row zero, while the other
+            // favorites retain their usage-based ranking.
+            let mut entries: Vec<_> = favorite_specs
+                .iter()
+                .map(|(model, effort, usage_score)| {
+                    let effort_label = if *effort == "medium" { "med" } else { effort };
+                    let mut entry = picker_entry(
+                        &format!("{model} ({effort_label})"),
+                        "Anthropic",
+                        *usage_score,
+                    );
+                    entry.effort = Some((*effort).to_string());
+                    entry.is_favorite = true;
+                    entry.is_current = entry.name == current_name;
+                    entry
+                })
+                .collect();
+            entries.sort_by_key(|entry| {
+                (
+                    !entry.is_current,
+                    std::cmp::Reverse(entry.usage_score),
+                    entry.name.clone(),
+                )
+            });
+            let picker = InlineInteractiveState {
+                kind: PickerKind::Model,
+                filtered: (0..entries.len()).collect(),
+                entries,
+                selected: 0,
+                column: 0,
+                filter: String::new(),
+                preview: false,
+            };
+
+            let next = next_model_favorite_after_current(&picker)
+                .expect("a favorited model should be selectable");
+            current_name = picker.entries[picker.filtered[next]].name.clone();
+            visited.push(current_name.clone());
+        }
+
+        assert_eq!(
+            visited,
+            [
+                "claude-opus-4-8 (high)",
+                "claude-opus-4-8 (low)",
+                "claude-opus-4-8 (med)",
+                "claude-opus-5 (high)",
+            ]
+        );
     }
 
     #[test]
@@ -3793,6 +3984,57 @@ mod tests {
             &api_route,
             Some("claude-opus-4-8"),
             Some("claude-api"),
+        ));
+    }
+
+    #[test]
+    fn model_picker_effort_default_matches_only_stored_variant() {
+        // Anthropic: stored effort selects exactly one variant.
+        assert!(model_picker_effort_matches_default(
+            Some("claude-oauth"),
+            Some("high"),
+            Some("high"),
+            None,
+        ));
+        assert!(!model_picker_effort_matches_default(
+            Some("claude-oauth"),
+            Some("low"),
+            Some("high"),
+            None,
+        ));
+        // OpenAI uses its own stored effort.
+        assert!(model_picker_effort_matches_default(
+            Some("openai-oauth"),
+            Some("medium"),
+            None,
+            Some("medium"),
+        ));
+        assert!(!model_picker_effort_matches_default(
+            Some("openai-api"),
+            Some("high"),
+            None,
+            Some("medium"),
+        ));
+        // No stored effort: every variant keeps the legacy default marker.
+        assert!(model_picker_effort_matches_default(
+            Some("claude-oauth"),
+            Some("xhigh"),
+            None,
+            None,
+        ));
+        // Entries without an effort always match.
+        assert!(model_picker_effort_matches_default(
+            Some("claude-oauth"),
+            None,
+            Some("high"),
+            None,
+        ));
+        // Unknown provider families ignore stored efforts.
+        assert!(model_picker_effort_matches_default(
+            Some("openrouter"),
+            Some("high"),
+            Some("low"),
+            Some("low"),
         ));
     }
 

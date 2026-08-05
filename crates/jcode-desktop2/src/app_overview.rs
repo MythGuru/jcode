@@ -6,7 +6,7 @@
 //! they read as a unit, while interleaved with window and harness plumbing
 //! they read as neither. The drawing half lives in `crate::scene_overview`.
 
-use crate::{App, OVERVIEW_FRAME, SUPER_TAP, harness, keymap, overview};
+use crate::{App, OVERVIEW_FRAME, SUPER_BOUNCE, SUPER_TAP, harness, keymap, overview};
 
 impl App {
     /// Lay out the blob field for the current model.
@@ -38,29 +38,50 @@ impl App {
         self.request_redraw();
     }
 
-    /// Fetch the highlighted session's conversation tail, if we do not have
-    /// it yet, so hovering a blob shows *which* conversation it is.
+    /// Fetch the tail of every session in the field, so each card can show the
+    /// conversation it holds rather than only its name.
     ///
-    /// Only the highlighted one: prefetching the whole field would send a
-    /// burst of reads on every open for previews the user will mostly never
-    /// look at. Cached once fetched, so moving back and forth across the field
-    /// is instant after the first visit.
+    /// The whole field rather than only the highlight: the point of the
+    /// overview is comparing sessions, and a strip where you must visit each
+    /// card to learn what is in it is a list you have to read one item at a
+    /// time. Requests are deduplicated by [`overview::Peeks`], so opening the
+    /// field costs one read per session for the whole gesture rather than one
+    /// per frame, and the highlight is asked for first so the card the eye is
+    /// already on fills in before its neighbours.
     pub(crate) fn request_peek(&mut self) {
-        let Some(target) = self
-            .model
+        for target in self.peek_targets() {
+            if !self.model.peeks.should_request(&target) {
+                continue;
+            }
+            if let Some((_, outgoing)) = self.harness.as_ref() {
+                let _ = outgoing.send(harness::Command::Peek(target));
+            }
+        }
+    }
+
+    /// Which sessions a peek pass covers, highlight first.
+    ///
+    /// Split out so the *policy* (the whole field, not just the highlight) is
+    /// testable without a live connection: the send itself needs a socket, and
+    /// a test that had to stand one up would end up asserting on plumbing
+    /// rather than on which sessions get previewed.
+    pub(crate) fn peek_targets(&self) -> Vec<String> {
+        // The highlight first so the card the eye is already on fills in before
+        // its neighbours.
+        self.model
             .overview
             .focus()
             .or(self.model.session_id.as_deref())
             .map(str::to_string)
-        else {
-            return;
-        };
-        if !self.model.peeks.should_request(&target) {
-            return;
-        }
-        if let Some((_, outgoing)) = self.harness.as_ref() {
-            let _ = outgoing.send(harness::Command::Peek(target));
-        }
+            .into_iter()
+            .chain(
+                self.model
+                    .strip
+                    .entries()
+                    .into_iter()
+                    .map(|entry| entry.session_id),
+            )
+            .collect()
     }
 
     /// Close the field, attaching to the highlighted session when `commit`.
@@ -99,11 +120,15 @@ impl App {
             self.request_redraw();
             return;
         }
-        // No neighbour that way: one project row makes j/k dead, and a row of
-        // one makes h/l dead. A motion key that does nothing reads as broken,
-        // so fall back to the reading-order step in the same sense. Every
-        // direction then always goes somewhere as long as there is somewhere
-        // to go.
+        // Nothing that way. If the axis could never move here (one project
+        // row makes j/k dead, a row of one makes h/l dead), a motion key that
+        // does nothing reads as broken, so fall back to the reading-order
+        // step in the same sense. But an *edge* of a live axis is a wall the
+        // highlight should stop at: wrapping there made the key look like a
+        // teleport, so stay put instead.
+        if !field.axis_is_dead(&from, dir) {
+            return;
+        }
         let step = match dir {
             overview::Dir::Left | overview::Dir::Up => -1,
             overview::Dir::Right | overview::Dir::Down => 1,
@@ -147,6 +172,12 @@ impl App {
             return;
         }
         if down {
+            // A press inside the bounce window is a remapper's re-press around
+            // a key it rewrote, not the user starting a new gesture: drop the
+            // pending release and carry on with the gesture already running.
+            if self.pending_super_release.take().is_some() {
+                return;
+            }
             if self.super_held_since.is_none() && !self.model.overview.is_open() {
                 self.super_held_since = Some(now);
                 self.open_overview();
@@ -156,10 +187,33 @@ impl App {
         let tap = self
             .super_held_since
             .is_some_and(|since| now.duration_since(since) < SUPER_TAP);
-        self.super_held_since = None;
         if !self.model.overview.is_open() {
             // Enter or Escape already resolved the gesture while Super was
             // still down; the release must not commit a second time.
+            self.super_held_since = None;
+            return;
+        }
+        // Do not resolve yet: a remapper may be about to press Super straight
+        // back down. [`Self::settle_super_release`] finishes the job once the
+        // bounce window has passed with no re-press.
+        self.pending_super_release = Some((now, tap));
+    }
+
+    /// Resolve a Super release that has survived the bounce window.
+    ///
+    /// Called from the frame rather than from a timer thread for the same
+    /// reason the zoom is: one clock drives everything on screen, and a window
+    /// that is not drawing is not silently switching sessions either.
+    pub(crate) fn settle_super_release(&mut self, now: std::time::Instant) {
+        let Some((at, tap)) = self.pending_super_release else {
+            return;
+        };
+        if now.duration_since(at) < SUPER_BOUNCE {
+            return;
+        }
+        self.pending_super_release = None;
+        self.super_held_since = None;
+        if !self.model.overview.is_open() {
             return;
         }
         if tap && self.model.overview.focus() == self.model.session_id.as_deref() {
@@ -215,6 +269,7 @@ impl App {
         // blobs washing over the composer after the user has moved on reads
         // as lag, not as an animation.
         self.super_held_since = None;
+        self.pending_super_release = None;
         self.model.overview.abort();
         let keep = match keymap::resolve(logical_key, self.modifiers) {
             Some(action) => self.apply(action, typed),
@@ -235,12 +290,16 @@ impl App {
         logical_key: &winit::keyboard::Key,
         typed: Option<&str>,
     ) -> bool {
+        if self.model.resume.is_open() {
+            return self.resume_keydown(logical_key, typed);
+        }
         if self.model.overview.is_open() {
             return self.overview_keydown(logical_key, typed);
         }
         // A key landing while the field is still zooming out erases it in the
         // same frame: the user is typing, not gesturing.
         self.super_held_since = None;
+        self.pending_super_release = None;
         if self.model.overview.is_visible() {
             self.model.overview.abort();
         }

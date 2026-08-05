@@ -435,6 +435,7 @@ export -f cargo
                             &source_after_build,
                         )?;
                         let desktop_binary = Self::desktop_binary_name(&command);
+                        let builds_desktop2 = command.display.contains("-p jcode-desktop2");
                         let published = if let Some(binary_name) = desktop_binary {
                             Self::validate_desktop_selfdev_binary(
                                 &repo_dir,
@@ -451,6 +452,11 @@ export -f cargo
                             manifest.add_to_history(build::current_build_info(&repo_dir)?)?;
                             Some(published)
                         };
+                        let desktop_instances = if builds_desktop2 {
+                            Self::activate_desktop2_selfdev_binary(&repo_dir)?
+                        } else {
+                            0
+                        };
                         let mut request = BuildRequest::load(&request_id)?.ok_or_else(|| {
                             anyhow::anyhow!("Missing queued build request {}", request_id)
                         })?;
@@ -459,7 +465,11 @@ export -f cargo
                             .map(|published| published.version.clone())
                             .or_else(|| Some(source_after_build.version_label.clone()));
                         request.validated = true;
-                        request.last_progress = Some(if published.is_some() {
+                        request.last_progress = Some(if builds_desktop2 {
+                            format!(
+                                "desktop binary built, smoke-tested, and reloaded in {desktop_instances} running instance(s)"
+                            )
+                        } else if published.is_some() {
                             "published and smoke-tested".to_string()
                         } else {
                             "desktop binary built and smoke-tested".to_string()
@@ -519,9 +529,8 @@ export -f cargo
     /// Which desktop binary this build produced, or `None` when it is not a
     /// desktop-only build.
     ///
-    /// Derived from the command rather than assumed, because `jcode-desktop`
-    /// and `jcode-desktop2` are different binaries: validating a desktop2
-    /// build against `jcode-desktop` reads a stale artefact from some earlier
+    /// Derived from the command rather than assumed: validating a desktop2
+    /// build against another package's binary reads a stale artefact from some earlier
     /// build and fails a build that actually succeeded.
     fn desktop_binary_name(command: &SelfDevBuildCommand) -> Option<&'static str> {
         if command.display.contains("-p jcode ") {
@@ -532,13 +541,6 @@ export -f cargo
                 "jcode-desktop2.exe"
             } else {
                 "jcode-desktop2"
-            });
-        }
-        if command.display.contains("-p jcode-desktop") {
-            return Some(if cfg!(windows) {
-                "jcode-desktop.exe"
-            } else {
-                "jcode-desktop"
             });
         }
         None
@@ -580,6 +582,56 @@ export -f cargo
             );
         }
         Ok(())
+    }
+
+    #[cfg(unix)]
+    fn activate_desktop2_selfdev_binary(repo_dir: &Path) -> Result<usize> {
+        use std::io::Write;
+
+        let binary = repo_dir
+            .join("target")
+            .join(build::SELFDEV_CARGO_PROFILE)
+            .join("jcode-desktop2");
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot activate desktop2 build"))?;
+        let dir = home.join(".jcode").join("selfdev");
+        std::fs::create_dir_all(&dir)?;
+        let temporary = dir.join(format!(".desktop2-current-{}", std::process::id()));
+        {
+            let mut file = std::fs::File::create(&temporary)?;
+            writeln!(file, "{}", binary.display())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&temporary, dir.join("desktop2-current"))?;
+
+        let mut signalled = 0;
+        let instances = dir.join("desktop2-instances");
+        std::fs::create_dir_all(&instances)?;
+        for entry in std::fs::read_dir(&instances)?.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+            if comm.trim() == "jcode-desktop2"
+                // SAFETY: kill only sends a signal. Process-exit races are ignored.
+                && unsafe { libc::kill(pid, libc::SIGUSR2) } == 0
+            {
+                signalled += 1;
+            } else {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Ok(signalled)
+    }
+
+    #[cfg(not(unix))]
+    fn activate_desktop2_selfdev_binary(_repo_dir: &Path) -> Result<usize> {
+        Ok(0)
     }
 
     pub(super) async fn do_build(
@@ -947,6 +999,35 @@ export -f cargo
             })));
         }
 
+        // Desktop-only builds are activated and broadcast by the build worker.
+        // There is no server binary to publish or hand off, so running the TUI
+        // reload path here would validate a stale `jcode` artefact and fail an
+        // otherwise successful desktop build-reload.
+        let desktop_only = build_request.as_ref().is_some_and(|request| {
+            request.command.contains("-p jcode-desktop2") && !request.command.contains("-p jcode ")
+        });
+        if desktop_only {
+            let published_version = build_request
+                .as_ref()
+                .and_then(|request| request.published_version.clone());
+            return Ok(ToolOutput::new(format!(
+                "Desktop2 build completed successfully{} and every registered running desktop2 instance was asked to relaunch onto it.",
+                published_version
+                    .as_deref()
+                    .map(|version| format!(" (version `{version}`)"))
+                    .unwrap_or_default()
+            ))
+            .with_metadata(json!({
+                "phase": "reload",
+                "build_finished": true,
+                "build_succeeded": true,
+                "desktop_reloaded": true,
+                "request_id": request_id,
+                "task_id": task_id,
+                "published_version": published_version,
+            })));
+        }
+
         // Build succeeded: reload onto the freshly published binary.
         let reload_output = self
             .do_reload(
@@ -1264,10 +1345,8 @@ mod desktop_binary_tests {
         );
     }
 
-    /// The bug this guards: a desktop2 build was validated against the
-    /// `jcode-desktop` artefact, so it read whatever some earlier build had
-    /// left there and failed a build that had actually succeeded. The two are
-    /// different binaries and must be matched exactly.
+    /// The bug this guards: a desktop build must be validated against its own
+    /// artefact, not whatever some earlier build left in `target/`.
     #[test]
     fn each_desktop_build_validates_its_own_binary() {
         let desktop2 = SelfDevTool::desktop_binary_name(&command(
@@ -1276,16 +1355,6 @@ mod desktop_binary_tests {
         assert!(
             desktop2.is_some_and(|name| name.starts_with("jcode-desktop2")),
             "desktop2 build resolved to {desktop2:?}"
-        );
-
-        let desktop = SelfDevTool::desktop_binary_name(&command(
-            "scripts/dev_cargo.sh build --profile selfdev -p jcode-desktop --bin jcode-desktop",
-        ));
-        assert!(
-            desktop.is_some_and(
-                |name| name.starts_with("jcode-desktop") && !name.starts_with("jcode-desktop2")
-            ),
-            "desktop build resolved to {desktop:?}"
         );
     }
 

@@ -106,8 +106,9 @@ fn long_task_todos_qualify(todos: &[crate::todo::TodoItem]) -> bool {
     }
     todos.iter().all(|todo| {
         todo.status == "completed"
-            && todo.completion_confidence.or(todo.confidence).unwrap_or(0)
-                >= crate::todo::QUALITY_GATE_THRESHOLD
+            && crate::todo::completion_confidence_passes(
+                todo.completion_confidence.or(todo.confidence),
+            )
     })
 }
 
@@ -280,7 +281,10 @@ impl App {
 mod tests {
     use super::*;
 
-    fn todo(status: &str, completion_confidence: Option<u8>) -> crate::todo::TodoItem {
+    fn todo(
+        status: &str,
+        completion_confidence: Option<crate::todo::ConfidenceState>,
+    ) -> crate::todo::TodoItem {
         crate::todo::TodoItem {
             content: "task".to_string(),
             status: status.to_string(),
@@ -294,17 +298,19 @@ mod tests {
     #[test]
     fn weekly_gate_blocks_within_a_week_and_allows_after() {
         let week = NUDGE_INTERVAL.as_secs();
-        assert!(weekly_gate_allows(0, week));
-        assert!(weekly_gate_allows(1_000, 1_000 + week));
-        assert!(!weekly_gate_allows(1_000, 1_000 + week - 1));
-        // Fresh state (never shown) allows immediately.
+        // Fresh state (never shown, last_shown 0) allows immediately.
         assert!(weekly_gate_allows(0, week));
         assert!(weekly_gate_allows(0, u64::MAX));
+        assert!(weekly_gate_allows(1_000, 1_000 + week));
+        assert!(!weekly_gate_allows(1_000, 1_000 + week - 1));
+        // `now` before `last_shown` must saturate rather than wrap into
+        // "a week has passed" (clock skew / restored backup).
+        assert!(!weekly_gate_allows(1_000, 0));
     }
 
     #[test]
     fn long_task_qualification_requires_all_completed_and_gated_confidence() {
-        let gate = crate::todo::QUALITY_GATE_THRESHOLD;
+        let gate = crate::todo::ConfidenceState::Validated;
         // Empty list never qualifies.
         assert!(!long_task_todos_qualify(&[]));
         // Incomplete item disqualifies.
@@ -315,14 +321,14 @@ mod tests {
         // Low completion confidence disqualifies ("quality gate failed").
         assert!(!long_task_todos_qualify(&[todo(
             "completed",
-            Some(gate.saturating_sub(1))
+            Some(crate::todo::ConfidenceState::Plausible)
         )]));
         // Missing confidence disqualifies.
         assert!(!long_task_todos_qualify(&[todo("completed", None)]));
         // All completed at/above the gate qualifies.
         assert!(long_task_todos_qualify(&[
             todo("completed", Some(gate)),
-            todo("completed", Some(100)),
+            todo("completed", Some(crate::todo::ConfidenceState::Verified)),
         ]));
     }
 

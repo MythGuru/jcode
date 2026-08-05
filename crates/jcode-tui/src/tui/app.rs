@@ -53,6 +53,7 @@ mod auth;
 mod auth_account_picker_saved_accounts;
 mod catchup;
 mod commands;
+mod commands_colors;
 mod commands_dispatch;
 mod commands_improve;
 mod commands_lift;
@@ -68,6 +69,7 @@ mod event_wrappers;
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;
+pub(crate) mod idle_animation_repaint;
 mod idle_heap_release;
 mod inline_interactive;
 mod input;
@@ -79,9 +81,11 @@ mod navigation;
 mod observe;
 pub(crate) mod onboarding_flow;
 mod onboarding_flow_control;
+pub(crate) mod onboarding_graph;
 mod onboarding_repair;
 mod onboarding_sim;
 mod productivity;
+mod prompt_history;
 mod remote;
 mod remote_notifications;
 mod replay;
@@ -89,7 +93,6 @@ pub(crate) mod run_shell;
 mod runtime_memory;
 mod shortcut_hints;
 mod split_view;
-mod sponsor_disclosure;
 mod state_ui;
 mod state_ui_input_helpers;
 pub(crate) use state_ui_input_helpers::registered_command_entries;
@@ -930,6 +933,12 @@ pub struct App {
     pending_turn: bool,
     // When armed by /poke, automatically continue prompting until todos are complete.
     auto_poke_incomplete_todos: bool,
+    /// Whether auto-poke is on by default for this session (`features.auto_poke`).
+    /// When true, finishing a poke cycle (all todos complete, or a turn with no
+    /// todo list at all) must leave auto-poke armed for the next batch of work;
+    /// otherwise the default-on feature would silently switch itself off after
+    /// the first turn and never poke again. Explicit `/poke off` still wins.
+    auto_poke_default_on: bool,
     /// Whether the current auto-poke cycle has already challenged an abrupt
     /// final confidence increase. Low or missing completion confidence keeps
     /// retrying, but a spike gets one dedicated independent-validation turn.
@@ -1067,6 +1076,9 @@ pub struct App {
     /// Onboarding completion clears it so a late catalog result cannot override
     /// the model after the user has moved into a normal session.
     onboarding_auto_model_selection_active: Arc<AtomicBool>,
+    /// Model last chosen by onboarding automation. A later catalog event may
+    /// improve it only while the active model still matches this value.
+    onboarding_auto_model_selection_baseline: Arc<std::sync::Mutex<Option<String>>>,
     /// One-shot guard: have we evaluated whether to auto-start the onboarding
     /// flow on startup yet? The fresh-install path logs in at the CLI before the
     /// TUI launches, so no in-TUI login event fires; this lets us still begin the
@@ -1318,11 +1330,16 @@ pub struct App {
     todo_card_rendered_hash: u64,
     /// JSON payload for the pinned todo band (display.pin_todos). `None` when
     /// the feature is off or the session has no todos. Refreshed on tick.
+    /// The renderer wiring for these three fields is landing separately, so
+    /// they are allowed to be unread until it does.
+    #[allow(dead_code)]
     pinned_todos_payload: Option<String>,
     /// Hash of the todo payload behind `pinned_todos_payload`, used to skip
     /// re-serializing when nothing changed between ticks.
+    #[allow(dead_code)]
     pinned_todos_rendered_hash: u64,
     /// Last time the pinned todo band re-read todos from disk (1s throttle).
+    #[allow(dead_code)]
     pinned_todos_checked_at: Option<Instant>,
     last_side_panel_refresh: Option<Instant>,
     // Most recently persisted focus target for dictation routing.
@@ -1417,6 +1434,10 @@ pub struct App {
     open_resume_key: OptionalBinding,
     // Optional configured keybinding for accepting the post-error fallback offer
     fallback_switch_key: OptionalBinding,
+    // Config reload generation the keybinding snapshot above was parsed at.
+    // Polled on idle ticks so config.toml keybinding edits hot-reload
+    // without a restart.
+    keybindings_config_generation: u64,
     // Active external dictation session, if one is running
     dictation_session: Option<dictation::ActiveDictation>,
     // Whether an external dictation command is currently running
@@ -1444,8 +1465,6 @@ pub struct App {
     terminal_setup_hint_shown_this_session: bool,
     // Whether the swarm-config-is-a-prompt hint has been surfaced this session.
     swarm_hint_shown_this_session: bool,
-    // Sponsored-discovery disclosure shown yet (once per session).
-    sponsor_disclosure_shown_this_session: bool,
     subscribe_nudge: subscribe_nudge::SubscribeNudgeState,
     // Inline hotkey feedback: "pressed X → does Y" for rare known chords or
     // "X isn't bound · nearest: ..." for unknown; same slot as learn_hint.
@@ -1612,6 +1631,11 @@ pub struct App {
     /// Per-client Niri-style workspace navigation state. Previously a process
     /// global; now owned per App instance.
     workspace_client: super::workspace_client::WorkspaceClientState,
+    /// Reverse prompt-history search overlay state (Ctrl+R). None = closed.
+    prompt_history_search: Option<prompt_history::PromptHistorySearchState>,
+    /// Lazily-loaded persisted cross-session prompt history (oldest first,
+    /// deduped). None until first use; see `prompt_history.rs`.
+    persisted_prompt_history: Option<Vec<String>>,
 }
 
 /// Inert provider used by runtime modes whose output is supplied by another source.

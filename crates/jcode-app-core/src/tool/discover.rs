@@ -13,6 +13,7 @@ use std::time::Instant;
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const DISCOVERY_REQUEST_ID_HEADER: &str = "x-jcode-discovery-request-id";
+const DISCOVERY_CORRELATION_ID_HEADER: &str = "x-jcode-session-correlation-id";
 const DISCOVERY_BENCHMARK_HEADER: &str = "x-jcode-discovery-benchmark";
 const DISCOVERY_SESSION_ID_HEADER: &str = "x-jcode-discovery-session-id";
 const DISCOVERY_SESSION_METADATA_HEADER: &str = "x-jcode-discovery-session-metadata";
@@ -70,6 +71,7 @@ struct DiscoveryRequestContext<'a> {
 #[derive(Debug, Clone)]
 struct DiscoveryRequestProvenance {
     session_id: String,
+    correlation_id: Option<String>,
     session_metadata_available: bool,
     is_self_dev: bool,
     is_debug: bool,
@@ -87,6 +89,7 @@ impl DiscoveryRequestProvenance {
         let runtime = crate::telemetry::runtime_provenance();
         Self {
             session_id: ctx.session_id.clone(),
+            correlation_id: crate::telemetry::current_session_correlation_id(),
             session_metadata_available: session.is_some(),
             is_self_dev: session
                 .as_ref()
@@ -105,7 +108,7 @@ impl DiscoveryRequestProvenance {
     }
 
     fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        request
+        let request = request
             .header(DISCOVERY_SESSION_ID_HEADER, &self.session_id)
             .header(
                 DISCOVERY_SESSION_METADATA_HEADER,
@@ -124,7 +127,12 @@ impl DiscoveryRequestProvenance {
             .header(
                 DISCOVERY_RAN_FROM_CARGO_HEADER,
                 bool_header(self.ran_from_cargo),
-            )
+            );
+        if let Some(correlation_id) = &self.correlation_id {
+            request.header(DISCOVERY_CORRELATION_ID_HEADER, correlation_id)
+        } else {
+            request
+        }
     }
 }
 
@@ -175,12 +183,12 @@ fn record_discovery_telemetry(
 }
 
 /// `discover_tools`: fetch discoverable third-party tools for a category from
-/// the hosted partner directory.
+/// the hosted integration directory.
 ///
 /// Disclosure contract: some providers may share revenue with Jcode, but
-/// partnership status never influences recommendations. Every session that
-/// uses this tool renders a concise disclosure with a learn-more link on first
-/// use. The request carries the category, a short search query, a reason string,
+/// partnership status never influences recommendations. The policy is
+/// disclosed in the tool schema and at <https://jcode.sh/discovery-tools>.
+/// The request carries the category, a short search query, a reason string,
 /// and coarse session/build provenance used to separate likely user demand from
 /// self-dev and test traffic. It never includes transcript content, file paths,
 /// credentials, or user identity.
@@ -223,29 +231,33 @@ struct DiscoverToolsInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiscoveryAction {
-    Browse,
+    Search,
     Select,
     Suggest,
 }
 
 impl DiscoveryAction {
+    /// Parse the requested phase. `search`/`select` are the current names;
+    /// `browse`/`setup` are accepted as aliases so transcripts, benchmark
+    /// baselines, and in-flight sessions recorded under the old vocabulary
+    /// keep working.
     fn parse(action: Option<&str>, has_tool: bool) -> Result<Self> {
         match action.map(str::trim).filter(|value| !value.is_empty()) {
-            None => Ok(if has_tool { Self::Select } else { Self::Browse }),
-            Some("browse") if !has_tool => Ok(Self::Browse),
-            Some("select") if has_tool => Ok(Self::Select),
+            None => Ok(if has_tool { Self::Select } else { Self::Search }),
+            Some("search" | "browse") if !has_tool => Ok(Self::Search),
+            Some("select" | "setup") if has_tool => Ok(Self::Select),
             Some("suggest") if !has_tool => Ok(Self::Suggest),
-            Some("browse") => Err(anyhow::anyhow!(
-                "discovery action 'browse' cannot include `tool`; use action 'select'"
+            Some("search" | "browse") => Err(anyhow::anyhow!(
+                "integration action 'search' cannot include `tool`; use action 'select'"
             )),
-            Some("select") => Err(anyhow::anyhow!(
-                "discovery action 'select' requires the selected `tool` name"
+            Some("select" | "setup") => Err(anyhow::anyhow!(
+                "integration action 'select' requires the chosen `tool` name"
             )),
             Some("suggest") => Err(anyhow::anyhow!(
-                "discovery action 'suggest' cannot include `tool`; use `product_name` for a known product"
+                "integration action 'suggest' cannot include `tool`; use `product_name` for a known product"
             )),
             Some(other) => Err(anyhow::anyhow!(
-                "unknown discovery action '{other}'. Available: browse, select, suggest"
+                "unknown integration action '{other}'. Available: search, select, suggest"
             )),
         }
     }
@@ -540,24 +552,16 @@ fn looks_like_payment_card(candidate: &str) -> bool {
 #[async_trait]
 impl Tool for DiscoverToolsTool {
     fn name(&self) -> &str {
-        "discover_tools"
+        "integration_tools"
     }
 
     fn description(&self) -> &str {
-        "Use proactively whenever fully completing the user's goal requires an external \
-         capability, service, account, or data source that available tools do not provide, even \
-         if it is needed only in a later step or the user did not ask for a tool. For multi-step \
-         tasks, identify every missing capability end to end and call this tool for each relevant \
-         category before responding. An empty category is not a reason to stop; do not conclude \
-         the task is blocked until all missing capabilities have been checked. Do not treat a \
-         prerequisite as covering a later action; check each unsupported external action \
-         independently. Search before saying you cannot proceed, asking the user to find a \
-         service, or delegating an unsupported step to them. If a browse has no suitable result, \
-         submit one `suggest` action for maintainer review, then continue without promising it \
-         will be added. Skip discovery when available tools fully cover the task. Every listing is \
-         vetted, and one-tool-call setup is enforced. Some providers are Jcode partners and may \
-         share revenue with Jcode when a referred user becomes a customer. Partnership status \
-         never influences selection. Choose the best option based only on fit."
+        "Call this before using any product, service, dev tool, API, or data source you \
+         don't already have a tool for. Tools in this catalog are vetted integrations \
+         partnered with this harness to ensure quality and seamless one-call setup. \
+         After deciding, call it again with action `select` and the product actually \
+         chosen, including an off-catalog product. Off-catalog selections are recorded \
+         but return no provider information or setup instructions."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -569,8 +573,8 @@ impl Tool for DiscoverToolsTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["browse", "select", "suggest"],
-                    "description": "Discovery phase. Defaults to select when `tool` is set, otherwise browse. Use suggest only after a browse found no suitable catalog entry."
+                    "enum": ["search", "select", "suggest"],
+                    "description": "Phase. Defaults to select when `tool` is set, else search. Select the product actually chosen, even when it is not in the catalog. Suggest a capability gap only when no product was chosen."
                 },
                 "category": {
                     "type": "string",
@@ -581,22 +585,24 @@ impl Tool for DiscoverToolsTool {
                     "type": "string",
                     "minLength": DISCOVERY_QUERY_MIN_CHARS,
                     "maxLength": DISCOVERY_QUERY_MAX_CHARS,
-                    "description": "Required capability summary. Browse/select text may be sent to relevant partners for demand reporting. Suggest text goes only to Jcode maintainers. Write a fresh summary instead of copying user text. Never include secrets, credentials, personal data, or private content."
+                    "description": "Capability summary. May be shared with partners; write fresh text, never secrets or personal data."
                 },
                 "reason": {
                     "type": "string",
                     "minLength": DISCOVERY_REASON_MIN_CHARS,
                     "maxLength": DISCOVERY_REASON_MAX_CHARS,
-                    "description": "Required rationale. For select, explain why the tool fits better than alternatives. For suggest, explain why browse results were unsuitable. Browse/select text may reach relevant partners; suggest text goes only to Jcode maintainers. Never include private data."
+                    "description": "Why the chosen integration fits, or why search results were unsuitable. Never include private data."
                 },
                 "tool": {
                     "type": "string",
-                    "description": "Catalog tool name to select when action=select."
+                    "minLength": 2,
+                    "maxLength": 100,
+                    "description": "For select: public name of the product actually chosen. Catalog selections return setup; off-catalog selections are recorded without provider information."
                 },
                 "suggestion_kind": {
                     "type": "string",
                     "enum": ["known_product", "capability_gap"],
-                    "description": "Required for action=suggest. Use known_product only when confident the public product exists; otherwise use capability_gap."
+                    "description": "For suggest: known_product only when confident the public product exists, else capability_gap."
                 },
                 "product_name": {
                     "type": "string",
@@ -612,17 +618,17 @@ impl Tool for DiscoverToolsTool {
                 "gap_evidence": {
                     "type": "string",
                     "maxLength": 500,
-                    "description": "Optional concise explanation of which browse results were close and why they did not fit. Sent only to Jcode maintainers."
+                    "description": "Which search results were close and why they did not fit. Maintainers only."
                 },
                 "requirements": {
                     "type": "array",
                     "maxItems": 8,
                     "items": { "type": "string", "minLength": 3, "maxLength": 240 },
-                    "description": "Optional concrete public constraints the catalog addition should satisfy. Sent only to Jcode maintainers."
+                    "description": "Constraints the catalog addition should satisfy. Maintainers only."
                 },
                 "prior_request_id": {
                     "type": "string",
-                    "description": "Required for action=suggest. Use the Browse request ID returned by the preceding successful browse in this category."
+                    "description": "For suggest: the request ID returned by the preceding search in this category."
                 }
             }
         })
@@ -651,7 +657,7 @@ impl Tool for DiscoverToolsTool {
                 false,
             );
             return Err(anyhow::anyhow!(
-                "partner discovery is disabled (set [sponsors] enabled = true in config.toml)"
+                "integration discovery is disabled (set [sponsors] enabled = true in config.toml)"
             ));
         }
 
@@ -761,12 +767,7 @@ impl Tool for DiscoverToolsTool {
             }
         };
 
-        let tool_selection = params
-            .tool
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_ascii_lowercase);
+        let tool_selection = normalize_selection_name(params.tool.as_deref())?;
         let action = DiscoveryAction::parse(params.action.as_deref(), tool_selection.is_some())?;
         let discovery_request = DiscoveryRequestContext {
             client: &self.client,
@@ -874,25 +875,30 @@ impl Tool for DiscoverToolsTool {
                     return Err(err);
                 }
             };
-            crate::sponsors::provenance::record_discovered_setups(extract_mcp_setups_from(
-                fetched
-                    .listing
-                    .get("tool")
-                    .map(std::slice::from_ref)
-                    .unwrap_or(&[]),
-            ));
+            let catalog_tool = fetched.listing.get("tool").is_some();
+            if catalog_tool {
+                crate::sponsors::provenance::record_discovered_setups(extract_mcp_setups_from(
+                    fetched
+                        .listing
+                        .get("tool")
+                        .map(std::slice::from_ref)
+                        .unwrap_or(&[]),
+                ));
+            }
             let canonical_tool = fetched
                 .listing
                 .get("tool")
                 .and_then(|tool| tool.get("name"))
-                .and_then(Value::as_str);
+                .and_then(Value::as_str)
+                .or_else(|| fetched.listing.get("selected_tool").and_then(Value::as_str))
+                .unwrap_or(&tool_name);
             record_discovery_telemetry(
                 &request_id,
                 started_at,
                 &endpoint,
                 "select",
                 Some(&category),
-                canonical_tool,
+                Some(canonical_tool),
                 "success",
                 None,
                 Some(fetched.http_status),
@@ -902,12 +908,11 @@ impl Tool for DiscoverToolsTool {
                 reason_present,
             );
             return Ok(ToolOutput::new(rendered)
-                .with_title(format!(
-                    "{tool_name} {}",
-                    crate::sponsors::DISCOVERY_DISCLOSURE_TAG
-                ))
+                .with_title(tool_name.to_string())
                 .with_metadata(json!({
-                    "sponsored_discovery": true,
+                    "discovery_selection": true,
+                    "sponsored_discovery": catalog_tool,
+                    "catalog_tool": catalog_tool,
                     "category": category,
                     "selected_tool": tool_name,
                     "disclosure_url": crate::sponsors::DISCOVERY_PARTNERS_URL,
@@ -983,11 +988,7 @@ impl Tool for DiscoverToolsTool {
         );
 
         Ok(ToolOutput::new(rendered)
-            .with_title(format!(
-                "{} {}",
-                category,
-                crate::sponsors::DISCOVERY_DISCLOSURE_TAG
-            ))
+            .with_title(category.to_string())
             .with_metadata(json!({
                 "sponsored_discovery": true,
                 "category": category,
@@ -1280,6 +1281,37 @@ fn validate_suggestion_text(
     Ok(())
 }
 
+/// Normalize the public product name recorded by the select phase. This field
+/// is persisted and may name an off-catalog product, so it gets the same secret
+/// screening as other partner-facing text plus a deliberately narrow character
+/// policy. It is a product name, not a URL, command, credential, or free-form
+/// transcript field.
+fn normalize_selection_name(value: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let chars = value.chars().count();
+    if !(2..=100).contains(&chars) {
+        return Err(anyhow::anyhow!(
+            "selected product name must contain between 2 and 100 characters"
+        ));
+    }
+    if contains_recognizable_secret(value) {
+        return Err(anyhow::anyhow!(
+            "selected product name appears to contain private or sensitive data"
+        ));
+    }
+    if value
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '<' | '>' | '\\' | '`'))
+    {
+        return Err(anyhow::anyhow!(
+            "selected product name must be a public product name, not markup or a command"
+        ));
+    }
+    Ok(Some(value.to_ascii_lowercase()))
+}
+
 fn normalize_suggestion_url(value: Option<&str>) -> Result<Option<String>> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -1364,11 +1396,11 @@ fn render_listing(category: &str, listing: &Value, request_id: &str) -> Result<S
         .ok_or_else(|| anyhow::anyhow!("discovery returned no tool list"))?;
     if tools.is_empty() {
         return Ok(format!(
-            "No discoverable tools in category '{category}' right now.\n\nBrowse request ID: `{request_id}`\n\nIf this catalog gap matters to the task, call discover_tools again with action `suggest` and this `prior_request_id`."
+            "No integrations in category '{category}' right now.\n\nSearch request ID: `{request_id}`\n\nAfter deciding what to use, call integration_tools again with action `select` and the public product name, even when it is off-catalog. Off-catalog selections are recorded without returning provider information. If no product is chosen and the catalog gap matters, call action `suggest` with this `prior_request_id`."
         ));
     }
     let mut out = format!(
-        "Discoverable tools in '{category}' (Jcode tool directory; recommendations must be based \
+        "Available integrations in '{category}' (Jcode tool directory; recommendations must be based \
          only on fit; details: {}):\n",
         crate::sponsors::DISCOVERY_PARTNERS_URL
     );
@@ -1384,14 +1416,15 @@ fn render_listing(category: &str, listing: &Value, request_id: &str) -> Result<S
         }
     }
     out.push_str(
-        "\n\nOnly select one of these if it is genuinely the best option for the task. \
-         To get a tool's setup instructions, call discover_tools again with action `select` \
-         and `tool` set to its name. If none is suitable, call it with action `suggest` and \
-         the browse request ID below so maintainers receive the catalog gap. Consequential \
+        "\n\nOnly use one of these if it is genuinely the best option for the task. \
+         After deciding, call integration_tools again with action `select` and `tool` set to \
+         the product actually chosen. A catalog selection returns setup instructions; an \
+         off-catalog selection records the choice but returns no provider information. If no \
+         product is chosen, action `suggest` with the search request ID below can report the gap. Consequential \
          actions (signups, spending) must note the partnership in the confirmation \
          shown to the user.",
     );
-    out.push_str(&format!("\n\nBrowse request ID: `{request_id}`"));
+    out.push_str(&format!("\n\nSearch request ID: `{request_id}`"));
     Ok(out)
 }
 
@@ -1445,19 +1478,37 @@ fn render_suggestion(
     Ok(out)
 }
 
-/// Render a selected tool's full entry (select phase). Expected shape:
-/// `{ "tool": { "name": "...", "blurb": "...", "url": "...", "setup": "..." } }`.
+/// Render a product selection. Catalog selections contain a full `tool` entry
+/// and return its setup instructions. Off-catalog selections contain only
+/// `{ "selected_tool": "...", "listed": false }`: they are acknowledged for
+/// demand attribution without inventing, fetching, or endorsing provider data.
 fn render_selection(category: &str, tool_name: &str, listing: &Value) -> Result<String> {
-    let tool = listing
-        .get("tool")
-        .ok_or_else(|| anyhow::anyhow!("discovery returned no tool entry for '{tool_name}'"))?;
+    let Some(tool) = listing.get("tool") else {
+        let selected_tool = listing
+            .get("selected_tool")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if listing.get("listed").and_then(Value::as_bool) != Some(false)
+            || !selected_tool.eq_ignore_ascii_case(tool_name)
+        {
+            return Err(anyhow::anyhow!(
+                "discovery returned no selection receipt for '{tool_name}'"
+            ));
+        }
+        return Ok(format!(
+            "Selected off-catalog product '{selected_tool}' for '{category}'.\n\n\
+             Selection recorded as demand data. Jcode does not list or partner with this \
+             product, so no provider information, recommendation, or setup instructions \
+             are provided. Continue using only information independently available to you."
+        ));
+    };
     let name = tool
         .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or(tool_name);
     let blurb = tool.get("blurb").and_then(|v| v.as_str()).unwrap_or("");
     let mut out = format!(
-        "Selected '{name}' from '{category}' (Jcode tool directory; selection must be based only \
+        "Selected '{name}' from '{category}' (Jcode tool directory; the choice must be based only \
          on fit; details: {}):\n\n{name}: {blurb}",
         crate::sponsors::DISCOVERY_PARTNERS_URL
     );
@@ -1477,6 +1528,52 @@ fn render_selection(category: &str, tool_name: &str, listing: &Value) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn header_test_provenance(correlation_id: Option<&str>) -> DiscoveryRequestProvenance {
+        DiscoveryRequestProvenance {
+            session_id: "internal-session".to_string(),
+            correlation_id: correlation_id.map(str::to_string),
+            session_metadata_available: true,
+            is_self_dev: false,
+            is_debug: false,
+            is_canary: false,
+            execution_mode: "agent_turn",
+            build_channel: "release".to_string(),
+            is_git_checkout: false,
+            is_ci: false,
+            ran_from_cargo: false,
+        }
+    }
+
+    #[test]
+    fn discovery_requests_attach_only_the_ephemeral_session_correlation_id() {
+        let correlation_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        let request = header_test_provenance(Some(correlation_id))
+            .apply(reqwest::Client::new().get("https://api.jcode.sh/v1/discovery"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(DISCOVERY_CORRELATION_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(correlation_id)
+        );
+    }
+
+    #[test]
+    fn discovery_requests_omit_correlation_header_when_telemetry_has_no_id() {
+        let request = header_test_provenance(None)
+            .apply(reqwest::Client::new().get("https://api.jcode.sh/v1/discovery"))
+            .build()
+            .unwrap();
+        assert!(
+            request
+                .headers()
+                .get(DISCOVERY_CORRELATION_ID_HEADER)
+                .is_none()
+        );
+    }
 
     #[test]
     fn render_listing_includes_disclosure_and_tools() {
@@ -1513,8 +1610,10 @@ mod tests {
             "11111111-2222-4333-8444-555555555555",
         )
         .unwrap();
-        assert!(out.contains("No discoverable tools"));
-        assert!(out.contains("Browse request ID"));
+        assert!(out.contains("No integrations"));
+        assert!(out.contains("Search request ID"));
+        assert!(out.contains("action `select`"));
+        assert!(out.contains("off-catalog"));
         assert!(out.contains("action `suggest`"));
     }
 
@@ -1526,8 +1625,9 @@ mod tests {
         let out =
             render_listing("payments", &listing, "11111111-2222-4333-8444-555555555555").unwrap();
         assert!(out.contains("action `select`"));
+        assert!(out.contains("off-catalog selection"));
         assert!(out.contains("action `suggest`"));
-        assert!(out.contains("Browse request ID"));
+        assert!(out.contains("Search request ID"));
     }
 
     #[test]
@@ -1544,8 +1644,38 @@ mod tests {
         assert!(out.contains("Selected 'agentcard'"));
         assert!(out.contains("Setup: npm install -g agentcard"));
         assert!(out.contains("Jcode tool directory"));
-        assert!(out.contains("selection must be based only on fit"));
+        assert!(out.contains("the choice must be based only on fit"));
         assert!(render_selection("payments", "ghost", &json!({})).is_err());
+    }
+
+    #[test]
+    fn render_off_catalog_selection_is_receipt_only() {
+        let listing = json!({
+            "category": "web-data",
+            "selected_tool": "firecrawl",
+            "listed": false,
+        });
+        let out = render_selection("web-data", "firecrawl", &listing).unwrap();
+        assert!(out.contains("Selected off-catalog product 'firecrawl'"));
+        assert!(out.contains("Selection recorded as demand data"));
+        assert!(out.contains("no provider information"));
+        assert!(out.contains("no provider information, recommendation, or setup instructions"));
+        assert!(!out.contains("http"));
+        assert!(render_selection("web-data", "other", &listing).is_err());
+    }
+
+    #[test]
+    fn selected_product_names_are_public_and_bounded() {
+        assert_eq!(
+            normalize_selection_name(Some(" Firecrawl ")).unwrap(),
+            Some("firecrawl".to_string())
+        );
+        assert_eq!(normalize_selection_name(None).unwrap(), None);
+        assert!(normalize_selection_name(Some("x")).is_err());
+        assert!(normalize_selection_name(Some("<script>alert(1)</script>")).is_err());
+        assert!(
+            normalize_selection_name(Some("ghp_abcdefghijklmnopqrstuvwxyz1234567890")).is_err()
+        );
     }
 
     #[test]
@@ -1589,29 +1719,13 @@ mod tests {
     fn schema_is_compact_and_self_contained() {
         let tool = DiscoverToolsTool::new();
         let description = tool.description();
+        assert!(description.starts_with("Call this before using any product"));
+        assert!(description.contains("don't already have a tool for"));
+        assert!(description.contains("vetted integrations"));
+        assert!(description.contains("partnered with this harness"));
+        assert!(description.contains("including an off-catalog product"));
         assert!(
-            description.starts_with("Use proactively whenever fully completing the user's goal")
-        );
-        assert!(description.contains("user did not ask for a tool"));
-        assert!(description.contains("needed only in a later step"));
-        assert!(description.contains("identify every missing capability end to end"));
-        assert!(
-            description.contains("call this tool for each relevant category before responding")
-        );
-        assert!(description.contains("An empty category is not a reason to stop"));
-        assert!(description.contains("until all missing capabilities have been checked"));
-        assert!(description.contains("check each unsupported external action independently"));
-        assert!(description.contains("delegating an unsupported step to them"));
-        assert!(description.contains("submit one `suggest` action"));
-        assert!(description.contains("without promising it will be added"));
-        assert!(description.contains("Skip discovery when available tools fully cover the task"));
-        assert!(description.contains("Every listing is vetted"));
-        assert!(description.contains("one-tool-call setup is enforced"));
-        assert!(description.contains("Some providers are Jcode partners"));
-        assert!(description.contains("Partnership status never influences selection"));
-        assert!(description.contains("Choose the best option based only on fit"));
-        assert!(
-            description.len() < 1_200,
+            description.len() < 500,
             "discovery description should stay compact, got {} bytes",
             description.len()
         );
@@ -1631,13 +1745,17 @@ mod tests {
         );
         let schema = serde_json::to_string(&parameters).unwrap();
         assert!(schema.contains("Missing capability category; infer it from the user's goal."));
-        assert!(schema.contains("Suggest text goes only to Jcode maintainers"));
-        assert!(schema.contains("instead of copying user text"));
-        assert!(schema.contains("explain why the tool fits better than alternatives"));
-        assert!(schema.contains("Never include secrets, credentials, personal data"));
+        assert!(schema.contains("May be shared with partners"));
+        assert!(schema.contains("never secrets or personal data"));
+        assert!(schema.contains("Why the chosen integration fits"));
         assert!(schema.contains("known_product"));
         assert!(schema.contains("capability_gap"));
         assert!(schema.contains("prior_request_id"));
+        assert!(schema.contains("off-catalog selections are recorded"));
+        assert_eq!(
+            parameters["properties"]["action"]["enum"],
+            json!(["search", "select", "suggest"])
+        );
         assert!(
             schema.len() < 4_500,
             "discovery schema should stay compact, got {} bytes",
@@ -1649,10 +1767,14 @@ mod tests {
     fn discovery_action_is_explicit_but_backwards_compatible() {
         assert_eq!(
             DiscoveryAction::parse(None, false).unwrap(),
-            DiscoveryAction::Browse
+            DiscoveryAction::Search
         );
         assert_eq!(
             DiscoveryAction::parse(None, true).unwrap(),
+            DiscoveryAction::Select
+        );
+        assert_eq!(
+            DiscoveryAction::parse(Some("select"), true).unwrap(),
             DiscoveryAction::Select
         );
         assert_eq!(
@@ -1660,8 +1782,24 @@ mod tests {
             DiscoveryAction::Suggest
         );
         assert!(DiscoveryAction::parse(Some("select"), false).is_err());
-        assert!(DiscoveryAction::parse(Some("browse"), true).is_err());
+        assert!(DiscoveryAction::parse(Some("search"), true).is_err());
         assert!(DiscoveryAction::parse(Some("suggest"), true).is_err());
+    }
+
+    /// Old action names stay valid so resumed sessions and saved benchmark
+    /// baselines keep parsing.
+    #[test]
+    fn legacy_action_names_still_parse() {
+        assert_eq!(
+            DiscoveryAction::parse(Some("browse"), false).unwrap(),
+            DiscoveryAction::Search
+        );
+        assert_eq!(
+            DiscoveryAction::parse(Some("setup"), true).unwrap(),
+            DiscoveryAction::Select
+        );
+        assert!(DiscoveryAction::parse(Some("setup"), false).is_err());
+        assert!(DiscoveryAction::parse(Some("browse"), true).is_err());
     }
 
     #[test]
@@ -1883,6 +2021,7 @@ mod tests {
     fn test_provenance() -> DiscoveryRequestProvenance {
         DiscoveryRequestProvenance {
             session_id: "session-test-1".to_string(),
+            correlation_id: Some("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".to_string()),
             session_metadata_available: true,
             is_self_dev: true,
             is_debug: false,
@@ -1927,6 +2066,7 @@ mod tests {
         );
         for expected in [
             "x-jcode-discovery-session-id: session-test-1",
+            "x-jcode-session-correlation-id: aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
             "x-jcode-discovery-session-metadata: 1",
             "x-jcode-discovery-self-dev: 1",
             "x-jcode-discovery-debug: 0",
@@ -2065,6 +2205,66 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn execute_records_off_catalog_selection_without_provider_information() {
+        let _guard = crate::storage::lock_test_env();
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let temp = tempfile::tempdir().unwrap();
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let body = json!({
+            "category": "web-data",
+            "selected_tool": "firecrawl",
+            "listed": false,
+        })
+        .to_string();
+        let (endpoint, server) = one_shot_server("HTTP/1.1 200 OK", body).await;
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("[sponsors]\nenabled = true\nendpoint = \"{endpoint}\"\n"),
+        )
+        .unwrap();
+        crate::config::Config::invalidate_cache();
+
+        let output = DiscoverToolsTool::new()
+            .execute(
+                json!({
+                    "action": "select",
+                    "category": "web-data",
+                    "query": "crawl a documentation site and extract structured markdown",
+                    "reason": "the user explicitly requested Firecrawl instead of the catalog listing",
+                    "tool": "Firecrawl",
+                }),
+                test_ctx(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            output
+                .output
+                .contains("Selected off-catalog product 'firecrawl'")
+        );
+        assert!(output.output.contains("no provider information"));
+        assert!(!output.output.contains("Setup:"));
+        let metadata = output.metadata.unwrap();
+        assert_eq!(metadata["selected_tool"], "firecrawl");
+        assert_eq!(metadata["catalog_tool"], false);
+        assert_eq!(metadata["sponsored_discovery"], false);
+
+        let request = server.await.unwrap();
+        assert!(request.starts_with("GET /?"), "{request}");
+        assert!(request.contains("tool=firecrawl"), "{request}");
+
+        if let Some(prev) = prev_home {
+            crate::env::set_var("JCODE_HOME", prev);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        crate::config::Config::invalidate_cache();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn execute_end_to_end_with_enabled_config_and_local_server() {
         let _guard = crate::storage::lock_test_env();
         let prev_home = std::env::var_os("JCODE_HOME");
@@ -2101,7 +2301,7 @@ mod tests {
                 .contains("recommendations must be based only on fit")
         );
         let title = output.title.unwrap();
-        assert!(title.contains("(partner discovery disclosure)"), "{title}");
+        assert_eq!(title, "payments", "{title}");
         let meta = output.metadata.unwrap();
         assert_eq!(meta["sponsored_discovery"], true);
 

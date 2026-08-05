@@ -13,6 +13,8 @@ use super::{DeviceRegistry, resolve_connect_host};
 /// Parsed `/remote` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteCommand {
+    /// Activate or manage the subscription-backed Jcode Cloud host.
+    Cloud,
     /// Show gateway state, dial address, and paired devices.
     Status,
     /// Enable the gateway in config.
@@ -39,11 +41,12 @@ pub fn parse_remote_command(input: &str) -> Option<Result<RemoteCommand, String>
 
     let mut parts = rest.split_whitespace();
     let Some(sub) = parts.next() else {
-        return Some(Ok(RemoteCommand::Status));
+        return Some(Ok(RemoteCommand::Cloud));
     };
 
     let command = match sub.to_ascii_lowercase().as_str() {
-        "status" => RemoteCommand::Status,
+        "cloud" | "setup" => RemoteCommand::Cloud,
+        "status" | "local" => RemoteCommand::Status,
         "on" | "enable" => RemoteCommand::On,
         "off" | "disable" => RemoteCommand::Off,
         "pair" => RemoteCommand::Pair,
@@ -57,7 +60,7 @@ pub fn parse_remote_command(input: &str) -> Option<Result<RemoteCommand, String>
         }
         other => {
             return Some(Err(format!(
-                "Unknown /remote subcommand: {other}\nUsage: /remote [status|on|off|pair|revoke <device>]"
+                "Unknown /remote subcommand: {other}\nUsage: /remote [cloud|status|on|off|pair|revoke <device>]"
             )));
         }
     };
@@ -65,7 +68,7 @@ pub fn parse_remote_command(input: &str) -> Option<Result<RemoteCommand, String>
     // Only `revoke` takes an argument.
     if !matches!(command, RemoteCommand::Revoke(_)) && parts.next().is_some() {
         return Some(Err(format!(
-            "/remote {sub} takes no arguments\nUsage: /remote [status|on|off|pair|revoke <device>]"
+            "/remote {sub} takes no arguments\nUsage: /remote [cloud|status|on|off|pair|revoke <device>]"
         )));
     }
 
@@ -304,14 +307,14 @@ mod tests {
     }
 
     #[test]
-    fn bare_remote_shows_status() {
+    fn bare_remote_starts_cloud_activation() {
         assert_eq!(
             parse_remote_command("/remote"),
-            Some(Ok(RemoteCommand::Status))
+            Some(Ok(RemoteCommand::Cloud))
         );
         assert_eq!(
             parse_remote_command("  /remote  "),
-            Some(Ok(RemoteCommand::Status))
+            Some(Ok(RemoteCommand::Cloud))
         );
     }
 
@@ -319,6 +322,9 @@ mod tests {
     fn subcommands_and_aliases_parse() {
         for (input, expected) in [
             ("/remote status", RemoteCommand::Status),
+            ("/remote cloud", RemoteCommand::Cloud),
+            ("/remote setup", RemoteCommand::Cloud),
+            ("/remote local", RemoteCommand::Status),
             ("/remote on", RemoteCommand::On),
             ("/remote enable", RemoteCommand::On),
             ("/remote off", RemoteCommand::Off),
@@ -430,10 +436,13 @@ mod tests {
     }
 
     /// Environment-mutating tests must not run concurrently with each other.
-    /// This must be the crate-wide shared lock: JCODE_HOME is process-global
-    /// state, and a module-local mutex would still race every other test file
-    /// that reads or writes it under crate::storage::lock_test_env().
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    /// These tests mutate the process-global `JCODE_HOME`, so they must
+    /// serialize against *every* other test that does, not just against each
+    /// other. A module-private lock only excluded the three tests below, which
+    /// left them racing the config and provider suites: a test here would swap
+    /// `JCODE_HOME` out from under a provider test mid-assertion, failing it
+    /// intermittently whenever the two modules happened to interleave.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         crate::storage::lock_test_env()
     }
 
@@ -475,7 +484,7 @@ mod tests {
     /// value survives the round trip.
     #[test]
     fn enabling_the_gateway_preserves_unrelated_config() {
-        let _lock = env_lock();
+        let _lock = lock_env();
         let home = HomeGuard::new(
             "[gateway]\nenabled = false\nport = 7643\nbind_addr = \"0.0.0.0\"\n\n\
              [compaction]\nlookahead_turns = 9\n",
@@ -501,7 +510,7 @@ mod tests {
     /// A no-op toggle should not claim a restart is needed.
     #[test]
     fn toggling_to_the_current_value_reports_unchanged() {
-        let _lock = env_lock();
+        let _lock = lock_env();
         let _home = HomeGuard::new("[gateway]\nenabled = false\nport = 7643\n");
 
         assert_eq!(
@@ -513,7 +522,7 @@ mod tests {
     /// Revoking must remove only the requested device and persist the result.
     #[test]
     fn revoke_removes_only_the_named_device() {
-        let _lock = env_lock();
+        let _lock = lock_env();
         let _home = HomeGuard::new("[gateway]\nenabled = true\n");
 
         registry(vec![
