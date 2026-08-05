@@ -65,6 +65,54 @@ pub struct SessionActivitySnapshot {
     pub current_tool_name: Option<String>,
 }
 
+/// Server-validated caller identity carried only on the internal wire request.
+/// The model-facing peer tool schema never exposes these fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerCaller {
+    pub session_id: String,
+    pub generation: u64,
+    pub capability: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerState {
+    Idle,
+    Busy,
+    Offline,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerInfo {
+    pub alias: String,
+    pub group: String,
+    pub project: String,
+    pub state: PeerState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerOutcome {
+    Replied,
+    CompletedWithoutReply,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerResult {
+    pub status: PeerOutcome,
+    pub message_id: String,
+    pub from: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsageTotals {
     pub messages_with_token_usage: usize,
@@ -638,6 +686,10 @@ impl Request {
             Request::CommSubscribeChannel { id, .. } => *id,
             Request::CommUnsubscribeChannel { id, .. } => *id,
             Request::CommAwaitMembers { id, .. } => *id,
+            Request::PeerList { id, .. } => *id,
+            Request::PeerSend { id, .. } => *id,
+            Request::PeerReply { id, .. } => *id,
+            Request::PeerCancel { id, .. } => *id,
         }
     }
 
@@ -674,6 +726,10 @@ impl Request {
                 | Request::CommSubscribeChannel { .. }
                 | Request::CommUnsubscribeChannel { .. }
                 | Request::CommAwaitMembers { .. }
+                | Request::PeerList { .. }
+                | Request::PeerSend { .. }
+                | Request::PeerReply { .. }
+                | Request::PeerCancel { .. }
         )
     }
 }

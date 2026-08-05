@@ -718,6 +718,37 @@ pub enum Request {
         #[serde(default = "default_true")]
         wake: bool,
     },
+
+    /// List allowlisted peers visible to the validated caller.
+    #[serde(rename = "peer_list")]
+    PeerList { id: u64, caller: PeerCaller },
+
+    /// Start one bounded synchronous peer exchange.
+    #[serde(rename = "peer_send")]
+    PeerSend {
+        id: u64,
+        caller: PeerCaller,
+        to: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tldr: Option<String>,
+    },
+
+    /// Record the single reply permitted by an inbound peer turn.
+    #[serde(rename = "peer_reply")]
+    PeerReply {
+        id: u64,
+        caller: PeerCaller,
+        message: String,
+    },
+
+    /// Cancel a sender-owned exchange when its waiting tool call is interrupted.
+    #[serde(rename = "peer_cancel")]
+    PeerCancel {
+        id: u64,
+        caller: PeerCaller,
+        message_id: String,
+    },
 }
 
 /// Server event sent to client
@@ -731,6 +762,18 @@ pub enum ServerEvent {
     /// Acknowledgment of request
     #[serde(rename = "ack")]
     Ack { id: u64 },
+
+    #[serde(rename = "peer_list_result")]
+    PeerListResult { id: u64, peers: Vec<PeerInfo> },
+
+    #[serde(rename = "peer_send_result")]
+    PeerSendResult { id: u64, result: PeerResult },
+
+    #[serde(rename = "peer_reply_accepted")]
+    PeerReplyAccepted { id: u64, message_id: String },
+
+    #[serde(rename = "peer_cancelled")]
+    PeerCancelled { id: u64, message_id: String },
 
     /// Streaming text delta
     #[serde(rename = "text_delta")]

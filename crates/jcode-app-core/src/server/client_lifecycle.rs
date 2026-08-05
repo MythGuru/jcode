@@ -2762,6 +2762,17 @@ pub(super) async fn handle_client(
                 .await;
             }
 
+            Request::PeerList { id, .. }
+            | Request::PeerSend { id, .. }
+            | Request::PeerReply { id, .. }
+            | Request::PeerCancel { id, .. } => {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id,
+                    message: "peer requests require a lightweight control connection".to_string(),
+                    retry_after_secs: None,
+                });
+            }
+
             // These are handled via channels, not direct requests from TUI
             Request::ClientDebugCommand { id, .. } => {
                 handle_client_debug_command(id, &client_event_tx).await;
