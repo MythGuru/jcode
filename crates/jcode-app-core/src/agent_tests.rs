@@ -1817,3 +1817,19 @@ async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
         "{text:?}"
     );
 }
+
+#[tokio::test]
+async fn feature_off_tool_definitions_match_the_pre_peer_baseline() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider).await;
+    let mut definitions = registry.definitions(None).await;
+    crate::tool::filter_tool_definitions_for_features(&mut definitions, false);
+    Agent::apply_selfdev_tool_surface(&mut definitions, false);
+
+    let actual = serde_json::to_string_pretty(&definitions).expect("serialize tool definitions");
+    assert_eq!(
+        actual,
+        include_str!("../tests/fixtures/pre_peer_tool_definitions.json")
+    );
+}

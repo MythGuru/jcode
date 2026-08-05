@@ -1,0 +1,2223 @@
+[
+  {
+    "name": "agentgrep",
+    "description": "Search code and file names. Defaults to grep mode when mode is omitted.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "Single file to inspect. Required for outline.",
+          "type": "string"
+        },
+        "glob": {
+          "description": "Optional file glob filter such as **/*.rs. Omit to search everything.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "max_files": {
+          "description": "Maximum number of files to return for find/trace-style modes.",
+          "type": "integer"
+        },
+        "max_regions": {
+          "description": "Maximum number of matching regions to return.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode: grep (default), find (file names), outline (one file), trace (relationship DSL).",
+          "enum": [
+            "grep",
+            "find",
+            "outline",
+            "trace"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory or file to search, relative to the workspace. Omit to search the whole workspace.",
+          "type": "string"
+        },
+        "paths_only": {
+          "description": "Return only matching paths instead of match excerpts where supported.",
+          "type": "boolean"
+        },
+        "query": {
+          "description": "Search query. Required for grep (literal unless regex=true); optional ranking terms for find.",
+          "type": "string"
+        },
+        "regex": {
+          "description": "In grep mode, treat query as a regex. Defaults to false (literal).",
+          "type": "boolean"
+        },
+        "terms": {
+          "description": "Trace DSL terms, e.g. [\"subject:auth_status\", \"relation:rendered\"]. Not for grep/find; use query.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "description": "Optional ripgrep file type filter, such as rs, py, js, ts, or md.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "apply_patch",
+    "description": "Apply a Codex-style *** Begin Patch / *** End Patch patch. Prefer over patch.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "patch_text": {
+          "description": "Patch text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "patch_text",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "bash",
+    "description": "Run a Windows cmd.exe command (compatibility name `bash`). Use cmd.exe syntax, not Bash.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "command": {
+          "description": "The Windows command to execute via cmd.exe. Use cmd.exe syntax and quoting, not Bash syntax.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "justification": {
+          "description": "Only when re-issuing a command the destructive gate refused; explain which user request it serves.",
+          "type": "string"
+        },
+        "notify": {
+          "description": "Notify on completion.",
+          "type": "boolean"
+        },
+        "run_in_background": {
+          "description": "Run in background. Emit `JCODE_PROGRESS {json}` lines for progress reporting.",
+          "type": "boolean"
+        },
+        "timeout": {
+          "description": "Timeout in MILLISECONDS (not seconds), e.g. 600000 = 10min; kills with exit 124. Omit for no timeout.",
+          "type": "integer"
+        },
+        "wake": {
+          "description": "Wake on completion.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "batch",
+    "description": "Run tools in parallel.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "additionalProperties": true,
+            "properties": {
+              "intent": {
+                "description": "Required short label shown in the UI: why this call is being made.",
+                "type": "string"
+              },
+              "tool": {
+                "description": "Tool name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool",
+              "intent"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "tool_calls",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "bg",
+    "description": "Manage background tasks. Prefer action='wait' over polling or sleeping.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action. Prefer wait over polling; watch is an alias for delivery.",
+          "enum": [
+            "list",
+            "status",
+            "output",
+            "tail",
+            "cancel",
+            "cleanup",
+            "watch",
+            "delivery",
+            "subscribe",
+            "wait"
+          ],
+          "type": "string"
+        },
+        "dry_run": {
+          "description": "For cleanup, report what would be removed without deleting.",
+          "type": "boolean"
+        },
+        "graceful_timeout_ms": {
+          "description": "For cancel, grace period for detached process termination before force kill.",
+          "type": "integer"
+        },
+        "include_output_preview": {
+          "description": "When wait returns, include a recent output preview. Failed tasks include a preview by default.",
+          "type": "boolean"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "latest": {
+          "description": "Use latest matching task when task_id is omitted.",
+          "type": "boolean"
+        },
+        "lines": {
+          "description": "Alias for tail_lines.",
+          "type": "integer"
+        },
+        "max_age_hours": {
+          "description": "Cleanup age in hours.",
+          "type": "integer"
+        },
+        "max_wait_seconds": {
+          "description": "For wait: max seconds to block. Default 60, cap 3600, 0 = immediate check.",
+          "type": "integer"
+        },
+        "notify": {
+          "description": "When using delivery/watch/subscribe, whether to notify on completion. Defaults to true.",
+          "type": "boolean"
+        },
+        "return_on_progress": {
+          "description": "For wait: return on the first progress/checkpoint event too. Defaults to true.",
+          "type": "boolean"
+        },
+        "session_only": {
+          "description": "Restrict list/implicit selection to current session.",
+          "type": "boolean"
+        },
+        "status_filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Status filter string or array: running, completed, failed, superseded, terminal, all."
+        },
+        "tail_lines": {
+          "description": "Return only the last N output lines for output/tail/wait preview.",
+          "type": "integer"
+        },
+        "task_id": {
+          "description": "Task ID.",
+          "type": "string"
+        },
+        "task_ids": {
+          "description": "Task IDs for multi-task wait/status.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "wait_mode": {
+          "description": "For multi-task wait, return on any completion, all completions, or first failure. Defaults to any.",
+          "enum": [
+            "any",
+            "all",
+            "first_failure"
+          ],
+          "type": "string"
+        },
+        "wake": {
+          "description": "When using delivery/watch/subscribe, whether to wake on completion. Defaults to true.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "browser",
+    "description": "Control the browser. Check action='status' first; run setup only if not ready.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action. Check 'status' first; run 'setup' only when the bridge is not ready.",
+          "enum": [
+            "status",
+            "setup",
+            "list_tabs",
+            "new_tab",
+            "select_tab",
+            "get_active_tab",
+            "list_frames",
+            "open",
+            "snapshot",
+            "get_content",
+            "interactables",
+            "click",
+            "type",
+            "fill_form",
+            "select",
+            "wait",
+            "screenshot",
+            "eval",
+            "scroll",
+            "upload",
+            "press",
+            "provider_command"
+          ],
+          "type": "string"
+        },
+        "all_frames": {
+          "type": "boolean"
+        },
+        "behavior": {
+          "type": "string"
+        },
+        "browser": {
+          "description": "Browser.",
+          "enum": [
+            "auto",
+            "firefox",
+            "chrome",
+            "safari",
+            "edge"
+          ],
+          "type": "string"
+        },
+        "clear": {
+          "type": "boolean"
+        },
+        "contains": {
+          "type": "string"
+        },
+        "fields": {
+          "description": "Form fields.",
+          "items": {
+            "properties": {
+              "checked": {
+                "type": "boolean"
+              },
+              "selector": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "selector"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "focus": {
+          "type": "boolean"
+        },
+        "format": {
+          "description": "Format.",
+          "enum": [
+            "annotated",
+            "text",
+            "textFast",
+            "html",
+            "title"
+          ],
+          "type": "string"
+        },
+        "frame_id": {
+          "type": "integer"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "new_tab": {
+          "type": "boolean"
+        },
+        "page_world": {
+          "type": "boolean"
+        },
+        "params": {
+          "description": "Raw provider params.",
+          "type": "object"
+        },
+        "path": {
+          "type": "string"
+        },
+        "position": {
+          "type": "string"
+        },
+        "provider_action": {
+          "description": "Provider command name.",
+          "type": "string"
+        },
+        "script": {
+          "description": "JavaScript for action='eval'. The bridge runs this as a FUNCTION BODY, so you must use an explicit `return`. `return document.title` works; a bare expression like `document.title` or `1+1` evaluates and is discarded, yielding null with type 'undefined'.",
+          "type": "string"
+        },
+        "scroll_to": {
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "submit": {
+          "type": "boolean"
+        },
+        "tab_id": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "timeout_ms": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        },
+        "wait": {
+          "type": "boolean"
+        },
+        "window_id": {
+          "description": "Scope the action to one browser window when multiple agents share the browser.",
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "conversation_search",
+    "description": "Search conversation history.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Search query.",
+          "type": "string"
+        },
+        "stats": {
+          "description": "Return stats.",
+          "type": "boolean"
+        },
+        "turns": {
+          "description": "Turn range.",
+          "properties": {
+            "end": {
+              "description": "End turn.",
+              "type": "integer"
+            },
+            "start": {
+              "description": "Start turn.",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "start",
+            "end"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "edit",
+    "description": "Replace text in a file.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "file_path": {
+          "description": "File path.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "new_string": {
+          "description": "Replacement text.",
+          "type": "string"
+        },
+        "old_string": {
+          "description": "Text to replace.",
+          "type": "string"
+        },
+        "replace_all": {
+          "description": "Replace all matches.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "file_path",
+        "old_string",
+        "new_string",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "gmail",
+    "description": "Use Gmail.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action. 'connect' sets up Gmail access via a browser OAuth screen the user approves.",
+          "enum": [
+            "connect",
+            "search",
+            "read",
+            "list",
+            "draft",
+            "send",
+            "send_draft",
+            "threads",
+            "thread",
+            "labels",
+            "trash",
+            "modify_labels"
+          ],
+          "type": "string"
+        },
+        "add_labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attachments": {
+          "description": "Absolute file paths to attach (for draft/send actions).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "body": {
+          "type": "string"
+        },
+        "confirmed": {
+          "description": "Confirm.",
+          "type": "boolean"
+        },
+        "draft_id": {
+          "type": "string"
+        },
+        "in_reply_to": {
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "label_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_results": {
+          "type": "integer"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "remove_labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "initiative",
+    "description": "Manage durable initiatives.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action.",
+          "enum": [
+            "create",
+            "list",
+            "show",
+            "resume",
+            "update",
+            "checkpoint",
+            "focus",
+            "ready",
+            "verify_step"
+          ],
+          "type": "string"
+        },
+        "authority": {
+          "description": "verify_step authority. evidence (default) uses this session's build/test events; user records explicit user confirmation and must only be used after the user actually confirmed.",
+          "enum": [
+            "evidence",
+            "user"
+          ],
+          "type": "string"
+        },
+        "blockers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "checkpoint_summary": {
+          "type": "string"
+        },
+        "current_milestone_id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "milestones": {
+          "items": {
+            "additionalProperties": true,
+            "properties": {
+              "steps": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "next_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "note": {
+          "description": "For verify_step with authority=user: what the user said, briefly.",
+          "type": "string"
+        },
+        "progress_percent": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "step_id": {
+          "description": "Step id (verify_step).",
+          "type": "string"
+        },
+        "success_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "why": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "integration_tools",
+    "description": "Call this before using any product, service, dev tool, API, or data source you don't already have a tool for. Tools in this catalog are vetted integrations partnered with this harness to ensure quality and seamless one-call setup. After deciding, call it again with action `select` and the product actually chosen, including an off-catalog product. Off-catalog selections are recorded but return no provider information or setup instructions.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Phase. Defaults to select when `tool` is set, else search. Select the product actually chosen, even when it is not in the catalog. Suggest a capability gap only when no product was chosen.",
+          "enum": [
+            "search",
+            "select",
+            "suggest"
+          ],
+          "type": "string"
+        },
+        "category": {
+          "description": "Missing capability category; infer it from the user's goal.",
+          "enum": [
+            "payments",
+            "code-review",
+            "databases",
+            "browser-automation",
+            "deployment",
+            "observability",
+            "authentication",
+            "security",
+            "storage",
+            "analytics",
+            "web-search",
+            "web-data",
+            "financial-data",
+            "cloud-infrastructure",
+            "compliance-and-privacy",
+            "integration-platforms",
+            "email-messaging",
+            "ai-models",
+            "other"
+          ],
+          "type": "string"
+        },
+        "gap_evidence": {
+          "description": "Which search results were close and why they did not fit. Maintainers only.",
+          "maxLength": 500,
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "prior_request_id": {
+          "description": "For suggest: the request ID returned by the preceding search in this category.",
+          "type": "string"
+        },
+        "product_name": {
+          "description": "Required only for a known_product suggestion. Public product, package, service, or MCP name.",
+          "maxLength": 100,
+          "minLength": 2,
+          "type": "string"
+        },
+        "product_url": {
+          "description": "Optional public HTTPS URL for a known_product suggestion. Never include credentials or private URLs.",
+          "maxLength": 500,
+          "type": "string"
+        },
+        "query": {
+          "description": "Capability summary. May be shared with partners; write fresh text, never secrets or personal data.",
+          "maxLength": 500,
+          "minLength": 20,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the chosen integration fits, or why search results were unsuitable. Never include private data.",
+          "maxLength": 2000,
+          "minLength": 40,
+          "type": "string"
+        },
+        "requirements": {
+          "description": "Constraints the catalog addition should satisfy. Maintainers only.",
+          "items": {
+            "maxLength": 240,
+            "minLength": 3,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
+        "suggestion_kind": {
+          "description": "For suggest: known_product only when confident the public product exists, else capability_gap.",
+          "enum": [
+            "known_product",
+            "capability_gap"
+          ],
+          "type": "string"
+        },
+        "tool": {
+          "description": "For select: public name of the product actually chosen. Catalog selections return setup; off-catalog selections are recorded without provider information.",
+          "maxLength": 100,
+          "minLength": 2,
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "query",
+        "reason",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "invalid",
+    "description": "Report invalid tool usage. Use only when a tool call is malformed.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "error": {
+          "description": "Validation error.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "tool": {
+          "description": "Tool name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "error",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "knowledge",
+    "description": "Maintain the project's living knowledge map (structure, decisions, rules, known problems, responsibilities). Entries start as proposed; they become verified only after builds/tests pass (action=verify) or the user explicitly confirms them in conversation (action=confirm).",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action. verify uses this session's build/test evidence; confirm records explicit user confirmation and must only be used after the user actually confirmed.",
+          "enum": [
+            "show",
+            "propose",
+            "revise",
+            "verify",
+            "confirm",
+            "remove",
+            "history"
+          ],
+          "type": "string"
+        },
+        "content": {
+          "description": "Entry text (propose/revise).",
+          "type": "string"
+        },
+        "id": {
+          "description": "Entry id (revise/verify/confirm/remove).",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "note": {
+          "description": "For confirm: what the user said, briefly.",
+          "type": "string"
+        },
+        "section": {
+          "description": "Map section (propose action).",
+          "enum": [
+            "structure",
+            "decision",
+            "rule",
+            "problem",
+            "responsibility"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "ls",
+    "description": "List directory contents.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "ignore": {
+          "description": "Ignore patterns.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory",
+    "description": "Manage memory.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action. Core actions remain available even when core-memory prompt injection is disabled.",
+          "enum": [
+            "remember",
+            "recall",
+            "search",
+            "list",
+            "forget",
+            "tag",
+            "link",
+            "related",
+            "working",
+            "note",
+            "rehearse",
+            "promote",
+            "set_importance",
+            "core_show",
+            "core_recall",
+            "core_propose",
+            "core_confirm"
+          ],
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "fact",
+            "preference",
+            "entity",
+            "correction"
+          ],
+          "type": "string"
+        },
+        "content": {
+          "description": "Memory content. Required for remember, note, and core_propose.",
+          "type": "string"
+        },
+        "from_id": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Memory id, or proposal id for core_confirm. For core_propose, optionally targets an existing global entry.",
+          "type": "string"
+        },
+        "importance": {
+          "description": "Importance 0.0-1.0 (set_importance action).",
+          "type": "number"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Working-memory item kind (note action).",
+          "enum": [
+            "goal",
+            "constraint",
+            "fact",
+            "decision",
+            "open"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max results.",
+          "type": "integer"
+        },
+        "query": {
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "project",
+            "global",
+            "all"
+          ],
+          "type": "string"
+        },
+        "tags": {
+          "description": "Tags. core_propose defaults to [core] and always forces core into the set.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "to_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "multiedit",
+    "description": "Apply multiple edits to one file.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "edits": {
+          "description": "Array of edit operations to apply sequentially",
+          "items": {
+            "properties": {
+              "new_string": {
+                "description": "The replacement text",
+                "type": "string"
+              },
+              "old_string": {
+                "description": "The text to find and replace",
+                "type": "string"
+              },
+              "replace_all": {
+                "description": "Replace all occurrences (default: false)",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "file_path": {
+          "description": "The path to the file to edit",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_path",
+        "edits",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "open",
+    "description": "Open or reveal a file, folder, or URL for the user.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Open action. Use 'open' to open the target or 'reveal' to show it in the file manager.",
+          "enum": [
+            "open",
+            "reveal"
+          ],
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Open target.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "patch",
+    "description": "Apply a unified diff (---/+++ headers). Prefer apply_patch for Codex patches.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "patch_text": {
+          "description": "Patch text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "patch_text",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "read",
+    "description": "Read a file. Supports text files, image files, and PDFs.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "file_path": {
+          "description": "Path to a file.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max text lines to read. Default 5000.",
+          "type": "integer"
+        },
+        "start_line": {
+          "description": "1-based start line for text files.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file_path",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "schedule",
+    "description": "Schedule, list, or cancel future tasks.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action to perform. Defaults to create for backwards compatibility.",
+          "enum": [
+            "create",
+            "list",
+            "cancel"
+          ],
+          "type": "string"
+        },
+        "background_context": {
+          "description": "Optional background context for the scheduled task.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "priority": {
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ],
+          "type": "string"
+        },
+        "relevant_files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schedule_id": {
+          "description": "Scheduled task ID. Required for action=cancel.",
+          "type": "string"
+        },
+        "success_criteria": {
+          "type": "string"
+        },
+        "target": {
+          "description": "Delivery target. Defaults to resuming this session; 'spawn' runs one new child session.",
+          "enum": [
+            "resume",
+            "spawn",
+            "ambient"
+          ],
+          "type": "string"
+        },
+        "task": {
+          "description": "Task. Required for action=create.",
+          "type": "string"
+        },
+        "wake_at": {
+          "type": "string"
+        },
+        "wake_in_minutes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "selfdev",
+    "description": "Enter self-dev mode to work on jcode itself: setup, reload, find config/paths.",
+    "input_schema": {
+      "properties": {
+        "action": {
+          "description": "Action. `enter` starts a self-dev session; `setup` installs prerequisites; `reload` restarts jcode.",
+          "enum": [
+            "enter",
+            "setup",
+            "reload",
+            "status",
+            "find-config"
+          ],
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "Optional task to seed the spawned self-dev session when action=enter.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "session_search",
+    "description": "Search past chat sessions. Current session and tool noise hidden by default.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "after": {
+          "description": "Only include sessions/messages at or after this RFC3339 timestamp or YYYY-MM-DD date.",
+          "type": "string"
+        },
+        "before": {
+          "description": "Only include sessions/messages at or before this RFC3339 timestamp or YYYY-MM-DD date.",
+          "type": "string"
+        },
+        "canary": {
+          "description": "Restrict Jcode sessions by canary flag.",
+          "type": "boolean"
+        },
+        "context_after": {
+          "description": "Number of following messages to include around each hit.",
+          "maximum": 5,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "context_before": {
+          "description": "Number of preceding messages to include around each hit.",
+          "maximum": 5,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "debug": {
+          "description": "Restrict Jcode sessions by debug/test flag.",
+          "type": "boolean"
+        },
+        "exhaustive": {
+          "description": "Search every session instead of the recent indexed subset. Slower; for deep recall.",
+          "type": "boolean"
+        },
+        "include_current": {
+          "description": "Include the current active session. Defaults to false.",
+          "type": "boolean"
+        },
+        "include_external": {
+          "description": "Include external session sources discovered by the session picker. Defaults to true.",
+          "type": "boolean"
+        },
+        "include_system": {
+          "description": "Include system reminders and display/system messages. Defaults to false.",
+          "type": "boolean"
+        },
+        "include_tools": {
+          "description": "Include raw tool calls and tool results. Defaults to false to reduce log noise.",
+          "type": "boolean"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max results.",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_per_session": {
+          "description": "Maximum hits to return from one session. Defaults to 1 for result diversity.",
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_scan_sessions": {
+          "description": "Bound the number of recent sessions scanned per source.",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Restrict by model substring.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Restrict by provider/source substring, e.g. openai, claude, codex, pi, opencode, cursor.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Search query. Use distinctive keywords; stop-word-only queries are rejected.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Restrict results to a role or to metadata-only hits. Defaults to all transcript roles plus metadata.",
+          "enum": [
+            "all",
+            "user",
+            "assistant",
+            "metadata"
+          ],
+          "type": "string"
+        },
+        "saved": {
+          "description": "Restrict Jcode sessions by saved/bookmarked flag.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "Restrict session source. Defaults to all available sources.",
+          "enum": [
+            "all",
+            "jcode",
+            "claude",
+            "codex",
+            "pi",
+            "opencode",
+            "cursor"
+          ],
+          "type": "string"
+        },
+        "working_dir": {
+          "description": "Only sessions whose working directory matches this path prefix (case-insensitive).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "side_panel",
+    "description": "Manage side panel pages.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action.",
+          "enum": [
+            "status",
+            "write",
+            "append",
+            "load",
+            "focus",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "content": {
+          "description": "Page content.",
+          "type": "string"
+        },
+        "file_path": {
+          "description": "File path.",
+          "type": "string"
+        },
+        "focus": {
+          "description": "Focus the page.",
+          "type": "boolean"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "page_id": {
+          "description": "Page ID.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Page title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "skill_manage",
+    "description": "Manage skills.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action.",
+          "enum": [
+            "load",
+            "list",
+            "reload",
+            "reload_all",
+            "read"
+          ],
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Skill name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "swarm",
+    "description": "Coordinate agents: spawn workers with a prompt, message them, and manage swarm plans.\n\nSwarm prompt (user-tunable via ~/.jcode/swarm-prompt.md):\n<!--\r\nThis file IS the swarm config. Swarms are complicated, dynamic systems, so\r\nrouting policy is passed to the models as a prompt rather than as options in\r\na standard config file. Edit freely: override globally at\r\n~/.jcode/swarm-prompt.md or per-project at ./.jcode/swarm-prompt.md.\r\n-->\r\n\r\nModel routing guidance for spawned swarm agents. Pass `model` (and optionally\r\n`effort`) when spawning or assigning swarm work. Run `swarm list_models` first\r\nwhen you need to confirm which models/routes are actually available.\r\n\r\n- Default worker model: Fable 5 via the Anthropic API route (`claude-api:claude-fable-5`).\r\n- Implementation tasks: `gpt-5.5` with `effort: \"low\"`.\r\n- Design, investigation, debugging, review, and verification: `claude-api:claude-fable-5`.\r\n- Context fetching / bulk reading / summarization: `gpt-5.5` with `effort: \"none\"`.\r\n- If the requested route is unavailable, or the user asked for a specific model,\r\n  or you are unsure, omit `model` so the worker inherits the coordinator's model.\r\n\r\nStructure guidance for spawned swarm agents:\r\n\r\n- Always pass `label` when spawning (e.g. `label: \"api reviewer\"`) so the swarm\r\n  UI shows what each agent is for. The explicit `spawn` action rejects missing or\r\n  blank labels.\r\n- In normal and light-swarm mode, only the root session may spawn agents. Workers\r\n  must complete their assigned task directly and report back rather than creating\r\n  another generation.\r\n- Recursive spawning is reserved for a root running in `swarm-deep` mode. In that\r\n  mode the spawner owns its children, and manager-style decomposition may create\r\n  deeper subtrees when it materially improves coverage.",
+    "input_schema": {
+      "anyOf": [
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "spawn"
+              ],
+              "type": "string"
+            },
+            "label": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "label"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "share",
+                "share_append",
+                "read",
+                "message",
+                "broadcast",
+                "dm",
+                "channel",
+                "list",
+                "list_channels",
+                "channel_members",
+                "propose_plan",
+                "approve_plan",
+                "reject_plan",
+                "stop",
+                "assign_role",
+                "status",
+                "report",
+                "plan_status",
+                "summary",
+                "read_context",
+                "resync_plan",
+                "assign_task",
+                "assign_next",
+                "fill_slots",
+                "run_plan",
+                "cleanup",
+                "task_graph",
+                "expand_node",
+                "complete_node",
+                "inject_gap",
+                "start",
+                "start_task",
+                "wake",
+                "resume",
+                "retry",
+                "reassign",
+                "replace",
+                "salvage",
+                "subscribe_channel",
+                "unsubscribe_channel",
+                "await_members",
+                "list_models"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "action": {
+          "description": "Action. spawn requires label and should include prompt. list_models shows available models/routes.",
+          "enum": [
+            "share",
+            "share_append",
+            "read",
+            "message",
+            "broadcast",
+            "dm",
+            "channel",
+            "list",
+            "list_channels",
+            "channel_members",
+            "propose_plan",
+            "approve_plan",
+            "reject_plan",
+            "spawn",
+            "stop",
+            "assign_role",
+            "status",
+            "report",
+            "plan_status",
+            "summary",
+            "read_context",
+            "resync_plan",
+            "assign_task",
+            "assign_next",
+            "fill_slots",
+            "run_plan",
+            "cleanup",
+            "task_graph",
+            "expand_node",
+            "complete_node",
+            "inject_gap",
+            "start",
+            "start_task",
+            "wake",
+            "resume",
+            "retry",
+            "reassign",
+            "replace",
+            "salvage",
+            "subscribe_channel",
+            "unsubscribe_channel",
+            "await_members",
+            "list_models"
+          ],
+          "type": "string"
+        },
+        "artifact": {
+          "additionalProperties": true,
+          "description": "Handoff artifact for complete_node: findings, evidence[], validation, open_questions[], confidence.",
+          "type": "object"
+        },
+        "background": {
+          "description": "For run_plan: detach as a background task (default true); false blocks until the plan resolves.",
+          "type": "boolean"
+        },
+        "channel": {
+          "description": "Channel name for channel actions. Discouraged: prefer DMs and task-graph artifacts.",
+          "type": "string"
+        },
+        "concurrency_limit": {
+          "description": "Max live workers. Required for fill_slots; optional override for run_plan.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "delivery": {
+          "description": "Optional delivery mode for dm/channel messaging.",
+          "enum": [
+            "notify",
+            "interrupt",
+            "wake"
+          ],
+          "type": "string"
+        },
+        "effort": {
+          "description": "Optional reasoning effort for spawned agents. Omit for the model default.",
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
+        "follow_up": {
+          "description": "For action=report: blockers or follow-up work.",
+          "type": "string"
+        },
+        "force": {
+          "description": "For stop/cleanup: allow stopping non-owned/user-created swarm sessions. Defaults to false.",
+          "type": "boolean"
+        },
+        "gate_id": {
+          "description": "Gate node id for inject_gap (a critique/verify gate the caller owns).",
+          "type": "string"
+        },
+        "initial_message": {
+          "description": "Alias of prompt for spawn; wins when both are set.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Shared-context key for share/share_append/read. Discouraged: prefer the repo and node artifacts.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Required for spawn. Short label shown on the agent's chip (e.g. 'api reviewer').",
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "description": "Optional max items for summary-style reads.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "message": {
+          "description": "Message body: DM with to_session, channel post with channel, else broadcast. For report, the body.",
+          "type": "string"
+        },
+        "mode": {
+          "description": "task_graph: deep (gated) or light (fan-out). await_members: all or any.",
+          "enum": [
+            "all",
+            "any",
+            "deep",
+            "light"
+          ],
+          "type": "string"
+        },
+        "model": {
+          "description": "Model for spawned agents, e.g. 'gpt-5.5' or 'claude-api:opus'. Omit to inherit; see list_models.",
+          "type": "string"
+        },
+        "node_id": {
+          "description": "Task-DAG node id for expand_node/complete_node.",
+          "type": "string"
+        },
+        "nodes": {
+          "description": "Node specs for task_graph/expand_node/inject_gap. Each: {id, content, kind?, depends_on?, priority?}.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "notify": {
+          "description": "For await_members/run_plan: show a notification when resolved. Defaults to true.",
+          "type": "boolean"
+        },
+        "plan_items": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "prefer_spawn": {
+          "description": "For assign_task: prefer spawning fresh over reusing an idle worker.",
+          "type": "boolean"
+        },
+        "prompt": {
+          "description": "Initial task/instructions for spawn. Spawning without it creates an idle agent.",
+          "type": "string"
+        },
+        "proposer_session": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "retain_agents": {
+          "description": "For run_plan: keep spawned workers after the plan finishes. Defaults to false.",
+          "type": "boolean"
+        },
+        "role": {
+          "enum": [
+            "agent",
+            "coordinator"
+          ],
+          "type": "string"
+        },
+        "session_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "spawn_if_needed": {
+          "description": "For assign_task: spawn a fresh agent when no reusable one is available.",
+          "type": "boolean"
+        },
+        "spawn_mode": {
+          "description": "Spawn UI mode: visible terminal, headless, inline gallery, or auto. Defaults to inline.",
+          "enum": [
+            "visible",
+            "headless",
+            "inline",
+            "auto"
+          ],
+          "type": "string"
+        },
+        "status": {
+          "description": "For report: usually ready, blocked, failed, or completed. Defaults to ready.",
+          "type": "string"
+        },
+        "target_session": {
+          "description": "Session ID or unique friendly name for management actions. Alias of to_session.",
+          "type": "string"
+        },
+        "target_status": {
+          "description": "Optional completion statuses for await_members. Defaults to ready/completed/stopped/failed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "task_id": {
+          "description": "Optional plan task ID. When omitted the coordinator picks or resumes the relevant task.",
+          "type": "string"
+        },
+        "timeout_minutes": {
+          "description": "Optional timeout for await_members.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tldr": {
+          "description": "One-line summary under ~120 chars. Required for message/report bodies longer than 240 chars.",
+          "type": "string"
+        },
+        "to_session": {
+          "description": "Session ID or unique friendly name of one agent. Alias of target_session.",
+          "type": "string"
+        },
+        "validation": {
+          "description": "For action=report: tests or validation performed.",
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "wake": {
+          "description": "Wake this agent when a message or awaited background task resolves (default true).",
+          "type": "boolean"
+        },
+        "working_dir": {
+          "description": "Optional working directory for spawn.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "todo",
+    "description": "Read or update structured todo items and optional goal-level assessments.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "goals": {
+          "description": "Goal-level assessments, one per todo group (null = ungrouped). Omitted groups are retained.",
+          "items": {
+            "properties": {
+              "autonomy": {
+                "description": "How far beyond the literal request the work went. Assess from what was completed.",
+                "enum": [
+                  "requested_only",
+                  "necessary_followthrough",
+                  "proactive",
+                  "stewardship"
+                ],
+                "type": "string"
+              },
+              "closed_feedback_loop": {
+                "description": "How much of this goal's correctness the feedback_loop can verify on its own.",
+                "enum": [
+                  "absent",
+                  "weak",
+                  "usable",
+                  "strong",
+                  "closed"
+                ],
+                "type": "string"
+              },
+              "delivery_state": {
+                "description": "Completion-time: how far the result actually traveled toward the user's outcome.",
+                "enum": [
+                  "change_made",
+                  "integrated",
+                  "workflow_validated",
+                  "outcome_delivered"
+                ],
+                "type": "string"
+              },
+              "difficulty": {
+                "description": "Honest intrinsic difficulty of this goal. Descriptive only.",
+                "enum": [
+                  "trivial",
+                  "routine",
+                  "involved",
+                  "complex",
+                  "hard",
+                  "expert",
+                  "research",
+                  "open_ended"
+                ],
+                "type": "string"
+              },
+              "feedback_loop": {
+                "description": "Requirement-to-check process: an explicit observation or check for each requirement of this goal.",
+                "type": "string"
+              },
+              "group": {
+                "description": "Group label this goal describes. Omit or null for the ungrouped list.",
+                "type": "string"
+              },
+              "iteration_maturity": {
+                "description": "How far the feedback loop was actually exercised, and any evidence-based reason to stop iterating.",
+                "enum": [
+                  "not_started",
+                  "exploring",
+                  "improving",
+                  "plateau_unproven",
+                  "outcome_reached",
+                  "constraints_exhausted",
+                  "plateau_confirmed",
+                  "budget_exhausted"
+                ],
+                "type": "string"
+              },
+              "stopping_evidence": {
+                "description": "Evidence for the reported iteration_maturity: attempts, observations, or a real budget limit.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "closed_feedback_loop",
+              "feedback_loop"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "plan": {
+          "description": "Plan-level understanding of the request. Send on first write and whenever understanding changes.",
+          "properties": {
+            "understands_user_intent": {
+              "description": "How well you understand what the user wants. Report uncertain or partial when guessing.",
+              "enum": [
+                "uncertain",
+                "partial",
+                "clear",
+                "complete"
+              ],
+              "type": "string"
+            },
+            "user_intention": {
+              "description": "What the user actually wants: underlying reason and desired end state. Omit later to retain.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "user_intention",
+            "understands_user_intent"
+          ],
+          "type": "object"
+        },
+        "todos": {
+          "description": "Todo list to save.",
+          "items": {
+            "properties": {
+              "completion_confidence": {
+                "description": "Evidence state behind this todo's completion. Use only for completed items.",
+                "enum": [
+                  "speculative",
+                  "plausible",
+                  "validated",
+                  "verified"
+                ],
+                "type": "string"
+              },
+              "confidence": {
+                "description": "Evidence state that this todo can be completed correctly; reassess as evidence accumulates.",
+                "enum": [
+                  "speculative",
+                  "plausible",
+                  "validated",
+                  "verified"
+                ],
+                "type": "string"
+              },
+              "content": {
+                "description": "Task.",
+                "type": "string"
+              },
+              "group": {
+                "description": "Optional group label; one group per coherent goal, new direction = new group. Omit for flat list.",
+                "type": "string"
+              },
+              "id": {
+                "description": "ID.",
+                "type": "string"
+              },
+              "priority": {
+                "description": "Priority.",
+                "type": "string"
+              },
+              "status": {
+                "description": "Status.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "status",
+              "priority",
+              "id",
+              "confidence"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "webfetch",
+    "description": "Fetch a URL.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "format": {
+          "description": "Output format.",
+          "enum": [
+            "text",
+            "markdown",
+            "html"
+          ],
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Timeout in seconds.",
+          "type": "integer"
+        },
+        "url": {
+          "description": "URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "websearch",
+    "description": "Search the web.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "bing_market": {
+          "description": "Optional Bing market, e.g. en-US or zh-CN. Defaults to JCODE_BING_MARKET or en-US.",
+          "type": "string"
+        },
+        "engine": {
+          "description": "Engine. Defaults to duckduckgo; bing uses JCODE_BING_API_KEY, searxng uses JCODE_SEARXNG_URL.",
+          "enum": [
+            "duckduckgo",
+            "bing",
+            "searxng"
+          ],
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        },
+        "num_results": {
+          "description": "Max results.",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "intent"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "write",
+    "description": "Write a file.",
+    "input_schema": {
+      "properties": {
+        "accept_large_output": {
+          "description": "Re-run accepting the stated token cost of a withheld result.",
+          "type": "boolean"
+        },
+        "content": {
+          "description": "File content.",
+          "type": "string"
+        },
+        "file_path": {
+          "description": "File path.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Required short label shown in the UI: why this call is being made.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_path",
+        "content",
+        "intent"
+      ],
+      "type": "object"
+    }
+  }
+]

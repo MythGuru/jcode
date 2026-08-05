@@ -75,7 +75,11 @@ impl App {
                 self.handle_compaction_event(event);
             }
 
-            let tools = self.registry.definitions(None).await;
+            let mut tools = self.registry.definitions(None).await;
+            crate::tool::filter_tool_definitions_for_features(
+                &mut tools,
+                crate::config::config().features.peer_messaging,
+            );
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             let memory_pending = self.build_memory_prompt_nonblocking(&provider_messages);
             // Use split prompt for better caching - static content cached, dynamic not

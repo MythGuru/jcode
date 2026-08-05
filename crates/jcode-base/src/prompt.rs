@@ -1046,5 +1046,18 @@ fn load_preferred_tools_files_from_dir(working_dir: Option<&Path>) -> (Option<St
 }
 
 #[cfg(test)]
+mod peer_feature_baseline_tests {
+    use super::*;
+
+    #[test]
+    fn built_in_prompt_matches_the_pre_peer_baseline() {
+        assert_eq!(
+            DEFAULT_SYSTEM_PROMPT,
+            include_str!("../tests/fixtures/pre_peer_system_prompt.md")
+        );
+    }
+}
+
+#[cfg(test)]
 #[path = "prompt_tests.rs"]
 mod prompt_tests;

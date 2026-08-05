@@ -53,6 +53,21 @@ pub use jcode_tool_core::{
 pub use jcode_tool_types::{ToolImage, ToolOutput};
 pub(crate) use session_search::spawn_recent_index_warmup;
 
+/// Apply runtime feature gates to an already-built tool-definition surface.
+///
+/// The registry is process-global and intentionally contains every native tool.
+/// Feature isolation therefore happens only at definition exposure time, through
+/// this one shared filter used by agent turns, debug introspection, and the TUI
+/// local path. Keeping the decision here prevents those surfaces from drifting.
+pub fn filter_tool_definitions_for_features(
+    tools: &mut Vec<ToolDefinition>,
+    peer_messaging_enabled: bool,
+) {
+    if !peer_messaging_enabled {
+        tools.retain(|tool| tool.name != "peer");
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct SessionToolPolicy {
     allowed_tools: Option<HashSet<String>>,

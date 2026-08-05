@@ -424,6 +424,10 @@ impl Agent {
         if !self.disabled_tools.is_empty() {
             tools.retain(|tool| !self.disabled_tools.contains(&tool.name));
         }
+        crate::tool::filter_tool_definitions_for_features(
+            &mut tools,
+            crate::config::config().features.peer_messaging,
+        );
         Self::apply_selfdev_tool_surface(&mut tools, self.session.is_canary);
         tools
     }
@@ -435,7 +439,7 @@ impl Agent {
     /// surface; every other session keeps the lightweight on-ramp surface
     /// (`enter`, `setup`, `reload`, `status`, `find-config`). The tool stays
     /// available in all sessions so the agent can always enter self-dev mode.
-    fn apply_selfdev_tool_surface(tools: &mut [ToolDefinition], is_canary: bool) {
+    pub(super) fn apply_selfdev_tool_surface(tools: &mut [ToolDefinition], is_canary: bool) {
         for tool in tools.iter_mut() {
             if tool.name == "selfdev" {
                 tool.description =
@@ -476,6 +480,10 @@ impl Agent {
         if !self.disabled_tools.is_empty() {
             tools.retain(|tool| !self.disabled_tools.contains(&tool.name));
         }
+        crate::tool::filter_tool_definitions_for_features(
+            &mut tools,
+            crate::config::config().features.peer_messaging,
+        );
         Self::apply_selfdev_tool_surface(&mut tools, self.session.is_canary);
         tools
     }
