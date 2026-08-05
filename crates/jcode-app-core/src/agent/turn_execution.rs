@@ -455,6 +455,16 @@ impl Agent {
         tools
     }
 
+    /// Test-only accessor for the real prompt-facing tool surface.
+    ///
+    /// Feature-isolation tests must exercise this exact production path rather
+    /// than reimplementing the filtering, otherwise they can pass while the
+    /// live surface leaks a feature-gated tool.
+    #[cfg(test)]
+    pub(crate) async fn build_filtered_tool_definitions_for_test(&self) -> Vec<ToolDefinition> {
+        self.build_filtered_tool_definitions().await
+    }
+
     /// Tailor the `selfdev` tool definition to the session mode.
     ///
     /// The registry stores a single shared `selfdev` tool with a default

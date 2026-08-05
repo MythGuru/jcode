@@ -1831,3 +1831,40 @@ async fn feature_off_tool_definitions_match_the_pre_peer_baseline() {
     let expected = include_str!("../tests/fixtures/pre_peer_tool_definitions.json");
     assert_eq!(actual.replace("\r\n", "\n"), expected.replace("\r\n", "\n"));
 }
+
+/// The real prompt-facing and debug-facing surfaces must not expose `peer`
+/// while the feature is disabled.
+///
+/// This drives `Agent::build_filtered_tool_definitions` and
+/// `Agent::tool_definitions_for_debug` through their actual production entry
+/// points instead of reimplementing the filter, so the test cannot pass while a
+/// live surface leaks the tool.
+#[tokio::test]
+async fn feature_off_real_agent_surfaces_do_not_expose_peer() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+
+    // The stateless tool stays in the shared base registry; only the feature
+    // filter removes it. Assert that first, otherwise the surface assertions
+    // below could pass simply because the tool was never registered.
+    let unfiltered = registry.definitions(None).await;
+    assert!(
+        unfiltered.iter().any(|tool| tool.name == "peer"),
+        "peer tool missing from the base registry, so the surface assertions below prove nothing"
+    );
+
+    let agent = Agent::new(provider, registry);
+
+    let prompt_surface = agent.build_filtered_tool_definitions_for_test().await;
+    assert!(
+        !prompt_surface.iter().any(|tool| tool.name == "peer"),
+        "disabled peer tool leaked into the prompt-facing tool surface"
+    );
+
+    let debug_surface = agent.tool_definitions_for_debug().await;
+    assert!(
+        !debug_surface.iter().any(|tool| tool.name == "peer"),
+        "disabled peer tool leaked into the debug tool surface"
+    );
+}
