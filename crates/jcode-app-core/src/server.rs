@@ -2438,4 +2438,7 @@ impl Server {
 pub use self::client_api::Client;
 
 #[cfg(test)]
+mod client_peer_round_trip_tests;
+
+#[cfg(test)]
 mod tests;

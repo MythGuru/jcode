@@ -403,6 +403,18 @@ impl TurnCoordinator {
                 .is_some_and(|session| session.active.is_some())
     }
 
+    #[cfg(test)]
+    pub(super) fn active_context_for_test(&self, session_id: &str) -> Option<TurnExecutionContext> {
+        let state = self.lock_state();
+        let active = state.sessions.get(session_id)?.active.as_ref()?;
+        Some(TurnExecutionContext {
+            origin: active.origin.clone(),
+            server_session_id: Some(session_id.to_string()),
+            turn_generation: Some(active.generation),
+            turn_capability: Some(active.capability.clone()),
+        })
+    }
+
     pub(super) fn begin_server_turn(
         &self,
         session_id: &str,
