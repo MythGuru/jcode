@@ -412,6 +412,13 @@ async fn apply_subscribe_working_dir_keeps_project_when_client_reports_home() {
         registry,
         Some(&project_str),
     )));
+    let peer_home = tempfile::TempDir::new().expect("empty peer config home");
+    let peer_groups = jcode_base::peer_groups::PeerGroups::load_from_jcode_home(peer_home.path())
+        .expect("load empty peer groups");
+    let peer_exchanges = crate::server::peer_exchange::PeerExchangeRegistry::new(
+        crate::server::turn_coordinator::TurnCoordinator::default(),
+        std::time::Duration::from_secs(60),
+    );
 
     assert_eq!(
         agent.lock().await.working_dir(),
@@ -420,7 +427,13 @@ async fn apply_subscribe_working_dir_keeps_project_when_client_reports_home() {
     );
 
     // A client whose inherited cwd is home must not re-pin the session.
-    apply_or_defer_subscribe_working_dir(&agent, &home_str, "session_test_481");
+    apply_or_defer_subscribe_working_dir(
+        &agent,
+        &home_str,
+        "session_test_481",
+        &peer_groups,
+        &peer_exchanges,
+    );
     assert_eq!(
         agent.lock().await.working_dir(),
         Some(project_str.as_str()),
@@ -430,7 +443,13 @@ async fn apply_subscribe_working_dir_keeps_project_when_client_reports_home() {
     // A genuine project-to-project move still applies.
     let other = home.join("jcode-481-other");
     let other_str = other.to_string_lossy().to_string();
-    apply_or_defer_subscribe_working_dir(&agent, &other_str, "session_test_481");
+    apply_or_defer_subscribe_working_dir(
+        &agent,
+        &other_str,
+        "session_test_481",
+        &peer_groups,
+        &peer_exchanges,
+    );
     assert_eq!(
         agent.lock().await.working_dir(),
         Some(other_str.as_str()),
@@ -622,6 +641,161 @@ async fn subscribe_directory_change_invalidates_peer_identity_before_async_bookk
 
     drop(swarms_blocker);
     subscribe_task.await.expect("subscribe task");
+    drop(sender_lease);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn busy_unpinned_subscribe_refuses_reported_peer_identity_until_agent_moves() {
+    let home = tempfile::TempDir::new().expect("peer config home");
+    let eve_dir = tempfile::TempDir::new().expect("Eve project");
+    let atlas_dir = tempfile::TempDir::new().expect("Atlas project");
+    let config = serde_json::json!({
+        "version": 1,
+        "groups": [{
+            "name": "reviewers",
+            "members": [
+                { "alias": "Eve", "working_dir": eve_dir.path() },
+                { "alias": "Atlas", "working_dir": atlas_dir.path() }
+            ]
+        }]
+    });
+    std::fs::write(
+        home.path().join("peer-groups.json"),
+        serde_json::to_vec(&config).expect("serialize peer config"),
+    )
+    .expect("write peer config");
+    let peer_groups = jcode_base::peer_groups::PeerGroups::load_from_jcode_home(home.path())
+        .expect("load peer groups");
+
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let sender_id = "busy-unpinned-sender";
+    let recipient_id = "busy-unpinned-recipient";
+    let sender_agent = Arc::new(Mutex::new(build_test_agent_with_id(
+        provider.clone(),
+        registry.clone(),
+        sender_id,
+        Vec::new(),
+    )));
+    let recipient_agent = Arc::new(Mutex::new(build_test_agent_with_id(
+        provider,
+        registry.clone(),
+        recipient_id,
+        Vec::new(),
+    )));
+    sender_agent
+        .lock()
+        .await
+        .set_working_dir(&eve_dir.path().to_string_lossy());
+    recipient_agent
+        .lock()
+        .await
+        .set_working_dir(&eve_dir.path().to_string_lossy());
+    let sessions = Arc::new(RwLock::new(HashMap::from([
+        (sender_id.to_string(), sender_agent),
+        (recipient_id.to_string(), Arc::clone(&recipient_agent)),
+    ])));
+
+    let mut sender_member = test_swarm_member(sender_id, "ready");
+    sender_member.working_dir = Some(eve_dir.path().to_path_buf());
+    let mut recipient_member = test_swarm_member(recipient_id, "running");
+    recipient_member.working_dir = Some(eve_dir.path().to_path_buf());
+    let swarm_members = Arc::new(RwLock::new(HashMap::from([
+        (sender_id.to_string(), sender_member),
+        (recipient_id.to_string(), recipient_member),
+    ])));
+    let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+        "swarm-test".to_string(),
+        HashSet::from([sender_id.to_string(), recipient_id.to_string()]),
+    )])));
+    let channel_subscriptions = Arc::new(RwLock::new(HashMap::<
+        String,
+        HashMap<String, HashSet<String>>,
+    >::new()));
+    let channel_subscriptions_by_session = Arc::new(RwLock::new(HashMap::<
+        String,
+        HashMap<String, HashSet<String>>,
+    >::new()));
+    let swarm_plans = Arc::new(RwLock::new(HashMap::<String, VersionedPlan>::new()));
+    let swarm_coordinators = Arc::new(RwLock::new(HashMap::<String, String>::new()));
+    let (client_event_tx, _client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
+    let event_history = Arc::new(RwLock::new(VecDeque::<SwarmEvent>::new()));
+    let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (swarm_event_tx, _swarm_event_rx) = broadcast::channel::<SwarmEvent>(8);
+    let mcp_pool = Arc::new(crate::mcp::SharedMcpPool::from_default_config());
+    let coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+    let peer_exchanges = crate::server::peer_exchange::PeerExchangeRegistry::new(
+        coordinator.clone(),
+        std::time::Duration::from_secs(60),
+    );
+    peer_exchanges.pin_or_invalidate_session(sender_id, eve_dir.path(), &peer_groups);
+    let sender_lease = coordinator
+        .begin_server_turn(sender_id, crate::tool::TurnOrigin::NormalUser)
+        .expect("sender turn");
+    let sender_context = sender_lease.context().clone();
+
+    // Holding the Agent lock forces subscribe's working-directory update into
+    // the deferred task. Until that task can move the Agent from Eve to Atlas,
+    // the session must remain ineligible as Atlas.
+    let recipient_guard = recipient_agent.lock().await;
+    let mut client_selfdev = false;
+    handle_subscribe(
+        92,
+        Some(atlas_dir.path().to_string_lossy().to_string()),
+        None,
+        false,
+        &mut client_selfdev,
+        recipient_id,
+        "busy-unpinned-connection",
+        &None,
+        &recipient_agent,
+        &registry,
+        true,
+        &swarm_members,
+        &swarms_by_id,
+        &channel_subscriptions,
+        &channel_subscriptions_by_session,
+        &swarm_plans,
+        &swarm_coordinators,
+        &client_event_tx,
+        &mcp_pool,
+        &event_history,
+        &event_counter,
+        &swarm_event_tx,
+        &peer_groups,
+        &peer_exchanges,
+    )
+    .await;
+
+    let premature_start = {
+        let sessions = sessions.read().await;
+        let members = swarm_members.read().await;
+        peer_exchanges.resolve_and_register(
+            &sender_context,
+            "Atlas",
+            &peer_groups,
+            sessions.keys().map(String::as_str),
+            |session_id| {
+                members.get(session_id).is_some_and(|member| {
+                    !member.event_txs.is_empty() || !member.event_tx.is_closed()
+                })
+            },
+        )
+    };
+    match premature_start {
+        Err(crate::server::peer_exchange::PeerStartError::TargetOffline(alias)) => {
+            assert_eq!(alias, "Atlas")
+        }
+        Err(other) => panic!("expected premature Atlas identity to be refused, got {other:?}"),
+        Ok(start) => {
+            let exchange_id = start.exchange_id.clone();
+            drop(start);
+            let _ = peer_exchanges.cancel_exchange(&exchange_id);
+            panic!("peer start authorized Atlas while its Agent still worked in Eve");
+        }
+    }
+
+    drop(recipient_guard);
     drop(sender_lease);
 }
 

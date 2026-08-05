@@ -435,6 +435,43 @@ impl PeerExchangeRegistry {
         }
     }
 
+    /// Prepare a synchronous working-directory application while the caller
+    /// holds the Agent lock. Existing eligible identities are invalidated before
+    /// a move; a never-pinned session stays unpinned until the new directory is
+    /// actually stored, then the caller may pin it without an await gap.
+    pub(super) fn prepare_working_dir_application(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+        peer_groups: &PeerGroups,
+    ) -> bool {
+        let resolved = peer_groups.identity_for_dir(working_dir);
+        let mut state = self.lock_state();
+        match state.pinned_identities.get(session_id) {
+            None => true,
+            Some(PinnedSessionIdentity::Eligible(current)) => {
+                let unchanged = resolved.is_some_and(|(group, member)| {
+                    group.name == current.group_name
+                        && member.alias.eq_ignore_ascii_case(&current.alias)
+                        && member.working_dir == current.working_dir
+                });
+                if !unchanged {
+                    state
+                        .pinned_identities
+                        .insert(session_id.to_string(), PinnedSessionIdentity::Invalidated);
+                }
+                false
+            }
+            Some(PinnedSessionIdentity::Invalidated) => false,
+        }
+    }
+
+    pub(super) fn invalidate_session(&self, session_id: &str) {
+        self.lock_state()
+            .pinned_identities
+            .insert(session_id.to_string(), PinnedSessionIdentity::Invalidated);
+    }
+
     pub(super) fn pinned_session_identity(&self, session_id: &str) -> Option<PinnedPeerIdentity> {
         let state = self.lock_state();
         match state.pinned_identities.get(session_id) {

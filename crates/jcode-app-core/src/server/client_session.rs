@@ -502,9 +502,24 @@ fn apply_or_defer_subscribe_working_dir(
     agent: &Arc<Mutex<Agent>>,
     working_dir: &str,
     session_id: &str,
+    peer_groups: &jcode_base::peer_groups::PeerGroups,
+    peer_exchanges: &super::peer_exchange::PeerExchangeRegistry,
 ) {
     let home = dirs::home_dir();
     if let Ok(mut agent_guard) = agent.try_lock() {
+        let bound_dir = effective_subscribe_working_dir(
+            agent_guard.working_dir(),
+            working_dir,
+            home.as_deref(),
+        );
+        // Hold the Agent lock across invalidation, applying the directory, and
+        // any first pin. A new identity is never eligible before the effective
+        // working directory has actually changed.
+        let should_pin_after_apply = peer_exchanges.prepare_working_dir_application(
+            session_id,
+            Path::new(&bound_dir),
+            peer_groups,
+        );
         match subscribe_working_dir_replacement(
             agent_guard.working_dir(),
             working_dir,
@@ -519,9 +534,21 @@ fn apply_or_defer_subscribe_working_dir(
                 }
             }
         }
+        if should_pin_after_apply {
+            peer_exchanges.pin_or_invalidate_session(
+                session_id,
+                Path::new(&bound_dir),
+                peer_groups,
+            );
+        }
         return;
     }
 
+    // The Agent is busy, so its directory cannot change synchronously. Refuse
+    // peer eligibility before publishing or deferring any new directory. This
+    // is intentionally sticky: an unpinned headless session must not become an
+    // eligible peer for a reported project while its Agent still works elsewhere.
+    peer_exchanges.invalidate_session(session_id);
     let agent = Arc::clone(agent);
     let working_dir = working_dir.to_string();
     let session_id = session_id.to_string();
@@ -642,11 +669,13 @@ pub(super) async fn handle_subscribe(
             effective_subscribe_working_dir(current.as_deref(), dir, dirs::home_dir().as_deref())
         };
         let new_path = PathBuf::from(&bound_dir);
-        // Fail closed before the Agent or swarm member publishes a new cwd. A
-        // concurrent peer start must never authorize this session using the old
-        // pinned project identity during later async subscribe bookkeeping.
-        peer_exchanges.pin_or_invalidate_session(client_session_id, &new_path, peer_groups);
-        apply_or_defer_subscribe_working_dir(agent, dir, client_session_id);
+        apply_or_defer_subscribe_working_dir(
+            agent,
+            dir,
+            client_session_id,
+            peer_groups,
+            peer_exchanges,
+        );
 
         let new_swarm_id = swarm_id_for_dir(Some(new_path.clone()));
         let mut old_swarm_id: Option<String> = None;
