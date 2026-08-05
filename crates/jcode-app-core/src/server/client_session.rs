@@ -1220,6 +1220,10 @@ pub(super) async fn handle_resume_session(
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    peer_identity: Option<(
+        &jcode_base::peer_groups::PeerGroups,
+        &super::peer_exchange::PeerExchangeRegistry,
+    )>,
 ) -> Result<Arc<Mutex<Agent>>> {
     let resume_start = Instant::now();
     let incoming_client_instance_id = client_instance_id.map(str::to_string);
@@ -1577,8 +1581,40 @@ pub(super) async fn handle_resume_session(
 
     let (result, is_canary) = {
         let mut agent_guard = agent.lock().await;
+        if let Some((peer_groups, peer_exchanges)) = peer_identity {
+            let restored_working_dir = working_dir_override.map(str::to_string).or_else(|| {
+                crate::session::Session::load_startup_stub(&session_id)
+                    .ok()
+                    .and_then(|session| session.working_dir)
+            });
+            match restored_working_dir {
+                Some(working_dir) => {
+                    peer_exchanges.prepare_working_dir_application(
+                        &session_id,
+                        Path::new(&working_dir),
+                        peer_groups,
+                    );
+                }
+                None => {
+                    peer_exchanges.invalidate_session(&session_id);
+                }
+            }
+        }
         let result =
             agent_guard.restore_session_with_working_dir(&session_id, working_dir_override);
+        if result.is_ok()
+            && let Some((peer_groups, peer_exchanges)) = peer_identity
+        {
+            if let Some(working_dir) = agent_guard.working_dir() {
+                peer_exchanges.pin_or_invalidate_session(
+                    &session_id,
+                    Path::new(working_dir),
+                    peer_groups,
+                );
+            } else {
+                peer_exchanges.invalidate_session(&session_id);
+            }
+        }
         if *client_selfdev {
             agent_guard.set_canary("self-dev");
         }

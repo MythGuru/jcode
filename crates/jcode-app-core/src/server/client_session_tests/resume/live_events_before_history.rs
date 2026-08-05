@@ -2,6 +2,28 @@
 async fn handle_resume_session_registers_live_events_before_history_replay() -> Result<()> {
     let _guard = crate::storage::lock_test_env();
     let (_runtime, prev_runtime) = setup_runtime_dir()?;
+    let peer_home = tempfile::TempDir::new()?;
+    let eve_dir = tempfile::TempDir::new()?;
+    let atlas_dir = tempfile::TempDir::new()?;
+    let peer_config = serde_json::json!({
+        "version": 1,
+        "groups": [{
+            "name": "reviewers",
+            "members": [
+                { "alias": "Eve", "working_dir": eve_dir.path() },
+                { "alias": "Atlas", "working_dir": atlas_dir.path() }
+            ]
+        }]
+    });
+    std::fs::write(
+        peer_home.path().join("peer-groups.json"),
+        serde_json::to_vec(&peer_config)?,
+    )?;
+    let peer_groups = jcode_base::peer_groups::PeerGroups::load_from_jcode_home(peer_home.path())?;
+    let peer_exchanges = crate::server::peer_exchange::PeerExchangeRegistry::new(
+        crate::server::turn_coordinator::TurnCoordinator::default(),
+        std::time::Duration::from_secs(60),
+    );
 
     let target_session_id = "session_restore_target";
     let temp_session_id = "session_restore_temp";
@@ -11,6 +33,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
         None,
         Some("Resume Registration Ordering".to_string()),
     );
+    persisted.working_dir = Some(eve_dir.path().to_string_lossy().to_string());
     persisted.save()?;
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -21,6 +44,11 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
         temp_session_id,
         Vec::new(),
     )));
+    agent
+        .lock()
+        .await
+        .set_working_dir(&atlas_dir.path().to_string_lossy());
+    peer_exchanges.pin_or_invalidate_session(target_session_id, eve_dir.path(), &peer_groups);
 
     let sessions = Arc::new(RwLock::new(HashMap::from([(
         temp_session_id.to_string(),
@@ -118,11 +146,14 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
         let event_history = Arc::clone(&event_history);
         let event_counter = Arc::clone(&event_counter);
         let swarm_event_tx = swarm_event_tx.clone();
+        let resume_peer_groups = peer_groups.clone();
+        let resume_peer_exchanges = peer_exchanges.clone();
+        let atlas_working_dir = atlas_dir.path().to_string_lossy().to_string();
         async move {
             handle_resume_session(
                 46,
                 target_session_id.to_string(),
-                None,
+                Some(&atlas_working_dir),
                 None,
                 false,
                 false,
@@ -153,6 +184,7 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
                 &event_history,
                 &event_counter,
                 &swarm_event_tx,
+                Some((&resume_peer_groups, &resume_peer_exchanges)),
             )
             .await
         }
@@ -179,6 +211,16 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
     assert!(
         !resume_task.is_finished(),
         "resume should still be blocked on history replay while writer is locked"
+    );
+    assert_eq!(
+        agent.lock().await.working_dir(),
+        Some(atlas_dir.path().to_string_lossy().as_ref()),
+        "precondition: restored Agent already uses the override directory"
+    );
+    assert_eq!(
+        peer_exchanges.pinned_session_identity(target_session_id),
+        None,
+        "the old Eve identity must be refused before the Atlas session becomes live"
     );
 
     drop(writer_guard);
