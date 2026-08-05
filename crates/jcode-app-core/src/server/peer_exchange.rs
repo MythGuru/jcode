@@ -1,9 +1,10 @@
 use super::turn_coordinator::{
-    ActivePeerReservation, PendingPeerStart, ServerTurnLease, TurnCoordinator,
+    ActivePeerReservation, BeginPeerError, PendingPeerStart, ServerTurnLease, TurnCoordinator,
+    TurnValidationError,
 };
 use crate::tool::{TurnExecutionContext, TurnOrigin};
 use jcode_agent_runtime::InterruptSignal;
-use jcode_base::peer_groups::PeerGroups;
+use jcode_base::peer_groups::{PeerGroup, PeerGroups, PeerMember};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -59,6 +60,32 @@ pub(super) struct PeerExchangeResult {
     pub reply: Option<String>,
     pub recipient_outcome: PeerRecipientOutcome,
     pub detail: Option<String>,
+}
+
+pub(super) struct ResolvedPeerStart {
+    pub sender: PeerMember,
+    pub recipient: PeerMember,
+    pub recipient_session_id: String,
+    pub exchange_id: String,
+    pub registered: RegisteredPeerExchange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PeerStartError {
+    InvalidSender(TurnValidationError),
+    SenderSessionMissing,
+    SenderNotConfigured,
+    TargetNotInGroup(String),
+    TargetOffline(String),
+    TargetAmbiguous(String),
+    Coordinator {
+        alias: String,
+        error: BeginPeerError,
+    },
+    Registration {
+        alias: String,
+        error: RegisterExchangeError,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +157,14 @@ pub(super) struct PeerExchangeRegistry {
     coordinator: TurnCoordinator,
     deadline: Duration,
     inner: Arc<Mutex<RegistryState>>,
+    #[cfg(test)]
+    atomic_start_hook: Arc<Mutex<Option<AtomicStartHook>>>,
+}
+
+#[cfg(test)]
+struct AtomicStartHook {
+    reached: std::sync::mpsc::SyncSender<()>,
+    proceed: std::sync::mpsc::Receiver<()>,
 }
 
 #[derive(Default)]
@@ -179,7 +214,181 @@ impl PeerExchangeRegistry {
             coordinator,
             deadline,
             inner: Arc::new(Mutex::new(RegistryState::default())),
+            #[cfg(test)]
+            atomic_start_hook: Arc::new(Mutex::new(None)),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_atomic_start_hook(
+        &self,
+        reached: std::sync::mpsc::SyncSender<()>,
+        proceed: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self
+            .atomic_start_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(AtomicStartHook { reached, proceed });
+    }
+
+    #[cfg(test)]
+    fn pause_atomic_start_for_test(&self) {
+        let mut hook = self
+            .atomic_start_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(hook) = hook.take() else {
+            return;
+        };
+        hook.reached
+            .send(())
+            .expect("atomic peer start test is waiting");
+        hook.proceed
+            .recv()
+            .expect("atomic peer start test releases transaction");
+    }
+
+    fn configured_identity<'a>(
+        peer_groups: &'a PeerGroups,
+        identity: &PinnedPeerIdentity,
+    ) -> Option<(&'a PeerGroup, &'a PeerMember)> {
+        let group = peer_groups
+            .groups()
+            .iter()
+            .find(|group| group.name == identity.group_name)?;
+        let member = group.members.iter().find(|member| {
+            member.alias.eq_ignore_ascii_case(&identity.alias)
+                && member.working_dir == identity.working_dir
+        })?;
+        Some((group, member))
+    }
+
+    pub(super) fn resolve_and_register<'a, I, F>(
+        &self,
+        sender_context: &TurnExecutionContext,
+        target_alias: &str,
+        peer_groups: &PeerGroups,
+        session_ids: I,
+        is_live: F,
+    ) -> Result<ResolvedPeerStart, PeerStartError>
+    where
+        I: IntoIterator<Item = &'a str>,
+        F: Fn(&str) -> bool,
+    {
+        self.coordinator
+            .validate_context(sender_context)
+            .map_err(PeerStartError::InvalidSender)?;
+        if !matches!(sender_context.origin, TurnOrigin::NormalUser) {
+            return Err(PeerStartError::InvalidSender(
+                TurnValidationError::OriginNotAllowed,
+            ));
+        }
+        let sender_session_id =
+            sender_context
+                .server_session_id
+                .as_deref()
+                .ok_or(PeerStartError::InvalidSender(
+                    TurnValidationError::MissingServerIdentity,
+                ))?;
+
+        // This registry lock is the peer-start transaction boundary. Callers hold
+        // the live session and attachment read guards while entering this method,
+        // so pinned identity, exact-one liveness, coordinator reservation, and
+        // exchange registration cannot observe different worlds.
+        let mut state = self.lock_state();
+        let sender_pinned = match state.pinned_identities.get(sender_session_id) {
+            Some(PinnedSessionIdentity::Eligible(identity)) => identity,
+            Some(PinnedSessionIdentity::Invalidated) | None => {
+                return Err(PeerStartError::SenderNotConfigured);
+            }
+        };
+        let (group, sender_member) = Self::configured_identity(peer_groups, sender_pinned)
+            .ok_or(PeerStartError::SenderNotConfigured)?;
+        let recipient_member = group
+            .members
+            .iter()
+            .find(|member| member.alias.eq_ignore_ascii_case(target_alias.trim()))
+            .ok_or_else(|| PeerStartError::TargetNotInGroup(target_alias.trim().to_string()))?;
+
+        let session_ids = session_ids.into_iter().collect::<Vec<_>>();
+        if !session_ids.contains(&sender_session_id) {
+            return Err(PeerStartError::SenderSessionMissing);
+        }
+        let matching = session_ids
+            .into_iter()
+            .filter(|session_id| is_live(session_id))
+            .filter(|session_id| {
+                let Some(PinnedSessionIdentity::Eligible(identity)) =
+                    state.pinned_identities.get(*session_id)
+                else {
+                    return false;
+                };
+                identity.group_name == group.name
+                    && identity.alias.eq_ignore_ascii_case(&recipient_member.alias)
+                    && identity.working_dir == recipient_member.working_dir
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let recipient_session_id = match matching.as_slice() {
+            [] => {
+                return Err(PeerStartError::TargetOffline(
+                    recipient_member.alias.clone(),
+                ));
+            }
+            [_first, _second, ..] => {
+                return Err(PeerStartError::TargetAmbiguous(
+                    recipient_member.alias.clone(),
+                ));
+            }
+            [recipient_session_id] => recipient_session_id.clone(),
+        };
+
+        #[cfg(test)]
+        self.pause_atomic_start_for_test();
+
+        let exchange_id = format!("peer_{}", uuid::Uuid::new_v4().simple());
+        let pending = self
+            .coordinator
+            .begin_peer_turn(sender_context, &recipient_session_id, exchange_id.clone())
+            .map_err(|error| PeerStartError::Coordinator {
+                alias: recipient_member.alias.clone(),
+                error,
+            })?;
+        let sender = PeerIdentity {
+            session_id: sender_session_id.to_string(),
+            alias: sender_member.alias.clone(),
+            project_name: sender_member
+                .working_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("project")
+                .to_string(),
+        };
+        let recipient = PeerIdentity {
+            session_id: recipient_session_id.clone(),
+            alias: recipient_member.alias.clone(),
+            project_name: recipient_member
+                .working_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("project")
+                .to_string(),
+        };
+        let registered = self
+            .register_locked(&mut state, pending, sender, recipient)
+            .map_err(|error| PeerStartError::Registration {
+                alias: recipient_member.alias.clone(),
+                error,
+            })?;
+
+        Ok(ResolvedPeerStart {
+            sender: sender_member.clone(),
+            recipient: recipient_member.clone(),
+            recipient_session_id,
+            exchange_id,
+            registered,
+        })
     }
 
     pub(super) fn pin_or_invalidate_session(
@@ -229,8 +438,20 @@ impl PeerExchangeRegistry {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn register(
         &self,
+        pending: PendingPeerStart,
+        sender: PeerIdentity,
+        recipient: PeerIdentity,
+    ) -> Result<RegisteredPeerExchange, RegisterExchangeError> {
+        let mut state = self.lock_state();
+        self.register_locked(&mut state, pending, sender, recipient)
+    }
+
+    fn register_locked(
+        &self,
+        state: &mut RegistryState,
         pending: PendingPeerStart,
         sender: PeerIdentity,
         recipient: PeerIdentity,
@@ -247,7 +468,6 @@ impl PeerExchangeRegistry {
             .ok_or(RegisterExchangeError::IdentityMismatch)?;
         let sender_generation = pending.sender_generation();
 
-        let mut state = self.lock_state();
         if state.exchanges.contains_key(&exchange_id) {
             return Err(RegisterExchangeError::DuplicateExchange);
         }
@@ -286,7 +506,6 @@ impl PeerExchangeRegistry {
             .session_index
             .insert(recipient.session_id.clone(), exchange_id.clone());
         state.exchanges.insert(exchange_id.clone(), active);
-        drop(state);
 
         Ok(RegisteredPeerExchange {
             #[cfg(test)]
