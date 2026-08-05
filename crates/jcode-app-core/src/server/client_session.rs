@@ -631,8 +631,6 @@ pub(super) async fn handle_subscribe(
     .await;
 
     if let Some(ref dir) = subscribe_working_dir {
-        apply_or_defer_subscribe_working_dir(agent, dir, client_session_id);
-
         // Swarm grouping must use the *bound* directory, not the raw report, or
         // a home-dir subscribe would still re-key the session's swarm even
         // though its agent stayed in the project (issue #481).
@@ -644,6 +642,12 @@ pub(super) async fn handle_subscribe(
             effective_subscribe_working_dir(current.as_deref(), dir, dirs::home_dir().as_deref())
         };
         let new_path = PathBuf::from(&bound_dir);
+        // Fail closed before the Agent or swarm member publishes a new cwd. A
+        // concurrent peer start must never authorize this session using the old
+        // pinned project identity during later async subscribe bookkeeping.
+        peer_exchanges.pin_or_invalidate_session(client_session_id, &new_path, peer_groups);
+        apply_or_defer_subscribe_working_dir(agent, dir, client_session_id);
+
         let new_swarm_id = swarm_id_for_dir(Some(new_path.clone()));
         let mut old_swarm_id: Option<String> = None;
         let mut updated_swarm_id: Option<String> = None;
