@@ -35,6 +35,27 @@ pub(super) enum BeginTurnError {
     Busy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BeginPeerError {
+    SameSession,
+    Busy,
+    InvalidSender(TurnValidationError),
+}
+
+impl fmt::Display for BeginPeerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SameSession => {
+                formatter.write_str("a session cannot send a peer message to itself")
+            }
+            Self::Busy => formatter.write_str("a participating session is busy"),
+            Self::InvalidSender(error) => write!(formatter, "invalid sender turn: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for BeginPeerError {}
+
 impl fmt::Display for BeginTurnError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -79,6 +100,103 @@ pub(super) struct ServerTurnLease {
     generation: u64,
     context: TurnExecutionContext,
     cancellation: InterruptSignal,
+}
+
+pub(super) struct PendingPeerStart {
+    coordinator: TurnCoordinator,
+    exchange_id: String,
+    sender_session_id: String,
+    sender_generation: u64,
+    sender_cancellation: InterruptSignal,
+    recipient_lease: Option<ServerTurnLease>,
+    committed: bool,
+}
+
+pub(super) struct ActivePeerReservation {
+    coordinator: TurnCoordinator,
+    exchange_id: String,
+    sender_session_id: String,
+    sender_generation: u64,
+    sender_cancellation: InterruptSignal,
+    recipient_lease: Option<ServerTurnLease>,
+}
+
+impl PendingPeerStart {
+    pub(super) fn exchange_id(&self) -> &str {
+        &self.exchange_id
+    }
+
+    pub(super) fn sender_session_id(&self) -> &str {
+        &self.sender_session_id
+    }
+
+    pub(super) fn sender_generation(&self) -> u64 {
+        self.sender_generation
+    }
+
+    pub(super) fn recipient_context(&self) -> &TurnExecutionContext {
+        self.recipient_lease
+            .as_ref()
+            .expect("pending peer start must retain its recipient lease")
+            .context()
+    }
+
+    pub(super) fn commit(mut self) -> ActivePeerReservation {
+        self.committed = true;
+        ActivePeerReservation {
+            coordinator: self.coordinator.clone(),
+            exchange_id: self.exchange_id.clone(),
+            sender_session_id: self.sender_session_id.clone(),
+            sender_generation: self.sender_generation,
+            sender_cancellation: self.sender_cancellation.clone(),
+            recipient_lease: self.recipient_lease.take(),
+        }
+    }
+}
+
+impl Drop for PendingPeerStart {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.recipient_lease.take();
+        self.coordinator.rollback_peer_start(
+            &self.exchange_id,
+            &self.sender_session_id,
+            self.sender_generation,
+        );
+    }
+}
+
+impl ActivePeerReservation {
+    pub(super) fn exchange_id(&self) -> &str {
+        &self.exchange_id
+    }
+
+    pub(super) fn sender_cancellation(&self) -> InterruptSignal {
+        self.sender_cancellation.clone()
+    }
+
+    pub(super) fn recipient_lease(&self) -> &ServerTurnLease {
+        self.recipient_lease
+            .as_ref()
+            .expect("active peer reservation must retain its recipient lease")
+    }
+
+    pub(super) fn recipient_cancellation(&self) -> InterruptSignal {
+        self.recipient_lease().cancellation()
+    }
+}
+
+impl Drop for ActivePeerReservation {
+    fn drop(&mut self) {
+        self.recipient_lease.take();
+        self.coordinator.release_peer_reservations(
+            &self.exchange_id,
+            &self.sender_session_id,
+            self.sender_generation,
+        );
+    }
 }
 
 impl ServerTurnLease {
@@ -151,6 +269,104 @@ impl TurnCoordinator {
     ) -> Result<(), TurnValidationError> {
         let state = self.lock_state();
         Self::validated_active(&state, context).map(|_| ())
+    }
+
+    pub(super) fn begin_peer_turn(
+        &self,
+        sender_context: &TurnExecutionContext,
+        recipient_session_id: &str,
+        exchange_id: String,
+    ) -> Result<PendingPeerStart, BeginPeerError> {
+        let mut state = self.lock_state();
+        let (sender_session_id, sender_generation, _) =
+            Self::hidden_identity(sender_context).map_err(BeginPeerError::InvalidSender)?;
+        if sender_session_id == recipient_session_id {
+            return Err(BeginPeerError::SameSession);
+        }
+
+        let sender = Self::validated_active(&state, sender_context)
+            .map_err(BeginPeerError::InvalidSender)?;
+        if !matches!(sender.origin, TurnOrigin::NormalUser) {
+            return Err(BeginPeerError::InvalidSender(
+                TurnValidationError::OriginNotAllowed,
+            ));
+        }
+        if !sender.can_send {
+            return Err(BeginPeerError::InvalidSender(
+                TurnValidationError::SendAlreadyConsumed,
+            ));
+        }
+        if state.reservations.contains_key(sender_session_id)
+            || state.reservations.contains_key(recipient_session_id)
+            || state
+                .sessions
+                .get(recipient_session_id)
+                .is_some_and(|session| session.active.is_some())
+        {
+            return Err(BeginPeerError::Busy);
+        }
+
+        let sender_cancellation = state
+            .sessions
+            .get_mut(sender_session_id)
+            .and_then(|session| session.active.as_mut())
+            .expect("validated sender must remain active while coordinator lock is held")
+            .cancellation
+            .clone();
+        state
+            .sessions
+            .get_mut(sender_session_id)
+            .and_then(|session| session.active.as_mut())
+            .expect("validated sender must remain active while coordinator lock is held")
+            .can_send = false;
+
+        state
+            .reservations
+            .insert(sender_session_id.to_string(), exchange_id.clone());
+        state
+            .reservations
+            .insert(recipient_session_id.to_string(), exchange_id.clone());
+
+        let recipient = state
+            .sessions
+            .entry(recipient_session_id.to_string())
+            .or_default();
+        recipient.last_generation = recipient.last_generation.saturating_add(1);
+        let recipient_generation = recipient.last_generation;
+        let recipient_capability = TurnCapability::new(format!("turn_{}", Uuid::new_v4().simple()));
+        let recipient_cancellation = InterruptSignal::new();
+        let recipient_origin = TurnOrigin::PeerInbound {
+            exchange_id: exchange_id.clone(),
+        };
+        let recipient_context = TurnExecutionContext {
+            origin: recipient_origin.clone(),
+            server_session_id: Some(recipient_session_id.to_string()),
+            turn_generation: Some(recipient_generation),
+            turn_capability: Some(recipient_capability.clone()),
+        };
+        recipient.active = Some(ActiveTurn {
+            generation: recipient_generation,
+            capability: recipient_capability,
+            origin: recipient_origin,
+            can_send: false,
+            cancellation: recipient_cancellation.clone(),
+        });
+
+        Ok(PendingPeerStart {
+            coordinator: self.clone(),
+            exchange_id,
+            sender_session_id: sender_session_id.to_string(),
+            sender_generation,
+            sender_cancellation,
+            recipient_lease: Some(ServerTurnLease {
+                coordinator: self.clone(),
+                session_id: recipient_session_id.to_string(),
+                generation: recipient_generation,
+                context: recipient_context,
+                cancellation: recipient_cancellation,
+            }),
+            committed: false,
+        })
     }
 
     pub(super) fn consume_send_permit(
@@ -275,6 +491,41 @@ impl TurnCoordinator {
         }
     }
 
+    fn rollback_peer_start(
+        &self,
+        exchange_id: &str,
+        sender_session_id: &str,
+        sender_generation: u64,
+    ) {
+        let mut state = self.lock_state();
+        Self::remove_matching_reservations(&mut state, exchange_id);
+        if let Some(active) = state
+            .sessions
+            .get_mut(sender_session_id)
+            .and_then(|session| session.active.as_mut())
+            && active.generation == sender_generation
+            && matches!(active.origin, TurnOrigin::NormalUser)
+        {
+            active.can_send = true;
+        }
+    }
+
+    fn release_peer_reservations(
+        &self,
+        exchange_id: &str,
+        _sender_session_id: &str,
+        _sender_generation: u64,
+    ) {
+        let mut state = self.lock_state();
+        Self::remove_matching_reservations(&mut state, exchange_id);
+    }
+
+    fn remove_matching_reservations(state: &mut CoordinatorState, exchange_id: &str) {
+        state
+            .reservations
+            .retain(|_, reserved_exchange_id| reserved_exchange_id != exchange_id);
+    }
+
     #[cfg(test)]
     fn clear_generation_for_test(&self, session_id: &str, generation: u64) -> bool {
         self.clear_generation(session_id, generation)
@@ -289,7 +540,7 @@ impl TurnCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use super::{BeginTurnError, TurnCoordinator, TurnValidationError};
+    use super::{BeginPeerError, BeginTurnError, TurnCoordinator, TurnValidationError};
     use crate::tool::{TurnCapability, TurnExecutionContext, TurnOrigin};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -433,6 +684,91 @@ mod tests {
         assert_eq!(
             coordinator.validate_context(&context),
             Err(TurnValidationError::MissingServerIdentity)
+        );
+    }
+
+    #[test]
+    fn peer_start_atomically_reserves_both_sessions_and_consumes_sender_send() {
+        let coordinator = TurnCoordinator::default();
+        let sender = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("sender turn should start");
+
+        let pending = coordinator
+            .begin_peer_turn(sender.context(), "recipient", "exchange-1".to_string())
+            .expect("peer turn should reserve both sessions");
+        assert_eq!(
+            pending.recipient_context().origin,
+            TurnOrigin::PeerInbound {
+                exchange_id: "exchange-1".to_string()
+            }
+        );
+        assert!(matches!(
+            coordinator.begin_server_turn("recipient", TurnOrigin::NormalUser),
+            Err(BeginTurnError::Busy)
+        ));
+        assert!(matches!(
+            coordinator.begin_peer_turn(sender.context(), "other", "exchange-2".to_string()),
+            Err(BeginPeerError::InvalidSender(
+                TurnValidationError::SendAlreadyConsumed
+            ))
+        ));
+
+        let active = pending.commit();
+        assert_eq!(active.exchange_id(), "exchange-1");
+        assert_eq!(
+            coordinator.consume_send_permit(sender.context()),
+            Err(TurnValidationError::SendAlreadyConsumed)
+        );
+        drop(active);
+        assert!(
+            coordinator
+                .begin_server_turn("recipient", TurnOrigin::NormalUser)
+                .is_ok(),
+            "terminal exchange cleanup must release recipient state"
+        );
+    }
+
+    #[test]
+    fn uncommitted_peer_start_rolls_back_lease_reservations_and_send_permit() {
+        let coordinator = TurnCoordinator::default();
+        let sender = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("sender turn should start");
+        let pending = coordinator
+            .begin_peer_turn(sender.context(), "recipient", "exchange-1".to_string())
+            .expect("peer start should install a provisional lease");
+
+        drop(pending);
+
+        assert!(coordinator.consume_send_permit(sender.context()).is_ok());
+        assert!(
+            coordinator
+                .begin_server_turn("recipient", TurnOrigin::NormalUser)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn peer_start_rejects_busy_or_reserved_participants_without_partial_state() {
+        let coordinator = TurnCoordinator::default();
+        let sender = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("sender turn should start");
+        let recipient = coordinator
+            .begin_server_turn("recipient", TurnOrigin::NormalUser)
+            .expect("recipient turn should start");
+
+        assert!(matches!(
+            coordinator.begin_peer_turn(sender.context(), "recipient", "exchange-busy".to_string()),
+            Err(BeginPeerError::Busy)
+        ));
+        drop(recipient);
+        assert!(
+            coordinator
+                .begin_peer_turn(sender.context(), "recipient", "exchange-ok".to_string())
+                .is_ok(),
+            "a rejected peer start must not consume the sender permit"
         );
     }
 }
