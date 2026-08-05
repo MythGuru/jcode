@@ -319,6 +319,11 @@ impl Config {
                 self.features.mermaid = parsed;
             }
         }
+        if let Ok(v) = std::env::var("JCODE_PEER_MESSAGING_ENABLED") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.features.peer_messaging = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("JCODE_AUTO_POKE") {
             if let Some(parsed) = parse_env_bool(&v) {
                 self.features.auto_poke = parsed;

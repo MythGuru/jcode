@@ -267,6 +267,8 @@ memory = true
 swarm = true
 # Mermaid: render Mermaid code blocks and tell the model that diagrams are supported
 mermaid = true
+# Peer messaging: allow explicitly configured local projects to exchange one bounded message/reply
+peer_messaging = false
 # Auto-poke: automatically nudge the model to continue when it stops with
 # incomplete todos. /poke on and /poke off still override this per session.
 auto_poke = true

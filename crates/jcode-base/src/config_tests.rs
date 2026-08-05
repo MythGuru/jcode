@@ -73,6 +73,32 @@ fn mermaid_environment_override_uses_standard_boolean_values() {
 }
 
 #[test]
+fn peer_messaging_feature_defaults_off_and_old_config_loads() {
+    assert!(!Config::default().features.peer_messaging);
+
+    let cfg: Config = toml::from_str("[features]\nmermaid = true\n")
+        .expect("config without peer_messaging should load");
+    assert!(!cfg.features.peer_messaging);
+
+    let enabled: Config = toml::from_str("[features]\npeer_messaging = true\n")
+        .expect("features.peer_messaging should parse");
+    assert!(enabled.features.peer_messaging);
+}
+
+#[test]
+fn peer_messaging_environment_override_uses_standard_boolean_values() {
+    let _guard = crate::storage::lock_test_env();
+    let previous = std::env::var_os("JCODE_PEER_MESSAGING_ENABLED");
+    crate::env::set_var("JCODE_PEER_MESSAGING_ENABLED", "on");
+
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+    assert!(cfg.features.peer_messaging);
+
+    restore_env_var("JCODE_PEER_MESSAGING_ENABLED", previous);
+}
+
+#[test]
 fn auto_poke_feature_defaults_on_and_parses_false() {
     assert!(Config::default().features.auto_poke);
 

@@ -1219,6 +1219,8 @@ pub struct FeatureConfig {
     pub swarm: bool,
     /// Enable Mermaid rendering and Mermaid-specific model guidance (default: true)
     pub mermaid: bool,
+    /// Enable same-server, allowlisted cross-repository peer messaging (default: false)
+    pub peer_messaging: bool,
     /// Default state of auto-poke (automatic follow-up when the model stops with
     /// incomplete todos). `/poke on` / `/poke off` still override this per session
     /// (default: true)
@@ -1245,6 +1247,7 @@ impl Default for FeatureConfig {
             memory: true,
             swarm: true,
             mermaid: true,
+            peer_messaging: false,
             auto_poke: true,
             message_timestamps: true,
             persist_memory_injections: false,

@@ -60,6 +60,9 @@ pub mod memory_types;
 pub mod message;
 pub mod model_pricing;
 pub mod output_style;
+pub mod peer_groups;
+#[cfg(test)]
+mod peer_groups_tests;
 pub mod plan;
 pub mod platform;
 pub mod power_inhibit;
