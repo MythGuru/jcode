@@ -169,6 +169,7 @@ impl Drop for PendingPeerStart {
 }
 
 impl ActivePeerReservation {
+    #[cfg(test)]
     pub(super) fn exchange_id(&self) -> &str {
         &self.exchange_id
     }
@@ -185,6 +186,12 @@ impl ActivePeerReservation {
 
     pub(super) fn recipient_cancellation(&self) -> InterruptSignal {
         self.recipient_lease().cancellation()
+    }
+
+    pub(super) fn take_recipient_lease(&mut self) -> ServerTurnLease {
+        self.recipient_lease
+            .take()
+            .expect("active peer reservation must retain its recipient lease until delivery starts")
     }
 }
 
@@ -204,6 +211,7 @@ impl ServerTurnLease {
         &self.context
     }
 
+    #[cfg(test)]
     pub(super) fn generation(&self) -> u64 {
         self.generation
     }
@@ -221,6 +229,41 @@ impl Drop for ServerTurnLease {
 }
 
 impl TurnCoordinator {
+    pub(super) fn validated_context_from_hidden_identity(
+        &self,
+        session_id: &str,
+        generation: u64,
+        capability: &str,
+    ) -> Result<TurnExecutionContext, TurnValidationError> {
+        let state = self.lock_state();
+        let active = state
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.active.as_ref())
+            .ok_or(TurnValidationError::NoActiveLease)?;
+        if active.generation != generation {
+            return Err(TurnValidationError::GenerationMismatch);
+        }
+        if active.capability.expose_secret() != capability {
+            return Err(TurnValidationError::CapabilityMismatch);
+        }
+        Ok(TurnExecutionContext {
+            origin: active.origin.clone(),
+            server_session_id: Some(session_id.to_string()),
+            turn_generation: Some(generation),
+            turn_capability: Some(active.capability.clone()),
+        })
+    }
+
+    pub(super) fn session_is_busy(&self, session_id: &str) -> bool {
+        let state = self.lock_state();
+        state.reservations.contains_key(session_id)
+            || state
+                .sessions
+                .get(session_id)
+                .is_some_and(|session| session.active.is_some())
+    }
+
     pub(super) fn begin_server_turn(
         &self,
         session_id: &str,
@@ -369,6 +412,7 @@ impl TurnCoordinator {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn consume_send_permit(
         &self,
         context: &TurnExecutionContext,
@@ -427,6 +471,7 @@ impl TurnCoordinator {
         Ok(active)
     }
 
+    #[cfg(test)]
     fn validated_active_mut<'a>(
         state: &'a mut CoordinatorState,
         context: &TurnExecutionContext,

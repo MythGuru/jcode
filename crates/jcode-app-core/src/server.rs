@@ -11,6 +11,7 @@ mod client_disconnect_cleanup;
 mod client_lifecycle;
 mod client_lifecycle_logging;
 mod client_lightweight_control;
+mod client_peer;
 mod client_session;
 mod client_state;
 mod client_writer;
@@ -119,8 +120,10 @@ pub(super) type ChannelSubscriptions =
 async fn remove_session_entry<T>(
     sessions: &Arc<RwLock<HashMap<String, T>>>,
     session_id: &str,
+    peer_exchanges: &peer_exchange::PeerExchangeRegistry,
     turn_coordinator: &turn_coordinator::TurnCoordinator,
 ) -> Option<T> {
+    peer_exchanges.remove_session(session_id);
     turn_coordinator.remove_session(session_id);
     let removed = sessions.write().await.remove(session_id);
     if removed.is_some() {
@@ -139,6 +142,7 @@ async fn prune_expired_terminal_swarm_members(
     swarm_state: &SwarmState,
     channel_subscriptions: &ChannelSubscriptions,
     channel_subscriptions_by_session: &ChannelSubscriptions,
+    peer_exchanges: &peer_exchange::PeerExchangeRegistry,
     turn_coordinator: &turn_coordinator::TurnCoordinator,
 ) -> usize {
     let retention = swarm::swarm_terminal_member_retention();
@@ -176,6 +180,7 @@ async fn prune_expired_terminal_swarm_members(
         let Some(swarm_id) = removed_swarm_id else {
             continue;
         };
+        peer_exchanges.remove_session(&session_id);
         turn_coordinator.remove_session(&session_id);
 
         remove_session_from_swarm(
@@ -220,6 +225,7 @@ async fn reap_idle_spawned_workers(
     channel_subscriptions: &ChannelSubscriptions,
     channel_subscriptions_by_session: &ChannelSubscriptions,
     soft_interrupt_queues: &SessionInterruptQueues,
+    peer_exchanges: &peer_exchange::PeerExchangeRegistry,
     turn_coordinator: &turn_coordinator::TurnCoordinator,
 ) -> usize {
     let Some(idle_after) = swarm::swarm_idle_worker_reap_after() else {
@@ -264,7 +270,8 @@ async fn reap_idle_spawned_workers(
         )
         .await;
 
-        if let Some(agent_arc) = remove_session_entry(sessions, &session_id, turn_coordinator).await
+        if let Some(agent_arc) =
+            remove_session_entry(sessions, &session_id, peer_exchanges, turn_coordinator).await
         {
             remove_session_interrupt_queue(soft_interrupt_queues, &session_id).await;
             remove_background_tool_signal(&session_id);
@@ -713,6 +720,10 @@ pub struct Server {
     swarm_mutation_runtime: SwarmMutationRuntime,
     /// Atomic live-turn leases, generations, capabilities, and cancellation.
     turn_coordinator: turn_coordinator::TurnCoordinator,
+    /// Allowlisted peer identities snapshotted once when the server starts.
+    peer_groups: Arc<jcode_base::peer_groups::PeerGroups>,
+    /// Live-only bounded peer exchanges.
+    peer_exchanges: peer_exchange::PeerExchangeRegistry,
 }
 
 impl Server {
@@ -765,6 +776,23 @@ impl Server {
             swarms_by_id: restored_swarms_by_id,
         } = load_persisted_swarm_runtime_state();
 
+        let turn_coordinator = turn_coordinator::TurnCoordinator::default();
+        let peer_groups = if crate::config::config().features.peer_messaging {
+            match jcode_base::peer_groups::PeerGroups::load_default() {
+                Ok(groups) => groups,
+                Err(error) => {
+                    crate::logging::error(&error.to_string());
+                    jcode_base::peer_groups::PeerGroups::invalid(error.to_string())
+                }
+            }
+        } else {
+            jcode_base::peer_groups::PeerGroups::empty()
+        };
+        let peer_exchanges = peer_exchange::PeerExchangeRegistry::new(
+            turn_coordinator.clone(),
+            Duration::from_secs(10 * 60),
+        );
+
         Self {
             provider,
             socket_path: socket_path(),
@@ -799,7 +827,9 @@ impl Server {
             soft_interrupt_queues: Arc::new(RwLock::new(HashMap::new())),
             await_members_runtime: AwaitMembersRuntime::default(),
             swarm_mutation_runtime: SwarmMutationRuntime::default(),
-            turn_coordinator: turn_coordinator::TurnCoordinator::default(),
+            turn_coordinator,
+            peer_groups: Arc::new(peer_groups),
+            peer_exchanges,
         }
     }
 
@@ -1402,6 +1432,7 @@ impl Server {
         let gc_channel_subscriptions_by_session =
             Arc::clone(&self.channel_subscriptions_by_session);
         let gc_soft_interrupt_queues = Arc::clone(&self.soft_interrupt_queues);
+        let gc_peer_exchanges = self.peer_exchanges.clone();
         let gc_turn_coordinator = self.turn_coordinator.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(swarm::swarm_terminal_member_gc_interval());
@@ -1413,6 +1444,7 @@ impl Server {
                     &gc_swarm_state,
                     &gc_channel_subscriptions,
                     &gc_channel_subscriptions_by_session,
+                    &gc_peer_exchanges,
                     &gc_turn_coordinator,
                 )
                 .await;
@@ -1425,6 +1457,7 @@ impl Server {
                     &gc_channel_subscriptions,
                     &gc_channel_subscriptions_by_session,
                     &gc_soft_interrupt_queues,
+                    &gc_peer_exchanges,
                     &gc_turn_coordinator,
                 )
                 .await;

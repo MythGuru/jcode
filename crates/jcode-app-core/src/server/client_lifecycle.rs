@@ -389,6 +389,8 @@ pub(super) async fn handle_client(
     await_members_runtime: AwaitMembersRuntime,
     swarm_mutation_runtime: SwarmMutationRuntime,
     turn_coordinator: super::turn_coordinator::TurnCoordinator,
+    peer_groups: Arc<jcode_base::peer_groups::PeerGroups>,
+    peer_exchanges: super::peer_exchange::PeerExchangeRegistry,
 ) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -441,6 +443,8 @@ pub(super) async fn handle_client(
                             await_members_runtime: &await_members_runtime,
                             swarm_mutation_runtime: &swarm_mutation_runtime,
                             turn_coordinator: &turn_coordinator,
+                            peer_groups: &peer_groups,
+                            peer_exchanges: &peer_exchanges,
                         },
                     )
                     .await?;
@@ -2433,6 +2437,7 @@ pub(super) async fn handle_client(
                     &swarm_event_tx,
                     &soft_interrupt_queues,
                     &swarm_mutation_runtime,
+                    &peer_exchanges,
                     &turn_coordinator,
                 )
                 .await;
@@ -2825,6 +2830,7 @@ pub(super) async fn handle_client(
             &event_history,
             &event_counter,
             &swarm_event_tx,
+            &peer_exchanges,
             &turn_coordinator,
         ),
     )
@@ -2851,7 +2857,7 @@ async fn append_context_message(
         );
         return;
     };
-    let result = agent.append_user_context_message(content, images);
+    let result = agent.append_user_context_message(content, images, None);
     let event = match result {
         Ok(()) => ServerEvent::ContextMessageAdded { id },
         Err(error) => ServerEvent::Error {
@@ -2863,6 +2869,10 @@ async fn append_context_message(
     let _ = client_event_tx.send(event);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "client turn startup coordinates transport, lifecycle state, turn ownership, and swarm status"
+)]
 async fn start_processing_message(
     message: ProcessingMessage,
     client_session_id: &str,

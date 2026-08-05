@@ -90,7 +90,11 @@ async fn removing_server_session_clears_active_pid_marker() {
         "agent",
     )])));
     let coordinator = super::turn_coordinator::TurnCoordinator::default();
-    let removed = remove_session_entry(&sessions, session_id, &coordinator).await;
+    let peer_exchanges = super::peer_exchange::PeerExchangeRegistry::new(
+        coordinator.clone(),
+        std::time::Duration::from_secs(600),
+    );
+    let removed = remove_session_entry(&sessions, session_id, &peer_exchanges, &coordinator).await;
 
     assert_eq!(removed, Some("agent"));
     assert!(!sessions.read().await.contains_key(session_id));

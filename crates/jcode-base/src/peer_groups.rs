@@ -9,6 +9,7 @@ const INVALID_PREFIX: &str = "Peer groups configuration is invalid:";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerGroups {
     groups: Vec<PeerGroup>,
+    load_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +44,17 @@ struct RawPeerMember {
 
 impl PeerGroups {
     pub fn empty() -> Self {
-        Self { groups: Vec::new() }
+        Self {
+            groups: Vec::new(),
+            load_error: None,
+        }
+    }
+
+    pub fn invalid(error: impl Into<String>) -> Self {
+        Self {
+            groups: Vec::new(),
+            load_error: Some(error.into()),
+        }
     }
 
     pub fn load_from_jcode_home(jcode_home: &Path) -> Result<Self> {
@@ -70,6 +81,10 @@ impl PeerGroups {
 
     pub fn groups(&self) -> &[PeerGroup] {
         &self.groups
+    }
+
+    pub fn load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
     }
 
     pub fn identity_for_dir(&self, working_dir: &Path) -> Option<(&PeerGroup, &PeerMember)> {
@@ -135,7 +150,10 @@ impl PeerGroups {
             groups.push(PeerGroup { name, members });
         }
 
-        Ok(Self { groups })
+        Ok(Self {
+            groups,
+            load_error: None,
+        })
     }
 }
 
@@ -149,5 +167,21 @@ fn path_key(path: &Path) -> String {
         value.to_lowercase()
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_snapshot_preserves_startup_error_without_members() {
+        let groups = PeerGroups::invalid("Peer groups configuration is invalid: malformed JSON");
+
+        assert!(groups.groups().is_empty());
+        assert_eq!(
+            groups.load_error(),
+            Some("Peer groups configuration is invalid: malformed JSON")
+        );
     }
 }

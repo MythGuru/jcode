@@ -274,6 +274,7 @@ pub(super) async fn handle_debug_client(
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
     shutdown_signals: Arc<RwLock<HashMap<String, InterruptSignal>>>,
     soft_interrupt_queues: super::SessionInterruptQueues,
+    peer_exchanges: super::peer_exchange::PeerExchangeRegistry,
     turn_coordinator: super::turn_coordinator::TurnCoordinator,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -444,6 +445,7 @@ pub(super) async fn handle_debug_client(
                             &swarm_event_tx,
                             &soft_interrupt_queues,
                             mcp_pool.clone(),
+                            &peer_exchanges,
                             &turn_coordinator,
                         )
                         .await?

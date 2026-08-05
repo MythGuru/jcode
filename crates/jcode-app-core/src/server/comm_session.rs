@@ -1019,6 +1019,7 @@ pub(super) async fn handle_comm_stop(
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     soft_interrupt_queues: &SessionInterruptQueues,
     swarm_mutation_runtime: &SwarmMutationRuntime,
+    peer_exchanges: &super::peer_exchange::PeerExchangeRegistry,
     turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     // Stopping is authorized per-target by ownership (the requester is the
@@ -1104,7 +1105,8 @@ pub(super) async fn handle_comm_stop(
     };
 
     let removed_agent =
-        super::remove_session_entry(sessions, &target_session, turn_coordinator).await;
+        super::remove_session_entry(sessions, &target_session, peer_exchanges, turn_coordinator)
+            .await;
     let removed_live_agent = removed_agent.is_some();
     if let Some(agent_arc) = removed_agent {
         remove_session_interrupt_queue(soft_interrupt_queues, &target_session).await;

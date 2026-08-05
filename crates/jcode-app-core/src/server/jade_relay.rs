@@ -995,6 +995,10 @@ impl RelayLauncherClient {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the Jade listener needs explicit session, transport, lifecycle, and turn ownership handles"
+    )]
     fn spawn_session_listener(
         &self,
         session_id: String,

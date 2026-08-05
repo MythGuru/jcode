@@ -1,4 +1,6 @@
-use super::turn_coordinator::{ActivePeerReservation, PendingPeerStart, TurnCoordinator};
+use super::turn_coordinator::{
+    ActivePeerReservation, PendingPeerStart, ServerTurnLease, TurnCoordinator,
+};
 use crate::tool::{TurnExecutionContext, TurnOrigin};
 use jcode_agent_runtime::InterruptSignal;
 use std::collections::HashMap;
@@ -73,6 +75,26 @@ pub(super) enum PeerReplyError {
     MessageTooLong,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PeerCancelError {
+    InvalidTurn,
+    UnknownExchange,
+    WrongSender,
+}
+
+impl fmt::Display for PeerCancelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::InvalidTurn => "this turn cannot cancel peer messages",
+            Self::UnknownExchange => "the peer exchange is no longer active",
+            Self::WrongSender => "this peer exchange is not owned by the caller",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for PeerCancelError {}
+
 impl fmt::Display for PeerReplyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
@@ -112,13 +134,17 @@ struct ActiveExchange {
     reply: Option<String>,
     sender_generation: u64,
     recipient_generation: u64,
-    reservation: ActivePeerReservation,
+    recipient_cancellation: InterruptSignal,
+    _reservation: ActivePeerReservation,
     result_tx: Option<oneshot::Sender<PeerExchangeResult>>,
 }
 
 pub(super) struct RegisteredPeerExchange {
+    #[cfg(test)]
     pub recipient_context: TurnExecutionContext,
+    #[cfg(test)]
     pub recipient_cancellation: InterruptSignal,
+    pub recipient_lease: ServerTurnLease,
     pub waiter: PeerExchangeWaiter,
 }
 
@@ -168,9 +194,10 @@ impl PeerExchangeRegistry {
             return Err(RegisterExchangeError::SessionAlreadyReserved);
         }
 
-        let reservation = pending.commit();
+        let mut reservation = pending.commit();
         let sender_cancellation = reservation.sender_cancellation();
         let recipient_cancellation = reservation.recipient_cancellation();
+        let recipient_lease = reservation.take_recipient_lease();
         let created_at = Instant::now();
         let deadline = created_at + self.deadline;
         let (result_tx, result_rx) = oneshot::channel();
@@ -185,7 +212,8 @@ impl PeerExchangeRegistry {
             reply: None,
             sender_generation,
             recipient_generation,
-            reservation,
+            recipient_cancellation: recipient_cancellation.clone(),
+            _reservation: reservation,
             result_tx: Some(result_tx),
         };
         state
@@ -198,8 +226,11 @@ impl PeerExchangeRegistry {
         drop(state);
 
         Ok(RegisteredPeerExchange {
+            #[cfg(test)]
             recipient_context,
+            #[cfg(test)]
             recipient_cancellation,
+            recipient_lease,
             waiter: PeerExchangeWaiter {
                 registry: self.clone(),
                 exchange_id,
@@ -257,6 +288,42 @@ impl PeerExchangeRegistry {
         self.finish(exchange_id, FinishReason::Cancelled)
     }
 
+    pub(super) fn cancel_from_sender(
+        &self,
+        context: &TurnExecutionContext,
+    ) -> Result<PeerExchangeResult, PeerCancelError> {
+        self.coordinator
+            .validate_context(context)
+            .map_err(|_| PeerCancelError::InvalidTurn)?;
+        if !matches!(context.origin, TurnOrigin::NormalUser) {
+            return Err(PeerCancelError::InvalidTurn);
+        }
+        let session_id = context
+            .server_session_id
+            .as_deref()
+            .ok_or(PeerCancelError::InvalidTurn)?;
+        let exchange_id = {
+            let state = self.lock_state();
+            let exchange_id = state
+                .session_index
+                .get(session_id)
+                .cloned()
+                .ok_or(PeerCancelError::UnknownExchange)?;
+            let exchange = state
+                .exchanges
+                .get(&exchange_id)
+                .ok_or(PeerCancelError::UnknownExchange)?;
+            if exchange.sender.session_id != session_id
+                || context.turn_generation != Some(exchange.sender_generation)
+            {
+                return Err(PeerCancelError::WrongSender);
+            }
+            exchange_id
+        };
+        self.cancel_exchange(&exchange_id)
+            .ok_or(PeerCancelError::UnknownExchange)
+    }
+
     pub(super) fn remove_session(&self, session_id: &str) -> Option<PeerExchangeResult> {
         let exchange_id = {
             let state = self.lock_state();
@@ -291,7 +358,7 @@ impl PeerExchangeRegistry {
             reason,
             FinishReason::TimedOut | FinishReason::Cancelled | FinishReason::SenderRemoved
         ) {
-            exchange.reservation.recipient_cancellation().fire();
+            exchange.recipient_cancellation.fire();
         }
 
         let (recipient_outcome, detail) = match reason {
@@ -383,6 +450,7 @@ impl PeerExchangeWaiter {
             .expect("peer exchange waiter may only be awaited once");
         let deadline = tokio::time::Instant::from_std(self.deadline);
         let result = tokio::select! {
+            biased;
             received = &mut result_rx => received.unwrap_or_else(|_| PeerExchangeResult {
                 exchange_id: self.exchange_id.clone(),
                 sender_alias: String::new(),
@@ -502,6 +570,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ready_terminal_result_wins_the_deadline_race() {
+        let (_coordinator, _sender, registry, registered) = make_registered(Duration::ZERO);
+        registry
+            .record_reply(&registered.recipient_context, "Reviewed.".to_string())
+            .expect("reply should be recorded");
+        registry
+            .finish_recipient("exchange-1", Ok(()))
+            .expect("recipient finish should resolve exchange");
+
+        let result = registered.waiter.wait().await;
+
+        assert_eq!(result.reply.as_deref(), Some("Reviewed."));
+        assert_eq!(result.recipient_outcome, PeerRecipientOutcome::Replied);
+    }
+
+    #[tokio::test]
     async fn completion_without_reply_and_failure_after_reply_are_explicit() {
         let (_coordinator, _sender, registry, registered) =
             make_registered(Duration::from_secs(60));
@@ -539,8 +623,15 @@ mod tests {
         assert!(recipient_cancellation.is_set());
         assert_eq!(
             registry.record_reply(&recipient_context, "late".to_string()),
-            Err(PeerReplyError::InvalidTurn)
+            Err(PeerReplyError::UnknownExchange)
         );
+        assert!(
+            coordinator
+                .begin_server_turn("recipient", TurnOrigin::NormalUser)
+                .is_err(),
+            "the cancelled recipient remains busy until its tracked turn unwinds"
+        );
+        drop(registered.recipient_lease);
         assert!(
             coordinator
                 .begin_server_turn("recipient", TurnOrigin::NormalUser)
@@ -566,7 +657,7 @@ mod tests {
         assert_eq!(result.recipient_outcome, PeerRecipientOutcome::Failed);
         assert_eq!(
             registry.record_reply(&recipient_context, "late".to_string()),
-            Err(PeerReplyError::InvalidTurn)
+            Err(PeerReplyError::UnknownExchange)
         );
     }
 

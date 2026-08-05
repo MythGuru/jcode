@@ -24,7 +24,7 @@ use crate::protocol::ServerEvent;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 
 type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 
@@ -100,6 +100,33 @@ pub(super) async fn spawn_tracked_live_turn(
     swarm: LiveTurnSwarmContext,
     turn_lease: ServerTurnLease,
 ) {
+    spawn_tracked_live_turn_with_completion(
+        session_id,
+        agent,
+        message,
+        system_reminder,
+        status_detail,
+        swarm,
+        turn_lease,
+        None,
+    )
+    .await;
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tracked peer turns additionally report their terminal outcome to the exchange registry"
+)]
+pub(super) async fn spawn_tracked_live_turn_with_completion(
+    session_id: &str,
+    agent: Arc<Mutex<Agent>>,
+    message: String,
+    system_reminder: Option<String>,
+    status_detail: Option<String>,
+    swarm: LiveTurnSwarmContext,
+    turn_lease: ServerTurnLease,
+    completion_tx: Option<oneshot::Sender<Result<(), String>>>,
+) {
     update_member_status(
         session_id,
         "running",
@@ -128,6 +155,10 @@ pub(super) async fn spawn_tracked_live_turn(
             turn_lease,
         )
         .await;
+        let completion = result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
         match result {
             Ok(()) => {
                 let completion_report = {
@@ -170,6 +201,9 @@ pub(super) async fn spawn_tracked_live_turn(
                     retry_after_secs: None,
                 });
             }
+        }
+        if let Some(completion_tx) = completion_tx {
+            let _ = completion_tx.send(completion);
         }
     });
 }

@@ -118,6 +118,8 @@ pub(super) struct ServerRuntime {
     await_members_runtime: AwaitMembersRuntime,
     swarm_mutation_runtime: SwarmMutationRuntime,
     turn_coordinator: TurnCoordinator,
+    peer_groups: Arc<jcode_base::peer_groups::PeerGroups>,
+    peer_exchanges: super::peer_exchange::PeerExchangeRegistry,
     tasks: Arc<RuntimeTaskScope>,
 }
 
@@ -152,6 +154,8 @@ impl ServerRuntime {
             await_members_runtime: server.await_members_runtime.clone(),
             swarm_mutation_runtime: server.swarm_mutation_runtime.clone(),
             turn_coordinator: server.turn_coordinator.clone(),
+            peer_groups: Arc::clone(&server.peer_groups),
+            peer_exchanges: server.peer_exchanges.clone(),
             tasks: Arc::new(RuntimeTaskScope::default()),
         }
     }
@@ -373,6 +377,8 @@ impl ServerRuntime {
                     self.await_members_runtime.clone(),
                     self.swarm_mutation_runtime.clone(),
                     self.turn_coordinator.clone(),
+                    Arc::clone(&self.peer_groups),
+                    self.peer_exchanges.clone(),
                 )
                 .await
             };
@@ -429,6 +435,7 @@ impl ServerRuntime {
                 mcp_pool,
                 Arc::clone(&self.shutdown_signals),
                 Arc::clone(&self.soft_interrupt_queues),
+                self.peer_exchanges.clone(),
                 self.turn_coordinator.clone(),
             )
             .await

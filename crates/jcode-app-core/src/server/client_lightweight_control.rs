@@ -3,6 +3,7 @@ use super::client_comm::{
     handle_comm_read, handle_comm_share, handle_comm_subscribe_channel,
     handle_comm_unsubscribe_channel,
 };
+use super::client_peer::{PeerServerContext, handle_peer_request};
 use super::client_writer::write_direct_event;
 use super::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
 use super::comm_control::{
@@ -75,6 +76,8 @@ pub(super) struct LightweightControlContext<'a> {
     pub(super) await_members_runtime: &'a AwaitMembersRuntime,
     pub(super) swarm_mutation_runtime: &'a SwarmMutationRuntime,
     pub(super) turn_coordinator: &'a super::turn_coordinator::TurnCoordinator,
+    pub(super) peer_groups: &'a jcode_base::peer_groups::PeerGroups,
+    pub(super) peer_exchanges: &'a super::peer_exchange::PeerExchangeRegistry,
 }
 
 pub(super) async fn handle_lightweight_control_request(
@@ -103,6 +106,8 @@ pub(super) async fn handle_lightweight_control_request(
         await_members_runtime,
         swarm_mutation_runtime,
         turn_coordinator,
+        peer_groups,
+        peer_exchanges,
     } = context;
     if let Request::Ping { id } = request {
         write_direct_event(&writer, &ServerEvent::Pong { id }).await?;
@@ -129,6 +134,27 @@ pub(super) async fn handle_lightweight_control_request(
     });
 
     match request {
+        request @ (Request::PeerList { .. }
+        | Request::PeerSend { .. }
+        | Request::PeerReply { .. }
+        | Request::PeerCancel { .. }) => {
+            handle_peer_request(
+                request,
+                &client_event_tx,
+                PeerServerContext {
+                    sessions,
+                    peer_groups,
+                    exchanges: peer_exchanges,
+                    swarm_members,
+                    swarms_by_id,
+                    event_history,
+                    event_counter,
+                    swarm_event_tx,
+                    turn_coordinator,
+                },
+            )
+            .await;
+        }
         Request::CommShare {
             id,
             session_id: req_session_id,
@@ -483,6 +509,7 @@ pub(super) async fn handle_lightweight_control_request(
                 swarm_event_tx,
                 soft_interrupt_queues,
                 swarm_mutation_runtime,
+                peer_exchanges,
                 turn_coordinator,
             )
             .await;

@@ -1340,6 +1340,11 @@ async fn lightweight_comm_request_skips_full_session_initialization() {
     let shutdown_signals = Arc::new(RwLock::new(HashMap::new()));
     let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
     let mcp_pool = Arc::new(crate::mcp::SharedMcpPool::from_default_config());
+    let turn_coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+    let peer_exchanges = crate::server::peer_exchange::PeerExchangeRegistry::new(
+        turn_coordinator.clone(),
+        std::time::Duration::from_secs(600),
+    );
 
     let server_task = tokio::spawn(handle_client(
         server_stream,
@@ -1370,7 +1375,9 @@ async fn lightweight_comm_request_skips_full_session_initialization() {
         soft_interrupt_queues,
         AwaitMembersRuntime::default(),
         SwarmMutationRuntime::default(),
-        crate::server::turn_coordinator::TurnCoordinator::default(),
+        turn_coordinator,
+        Arc::new(jcode_base::peer_groups::PeerGroups::empty()),
+        peer_exchanges,
     ));
 
     let (client_reader, mut client_writer) = client_stream.into_split();
