@@ -1815,6 +1815,17 @@ impl SessionPicker {
                         rendered_messages += 1;
                     }
                 }
+                "peer" => {
+                    let md_lines = super::ui::render_system_message(
+                        &DisplayMessage::peer(msg.content.clone()),
+                        assistant_width,
+                        crate::config::DiffDisplayMode::Off,
+                    );
+                    for line in md_lines {
+                        lines.push(super::ui::align_if_unset(line, align));
+                        rendered_messages += 1;
+                    }
+                }
                 "background_task" => {
                     let md_lines = super::ui::render_background_task_message(
                         &DisplayMessage {

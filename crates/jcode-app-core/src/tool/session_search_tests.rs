@@ -336,6 +336,25 @@ fn system_reminders_are_hidden_by_default_and_opt_in_searchable() {
 }
 
 #[test]
+fn peer_messages_are_searchable_and_labeled_peer() {
+    with_temp_home(|home| {
+        let mut session = Session::create_with_id("peer-session".to_string(), None, None);
+        session.working_dir = Some("/tmp/project".to_string());
+        session.add_message_with_display_role(
+            Role::User,
+            vec![text("peer-search-needle")],
+            Some(StoredDisplayRole::Peer),
+        );
+        session.save().expect("save peer session");
+
+        let options = SearchOptions::for_test("current-session");
+        let results = run_search(home, "peer-search-needle", &options);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].role, "peer");
+    });
+}
+
+#[test]
 fn working_dir_filter_is_case_insensitive_and_prefix_based() {
     with_temp_home(|home| {
         let mut session = save_test_session(

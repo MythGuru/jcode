@@ -245,6 +245,7 @@ pub struct StoredMessage {
 pub enum StoredDisplayRole {
     System,
     BackgroundTask,
+    Peer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

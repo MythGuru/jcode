@@ -53,6 +53,18 @@ impl DisplayMessage {
         }
     }
 
+    /// Create a truthfully attributed peer-authored message.
+    pub fn peer(content: impl Into<String>) -> Self {
+        Self {
+            role: "peer".to_string(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: Some("Peer".to_string()),
+            tool_data: None,
+        }
+    }
+
     /// Create a display-only usage card. This is shown in the transcript UI but
     /// is not part of provider/model context.
     pub fn usage(content: impl Into<String>) -> Self {

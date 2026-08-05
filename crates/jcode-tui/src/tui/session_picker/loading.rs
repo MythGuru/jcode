@@ -892,10 +892,9 @@ fn message_value_is_internal_system_reminder(message: &serde_json::Value) -> boo
 
 #[cfg(test)]
 fn message_value_is_visible_conversation(message: &serde_json::Value) -> bool {
-    let has_display_role = message
-        .get("display_role")
-        .is_some_and(|value| !value.is_null());
-    !has_display_role && !message_value_is_internal_system_reminder(message)
+    let display_role = message.get("display_role").and_then(|value| value.as_str());
+    (display_role.is_none() || display_role == Some("peer"))
+        && !message_value_is_internal_system_reminder(message)
 }
 
 #[cfg(test)]
@@ -1398,7 +1397,10 @@ impl<'de> Visitor<'de> for SessionMessageSummaryVisitor {
 }
 
 fn summary_message_is_visible_conversation(message: &SessionMessageSummary) -> bool {
-    if message.display_role.is_some() {
+    if message
+        .display_role
+        .is_some_and(|role| role != StoredDisplayRole::Peer)
+    {
         return false;
     }
     if message.content_starts_with_system_reminder {

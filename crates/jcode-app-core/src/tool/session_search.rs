@@ -1797,7 +1797,8 @@ fn searchable_message_text(msg: &StoredMessage, include_tools: bool) -> String {
 }
 
 fn is_system_like_message(msg: &StoredMessage) -> bool {
-    msg.display_role.is_some()
+    msg.display_role
+        .is_some_and(|role| role != crate::session::StoredDisplayRole::Peer)
         || msg
             .content
             .iter()
@@ -1828,6 +1829,7 @@ fn role_label(msg: &StoredMessage) -> &'static str {
         return match display_role {
             crate::session::StoredDisplayRole::System => "system",
             crate::session::StoredDisplayRole::BackgroundTask => "background",
+            crate::session::StoredDisplayRole::Peer => "peer",
         };
     }
 

@@ -187,7 +187,7 @@ fn default_message_alignment(role: &str, centered: bool) -> ratatui::layout::Ali
     if centered
         && !matches!(
             role,
-            "tool" | "system" | "swarm" | "background_task" | "overnight" | "todos"
+            "tool" | "system" | "peer" | "swarm" | "background_task" | "overnight" | "todos"
         )
     {
         ratatui::layout::Alignment::Center
@@ -1561,6 +1561,18 @@ fn render_message_into(
             }
         }
         "system" => {
+            let content_width = width.saturating_sub(4);
+            let cached = get_cached_message_lines(
+                msg,
+                content_width,
+                app.diff_mode(),
+                render_system_message,
+            );
+            for line in cached {
+                acc.push_auto(align_if_unset(line, align));
+            }
+        }
+        "peer" => {
             let content_width = width.saturating_sub(4);
             let cached = get_cached_message_lines(
                 msg,

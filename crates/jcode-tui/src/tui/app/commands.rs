@@ -2079,6 +2079,7 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         for (i, msg) in rendered_targets.iter().enumerate() {
             let role_str = match msg.role.as_str() {
                 "user" => "👤 User",
+                "peer" => "🤝 Peer",
                 "assistant" => "🤖 Assistant",
                 _ => "💬 Message",
             };

@@ -83,6 +83,12 @@ fn trivial_hidden_only_snapshot_detector_keeps_visible_message() {
 }
 
 #[test]
+fn trivial_hidden_only_snapshot_detector_keeps_peer_message() {
+    let bytes = br#"{"messages":[{"role":"user","content":[{"type":"text","text":"Peer message from Eve"}],"display_role":"peer"}]}"#;
+    assert!(!snapshot_bytes_look_trivial_hidden_only(bytes));
+}
+
+#[test]
 fn trivial_hidden_only_snapshot_detector_keeps_system_plus_visible_message() {
     let bytes = br#"{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>boot</system-reminder>"}],"display_role":"system"},{"role":"assistant","content":[{"type":"text","text":"visible"}]}]}"#;
     assert!(!snapshot_bytes_look_trivial_hidden_only(bytes));

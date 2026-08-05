@@ -131,6 +131,7 @@ fn show_remote_rewind_history(app: &mut App) {
     for (i, msg) in rewindable.iter().enumerate() {
         let role_str = match msg.role.as_str() {
             "user" => "👤 User",
+            "peer" => "🤝 Peer",
             "assistant" => "🤖 Assistant",
             _ => "💬 Message",
         };

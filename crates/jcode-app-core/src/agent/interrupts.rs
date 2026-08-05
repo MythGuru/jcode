@@ -14,6 +14,7 @@ fn soft_interrupt_session_display_role(source: SoftInterruptSource) -> Option<St
         SoftInterruptSource::User => None,
         SoftInterruptSource::System => Some(StoredDisplayRole::System),
         SoftInterruptSource::BackgroundTask => Some(StoredDisplayRole::BackgroundTask),
+        SoftInterruptSource::Peer => Some(StoredDisplayRole::Peer),
     }
 }
 
@@ -22,6 +23,24 @@ fn soft_interrupt_protocol_display_role(source: SoftInterruptSource) -> Option<S
         SoftInterruptSource::User => None,
         SoftInterruptSource::System => Some("system".to_string()),
         SoftInterruptSource::BackgroundTask => Some("background_task".to_string()),
+        SoftInterruptSource::Peer => Some("peer".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod peer_role_tests {
+    use super::*;
+
+    #[test]
+    fn peer_soft_interrupt_role_is_preserved_in_session_and_protocol() {
+        assert_eq!(
+            soft_interrupt_session_display_role(SoftInterruptSource::Peer),
+            Some(StoredDisplayRole::Peer)
+        );
+        assert_eq!(
+            soft_interrupt_protocol_display_role(SoftInterruptSource::Peer).as_deref(),
+            Some("peer")
+        );
     }
 }
 

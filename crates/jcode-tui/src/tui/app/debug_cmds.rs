@@ -792,8 +792,8 @@ impl App {
             let raw = cmd.strip_prefix("inject:").unwrap_or("");
             let (role, content) = if let Some((r, c)) = raw.split_once(':') {
                 let role = match r {
-                    "user" | "assistant" | "system" | "background_task" | "tool" | "error"
-                    | "meta" => r,
+                    "user" | "assistant" | "system" | "peer" | "background_task" | "tool"
+                    | "error" | "meta" => r,
                     _ => "assistant",
                 };
                 if role == "assistant" && r != "assistant" {

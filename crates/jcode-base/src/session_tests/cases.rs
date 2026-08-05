@@ -1604,6 +1604,29 @@ fn test_render_messages_honors_background_task_display_role_override() {
 }
 
 #[test]
+fn test_render_messages_honors_peer_display_role_override() {
+    let mut session = Session::create_with_id(
+        "session_peer_role_test".to_string(),
+        None,
+        Some("peer role test".to_string()),
+    );
+
+    session.add_message_with_display_role(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "Peer message from Eve (`healthview-app`)\n\nPlease review this.".to_string(),
+            cache_control: None,
+        }],
+        Some(StoredDisplayRole::Peer),
+    );
+
+    let rendered = render_messages(&session);
+    assert_eq!(rendered.len(), 1);
+    assert_eq!(rendered[0].role, "peer");
+    assert!(rendered[0].content.contains("Peer message from Eve"));
+}
+
+#[test]
 fn test_render_messages_hides_internal_system_reminders() {
     let mut session = Session::create_with_id(
         "session_hidden_system_reminder_test".to_string(),

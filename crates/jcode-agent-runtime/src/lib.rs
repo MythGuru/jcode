@@ -15,6 +15,7 @@ pub enum SoftInterruptSource {
     User,
     System,
     BackgroundTask,
+    Peer,
 }
 
 /// Thread-safe soft interrupt queue that can be accessed without holding the agent lock.

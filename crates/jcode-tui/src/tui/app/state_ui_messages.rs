@@ -22,6 +22,7 @@ fn display_message_from_stored_message(
         Some(crate::session::StoredDisplayRole::BackgroundTask) => {
             Some(DisplayMessage::background_task(text))
         }
+        Some(crate::session::StoredDisplayRole::Peer) => Some(DisplayMessage::peer(text)),
         None => match message.role {
             Role::User => {
                 // Synthetic auto-poke continuations are persisted as user

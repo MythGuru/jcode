@@ -2437,15 +2437,21 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.push_turn_footer(duration);
             }
             app.mark_soft_interrupt_injected(&content);
-            let role = display_role.unwrap_or_else(|| "user".to_string());
-            app.push_display_message(DisplayMessage {
-                role,
-                content: content.clone(),
-                tool_calls: vec![],
-                duration_secs: None,
-                title: None,
-                tool_data: None,
-            });
+            let message = match display_role.as_deref() {
+                Some("peer") => DisplayMessage::peer(content.clone()),
+                Some("system") => DisplayMessage::system(content.clone()),
+                Some("background_task") => DisplayMessage::background_task(content.clone()),
+                Some(role) => DisplayMessage {
+                    role: role.to_string(),
+                    content: content.clone(),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                },
+                None => DisplayMessage::user(content.clone()),
+            };
+            app.push_display_message(message);
             if let Some(n) = tools_skipped {
                 app.set_status_notice(format!("⚡ {} tool(s) skipped", n));
             }
