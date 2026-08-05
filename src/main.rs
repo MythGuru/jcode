@@ -106,6 +106,12 @@ fn run_main() -> Result<()> {
     configure_system_allocator();
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
+    // Before anything can shell out to git. If the user's home directory is
+    // itself a repository, git's upward search turns every git call made from
+    // an unrelated directory into a scan of their whole home tree, which looks
+    // exactly like Jcode hanging.
+    jcode::git_guard::install_git_discovery_ceiling();
+
     // SessionStart hooks should be effectively invisible to Claude Code and
     // Codex. Handle this tiny callback before the Tokio runtime and normal Jcode
     // startup path so it does not initialize providers, start cleanup threads,

@@ -39,6 +39,7 @@ pub mod embedding_stub;
 pub mod env;
 pub mod gateway;
 pub mod generated_image;
+pub mod git_guard;
 pub mod github;
 pub mod gmail;
 pub mod goal;
