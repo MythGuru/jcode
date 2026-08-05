@@ -225,10 +225,12 @@ async fn begin_peer_send_transaction(
     target_alias: &str,
     context: &PeerServerContext<'_>,
 ) -> Result<PreparedPeerSend, PeerStartError> {
-    // Admission lock order is sessions(read) -> swarm_members(read) -> peer
-    // registry/coordinator -> recipient Agent(try_lock only). No awaited mutex is
-    // acquired while these map guards are nested, and both map guards are
-    // released before rollback or turn startup.
+    // Admission order is sessions(read) -> swarm_members(read) -> peer
+    // registry/coordinator -> recipient Agent(try_lock only). The Agent edge is
+    // deliberately nonblocking: a busy Agent rejects admission instead of being
+    // awaited while any map or registry guard is held. Both map guards are
+    // released before rollback or turn startup. Startup's separate Agent ->
+    // swarm_members(write) edge is documented where that write occurs.
     let sessions = context.sessions.read().await;
     let members = context.swarm_members.read().await;
     let resolved = context.exchanges.resolve_and_register(

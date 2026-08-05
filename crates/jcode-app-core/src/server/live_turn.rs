@@ -184,6 +184,12 @@ pub(super) async fn spawn_tracked_live_turn_with_completion(
         return;
     }
 
+    // With `acquired_agent`, startup's real order here is recipient Agent ->
+    // swarm_members(write), the reverse of admission's map-to-Agent ordering.
+    // This cannot form a blocking cycle: admission only uses `try_lock_owned`
+    // for its Agent edge and never waits for the Agent, while this status write
+    // never locks or waits for an Agent. The Agent guard is released by the
+    // spawned turn before either terminal swarm-members status write below.
     update_member_status(
         session_id,
         "running",
