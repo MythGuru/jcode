@@ -152,7 +152,7 @@ async fn handle_get_history_falls_back_to_persisted_snapshot_when_agent_is_busy(
     let client_count = Arc::new(RwLock::new(1usize));
 
     let (stream_a, mut stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader_a, writer_a) = stream_a.into_split();
+    let (reader_a, writer_a) = stream_a.into_split();
     let writer = Arc::new(Mutex::new(writer_a));
 
     handle_get_history(
@@ -174,6 +174,7 @@ async fn handle_get_history_falls_back_to_persisted_snapshot_when_agent_is_busy(
 
     drop(busy_guard);
     drop(writer);
+    drop(reader_a);
 
     let mut bytes = Vec::new();
     stream_b
@@ -241,7 +242,7 @@ async fn handle_get_model_catalog_does_not_wait_for_busy_agent_lock() {
     let busy_guard = agent.lock().await;
 
     let (stream_a, mut stream_b) = crate::transport::stream_pair().expect("stream pair");
-    let (_reader_a, writer_a) = stream_a.into_split();
+    let (reader_a, writer_a) = stream_a.into_split();
     let writer = Arc::new(Mutex::new(writer_a));
 
     tokio::time::timeout(
@@ -254,6 +255,7 @@ async fn handle_get_model_catalog_does_not_wait_for_busy_agent_lock() {
 
     drop(busy_guard);
     drop(writer);
+    drop(reader_a);
 
     let mut bytes = Vec::new();
     stream_b
