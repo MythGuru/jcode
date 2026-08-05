@@ -47,6 +47,7 @@ mod swarm;
 mod swarm_channels;
 mod swarm_mutation_state;
 mod swarm_persistence;
+mod turn_coordinator;
 mod util;
 
 pub(super) use self::await_members_state::AwaitMembersRuntime;
@@ -114,10 +115,12 @@ pub(super) type ChannelSubscriptions =
 /// lifecycle operation. Server-owned sessions all share the long-running
 /// server PID, so leaving the marker behind makes presence UIs count the
 /// removed session forever.
-pub(super) async fn remove_session_entry<T>(
+async fn remove_session_entry<T>(
     sessions: &Arc<RwLock<HashMap<String, T>>>,
     session_id: &str,
+    turn_coordinator: &turn_coordinator::TurnCoordinator,
 ) -> Option<T> {
+    turn_coordinator.remove_session(session_id);
     let removed = sessions.write().await.remove(session_id);
     if removed.is_some() {
         crate::storage::unregister_active_pid(session_id);
@@ -135,6 +138,7 @@ async fn prune_expired_terminal_swarm_members(
     swarm_state: &SwarmState,
     channel_subscriptions: &ChannelSubscriptions,
     channel_subscriptions_by_session: &ChannelSubscriptions,
+    turn_coordinator: &turn_coordinator::TurnCoordinator,
 ) -> usize {
     let retention = swarm::swarm_terminal_member_retention();
     let mut candidates = {
@@ -171,6 +175,7 @@ async fn prune_expired_terminal_swarm_members(
         let Some(swarm_id) = removed_swarm_id else {
             continue;
         };
+        turn_coordinator.remove_session(&session_id);
 
         remove_session_from_swarm(
             &session_id,
@@ -214,6 +219,7 @@ async fn reap_idle_spawned_workers(
     channel_subscriptions: &ChannelSubscriptions,
     channel_subscriptions_by_session: &ChannelSubscriptions,
     soft_interrupt_queues: &SessionInterruptQueues,
+    turn_coordinator: &turn_coordinator::TurnCoordinator,
 ) -> usize {
     let Some(idle_after) = swarm::swarm_idle_worker_reap_after() else {
         return 0;
@@ -257,7 +263,8 @@ async fn reap_idle_spawned_workers(
         )
         .await;
 
-        if let Some(agent_arc) = remove_session_entry(sessions, &session_id).await {
+        if let Some(agent_arc) = remove_session_entry(sessions, &session_id, turn_coordinator).await
+        {
             remove_session_interrupt_queue(soft_interrupt_queues, &session_id).await;
             remove_background_tool_signal(&session_id);
             if let Ok(mut agent) = agent_arc.try_lock() {
@@ -703,6 +710,8 @@ pub struct Server {
     await_members_runtime: AwaitMembersRuntime,
     /// Persisted dedupe registry for mutating swarm coordinator operations.
     swarm_mutation_runtime: SwarmMutationRuntime,
+    /// Atomic live-turn leases, generations, capabilities, and cancellation.
+    turn_coordinator: turn_coordinator::TurnCoordinator,
 }
 
 impl Server {
@@ -789,6 +798,7 @@ impl Server {
             soft_interrupt_queues: Arc::new(RwLock::new(HashMap::new())),
             await_members_runtime: AwaitMembersRuntime::default(),
             swarm_mutation_runtime: SwarmMutationRuntime::default(),
+            turn_coordinator: turn_coordinator::TurnCoordinator::default(),
         }
     }
 
@@ -1043,6 +1053,7 @@ impl Server {
             let recover_event_counter = Arc::clone(&self.event_counter);
             let recover_swarm_event_tx = self.swarm_event_tx.clone();
             let recover_swarm_state = self.swarm_state.clone();
+            let recover_turn_coordinator = self.turn_coordinator.clone();
             let recovery_reload_id = stored_recovery_record.map(|record| record.reload_id);
 
             tokio::spawn(async move {
@@ -1076,32 +1087,42 @@ impl Server {
                     persist_swarm_state_for(&swarm_id, &recover_swarm_state).await;
                 }
 
-                match reload_recovery::mark_delivered_if_matching_continuation(
-                    &session_id,
-                    &reminder,
-                    "server_startup_headless",
-                ) {
-                    Ok(true) => {}
-                    Ok(false) => {}
-                    Err(error) => crate::logging::warn(&format!(
-                        "Failed to mark headless reload recovery intent delivered for {}: {}",
-                        session_id, error
-                    )),
-                }
-
                 let event_tx = self::state::session_event_fanout_sender(
                     session_id.clone(),
                     Arc::clone(&recover_swarm_members),
                 );
-                let result = self::client_lifecycle::process_message_streaming_mpsc(
-                    Arc::clone(&agent),
-                    "",
-                    vec![],
-                    Some(reminder),
-                    event_tx,
-                    crate::tool::TurnExecutionContext::server_initiated("reload-recovery"),
-                )
-                .await;
+                let result = match recover_turn_coordinator.begin_server_turn(
+                    &session_id,
+                    crate::tool::TurnOrigin::ServerInitiated {
+                        kind: "reload-recovery".to_string(),
+                    },
+                ) {
+                    Ok(turn_lease) => {
+                        match reload_recovery::mark_delivered_if_matching_continuation(
+                            &session_id,
+                            &reminder,
+                            "server_startup_headless",
+                        ) {
+                            Ok(true) | Ok(false) => {}
+                            Err(error) => crate::logging::warn(&format!(
+                                "Failed to mark headless reload recovery intent delivered for {}: {}",
+                                session_id, error
+                            )),
+                        }
+                        self::client_lifecycle::process_message_streaming_mpsc(
+                            Arc::clone(&agent),
+                            "",
+                            vec![],
+                            Some(reminder),
+                            event_tx,
+                            turn_lease,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(anyhow::anyhow!(
+                        "cannot resume headless session while another turn is active: {error}"
+                    )),
+                };
 
                 let (status, detail) = match result {
                     Ok(()) => {
@@ -1316,6 +1337,7 @@ impl Server {
         let monitor_event_history = Arc::clone(&self.event_history);
         let monitor_event_counter = Arc::clone(&self.event_counter);
         let monitor_swarm_event_tx = self.swarm_event_tx.clone();
+        let monitor_turn_coordinator = self.turn_coordinator.clone();
         tokio::spawn(async move {
             Self::monitor_bus(
                 monitor_file_touch,
@@ -1329,6 +1351,7 @@ impl Server {
                 monitor_event_history,
                 monitor_event_counter,
                 monitor_swarm_event_tx,
+                monitor_turn_coordinator,
             )
             .await;
         });
@@ -1378,6 +1401,7 @@ impl Server {
         let gc_channel_subscriptions_by_session =
             Arc::clone(&self.channel_subscriptions_by_session);
         let gc_soft_interrupt_queues = Arc::clone(&self.soft_interrupt_queues);
+        let gc_turn_coordinator = self.turn_coordinator.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(swarm::swarm_terminal_member_gc_interval());
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1388,6 +1412,7 @@ impl Server {
                     &gc_swarm_state,
                     &gc_channel_subscriptions,
                     &gc_channel_subscriptions_by_session,
+                    &gc_turn_coordinator,
                 )
                 .await;
                 // Backstop for coordinator cleanup: close finished spawned
@@ -1399,6 +1424,7 @@ impl Server {
                     &gc_channel_subscriptions,
                     &gc_channel_subscriptions_by_session,
                     &gc_soft_interrupt_queues,
+                    &gc_turn_coordinator,
                 )
                 .await;
             }
@@ -1435,6 +1461,7 @@ impl Server {
             Arc::clone(&self.soft_interrupt_queues),
             Arc::clone(&self.shutdown_signals),
             Arc::clone(&self.swarm_state.members),
+            self.turn_coordinator.clone(),
         );
 
         // Spawn embedding idle monitor so the model can be unloaded when this
@@ -1926,6 +1953,7 @@ impl Server {
         event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
         event_counter: Arc<std::sync::atomic::AtomicU64>,
         swarm_event_tx: broadcast::Sender<SwarmEvent>,
+        turn_coordinator: turn_coordinator::TurnCoordinator,
     ) {
         let mut receiver = Bus::global().subscribe();
         let mut last_cleanup = Instant::now();
@@ -2173,6 +2201,7 @@ impl Server {
                         &event_history,
                         &event_counter,
                         &swarm_event_tx,
+                        &turn_coordinator,
                     )
                     .await;
                 }
@@ -2189,6 +2218,7 @@ impl Server {
                         &event_history,
                         &event_counter,
                         &swarm_event_tx,
+                        &turn_coordinator,
                     )
                     .await;
                 }

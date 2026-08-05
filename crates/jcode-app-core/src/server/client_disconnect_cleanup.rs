@@ -73,6 +73,7 @@ pub(super) async fn cleanup_client_connection(
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) -> Result<()> {
     let disconnected_while_processing = client_is_processing
         || processing_task
@@ -107,7 +108,9 @@ pub(super) async fn cleanup_client_connection(
     }
 
     {
-        if let Some(agent_arc) = super::remove_session_entry(sessions, client_session_id).await {
+        if let Some(agent_arc) =
+            super::remove_session_entry(sessions, client_session_id, turn_coordinator).await
+        {
             let lock_result =
                 tokio::time::timeout(std::time::Duration::from_secs(2), agent_arc.lock()).await;
 

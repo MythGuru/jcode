@@ -65,6 +65,7 @@ async fn assign_task_rejects_explicit_blocked_task() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

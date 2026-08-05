@@ -74,6 +74,7 @@ pub(super) struct LightweightControlContext<'a> {
     pub(super) soft_interrupt_queues: &'a SessionInterruptQueues,
     pub(super) await_members_runtime: &'a AwaitMembersRuntime,
     pub(super) swarm_mutation_runtime: &'a SwarmMutationRuntime,
+    pub(super) turn_coordinator: &'a super::turn_coordinator::TurnCoordinator,
 }
 
 pub(super) async fn handle_lightweight_control_request(
@@ -101,6 +102,7 @@ pub(super) async fn handle_lightweight_control_request(
         soft_interrupt_queues,
         await_members_runtime,
         swarm_mutation_runtime,
+        turn_coordinator,
     } = context;
     if let Request::Ping { id } = request {
         write_direct_event(&writer, &ServerEvent::Pong { id }).await?;
@@ -194,6 +196,7 @@ pub(super) async fn handle_lightweight_control_request(
                 event_counter,
                 swarm_event_tx,
                 client_connections,
+                turn_coordinator,
             )
             .await;
         }
@@ -443,6 +446,7 @@ pub(super) async fn handle_lightweight_control_request(
                 soft_interrupt_queues,
                 swarm_mutation_runtime,
                 client_connections,
+                turn_coordinator,
             )
             .await;
         }
@@ -479,6 +483,7 @@ pub(super) async fn handle_lightweight_control_request(
                 swarm_event_tx,
                 soft_interrupt_queues,
                 swarm_mutation_runtime,
+                turn_coordinator,
             )
             .await;
         }
@@ -649,6 +654,7 @@ pub(super) async fn handle_lightweight_control_request(
                 event_counter,
                 swarm_event_tx,
                 swarm_mutation_runtime,
+                turn_coordinator,
             )
             .await;
         }
@@ -688,6 +694,7 @@ pub(super) async fn handle_lightweight_control_request(
                 swarm_event_tx,
                 mcp_pool,
                 swarm_mutation_runtime,
+                turn_coordinator,
             )
             .await;
         }
@@ -718,6 +725,7 @@ pub(super) async fn handle_lightweight_control_request(
                 event_counter,
                 swarm_event_tx,
                 swarm_mutation_runtime,
+                turn_coordinator,
             )
             .await;
         }

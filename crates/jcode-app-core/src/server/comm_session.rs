@@ -576,6 +576,7 @@ pub(super) async fn spawn_swarm_agent(
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
     soft_interrupt_queues: &SessionInterruptQueues,
     client_connections: &ClientConnections,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) -> anyhow::Result<String> {
     let resolved_working_dir =
         resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
@@ -769,6 +770,7 @@ pub(super) async fn spawn_swarm_agent(
             let event_history2 = Arc::clone(event_history);
             let event_counter2 = Arc::clone(event_counter);
             let swarm_event_tx2 = swarm_event_tx.clone();
+            let turn_coordinator = turn_coordinator.clone();
             tokio::spawn(async move {
                 update_member_status(
                     &sid_clone,
@@ -789,15 +791,27 @@ pub(super) async fn spawn_swarm_agent(
                     let agent = agent_arc.lock().await;
                     agent.message_count()
                 };
-                let result = process_message_streaming_mpsc(
-                    Arc::clone(&agent_arc),
-                    &initial_msg,
-                    vec![],
-                    None,
-                    event_tx,
-                    crate::tool::TurnExecutionContext::server_initiated("swarm-agent-startup"),
-                )
-                .await;
+                let result = match turn_coordinator.begin_server_turn(
+                    &sid_clone,
+                    crate::tool::TurnOrigin::ServerInitiated {
+                        kind: "swarm-agent-startup".to_string(),
+                    },
+                ) {
+                    Ok(turn_lease) => {
+                        process_message_streaming_mpsc(
+                            Arc::clone(&agent_arc),
+                            &initial_msg,
+                            vec![],
+                            None,
+                            event_tx,
+                            turn_lease,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(anyhow::anyhow!(
+                        "cannot start swarm agent while another turn is active: {error}"
+                    )),
+                };
                 let completion_report = if result.is_ok() {
                     let agent = agent_arc.lock().await;
                     agent.latest_assistant_text_after(start_message_index)
@@ -855,6 +869,7 @@ pub(super) async fn handle_comm_spawn(
     soft_interrupt_queues: &SessionInterruptQueues,
     swarm_mutation_runtime: &SwarmMutationRuntime,
     client_connections: &ClientConnections,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     // Hold this swarm's admission through member registration so concurrent
     // recursive requests cannot all pass the population check against stale
@@ -934,6 +949,7 @@ pub(super) async fn handle_comm_spawn(
         mcp_pool,
         soft_interrupt_queues,
         client_connections,
+        turn_coordinator,
     )
     .await
     {
@@ -1003,6 +1019,7 @@ pub(super) async fn handle_comm_stop(
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     soft_interrupt_queues: &SessionInterruptQueues,
     swarm_mutation_runtime: &SwarmMutationRuntime,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     // Stopping is authorized per-target by ownership (the requester is the
     // target's spawner or a transitive ancestor) rather than by the swarm-level
@@ -1086,7 +1103,8 @@ pub(super) async fn handle_comm_stop(
         return;
     };
 
-    let removed_agent = super::remove_session_entry(sessions, &target_session).await;
+    let removed_agent =
+        super::remove_session_entry(sessions, &target_session, turn_coordinator).await;
     let removed_live_agent = removed_agent.is_some();
     if let Some(agent_arc) = removed_agent {
         remove_session_interrupt_queue(soft_interrupt_queues, &target_session).await;

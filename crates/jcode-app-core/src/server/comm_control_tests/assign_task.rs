@@ -63,6 +63,7 @@ async fn assign_task_without_task_id_picks_highest_priority_runnable_task() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -168,6 +169,7 @@ async fn assign_task_marks_completed_worker_queued_before_returning() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

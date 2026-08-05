@@ -80,6 +80,7 @@ async fn assign_task_without_target_prefers_less_loaded_ready_agent() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

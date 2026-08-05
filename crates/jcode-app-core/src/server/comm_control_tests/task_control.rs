@@ -65,6 +65,7 @@ async fn task_control_wake_returns_structured_response_with_plan_summary() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -156,6 +157,7 @@ async fn task_control_resume_without_task_id_uses_unique_target_assignment() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -243,6 +245,7 @@ async fn task_control_without_task_id_rejects_ambiguous_target_assignments() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -343,6 +346,7 @@ async fn task_control_resume_busy_agent_rejects_without_mutating_plan() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -551,6 +555,7 @@ async fn task_control_retry_re_dispatches_after_recent_identical_retry() {
                 &event_counter,
                 &swarm_event_tx,
                 &mutation_runtime,
+                &crate::server::turn_coordinator::TurnCoordinator::default(),
             )
             .await;
         }

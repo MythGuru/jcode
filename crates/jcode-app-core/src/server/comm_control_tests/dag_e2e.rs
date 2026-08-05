@@ -275,16 +275,23 @@ async fn e2e_identical_seed_replay_succeeds_without_version_or_node_churn() {
     drop(plans);
     let events: Vec<_> = std::iter::from_fn(|| fx.client_rx.try_recv().ok()).collect();
     assert!(
-        events.iter().all(|event| !matches!(event, ServerEvent::Error { .. })),
+        events
+            .iter()
+            .all(|event| !matches!(event, ServerEvent::Error { .. })),
         "an identical replay must acknowledge success: {events:?}"
     );
-    assert!(events.iter().any(|event| matches!(event, ServerEvent::Done { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ServerEvent::Done { .. }))
+    );
 }
 
 #[tokio::test]
 async fn e2e_seed_rejects_conflicting_existing_definition_without_mutation() {
     let (_env, _runtime) = RuntimeEnvGuard::new();
-    let mut fx = graph_fixture_named("swarm-seed-conflict", "coord-conflict", "worker-conflict").await;
+    let mut fx =
+        graph_fixture_named("swarm-seed-conflict", "coord-conflict", "worker-conflict").await;
     fx.seed("light", vec![node_spec("shared", "explore", &[])])
         .await;
     while fx.client_rx.try_recv().is_ok() {}
@@ -382,6 +389,7 @@ async fn e2e_deep_expand_inserts_gate_in_live_plan() {
         &fx.event_counter,
         &fx.swarm_event_tx,
         &fx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -468,6 +476,7 @@ async fn e2e_deep_assignment_carries_fanout_and_artifact_contract() {
         &fx.event_counter,
         &fx.swarm_event_tx,
         &fx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -517,6 +526,7 @@ async fn e2e_deep_assignment_carries_fanout_and_artifact_contract() {
         &lfx.event_counter,
         &lfx.swarm_event_tx,
         &lfx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
     let light_prompt = {
@@ -631,6 +641,7 @@ async fn e2e_deep_gate_assignment_carries_inject_gap_contract() {
         &fx.event_counter,
         &fx.swarm_event_tx,
         &fx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -692,6 +703,7 @@ async fn e2e_complete_flows_artifact_to_downstream_assignment() {
         &fx.event_counter,
         &fx.swarm_event_tx,
         &fx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
     {
@@ -756,6 +768,7 @@ async fn e2e_complete_flows_artifact_to_downstream_assignment() {
         &fx.event_counter,
         &fx.swarm_event_tx,
         &fx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -957,6 +970,7 @@ async fn e2e_solo_seeder_is_elected_coordinator_and_can_assign() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -1080,6 +1094,7 @@ async fn e2e_deep_participant_can_assign_without_being_coordinator() {
         &fx.event_counter,
         &fx.swarm_event_tx,
         &fx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -1129,6 +1144,7 @@ async fn e2e_light_non_coordinator_participant_cannot_assign() {
         &fx.event_counter,
         &fx.swarm_event_tx,
         &fx.mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -1314,7 +1330,10 @@ async fn e2e_seed_rejects_light_downgrade_of_nonempty_deep_plan() {
 
     let plans = fx.swarm_plans.read().await;
     let plan = &plans[&fx.swarm_id];
-    assert_eq!(plan.mode, "deep", "deep plan must not be downgraded to light");
+    assert_eq!(
+        plan.mode, "deep",
+        "deep plan must not be downgraded to light"
+    );
     assert!(
         plan.items.iter().all(|i| i.id != "b"),
         "the downgrade seed must be rejected wholesale"

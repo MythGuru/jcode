@@ -89,6 +89,7 @@ pub(super) struct NotifySessionContext<'a> {
     pub event_counter: &'a Arc<std::sync::atomic::AtomicU64>,
     pub swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
     pub client_event_tx: &'a mpsc::UnboundedSender<ServerEvent>,
+    pub turn_coordinator: &'a super::turn_coordinator::TurnCoordinator,
 }
 
 pub(super) async fn handle_notify_session(
@@ -117,6 +118,8 @@ pub(super) async fn handle_notify_session(
                 ctx.event_counter,
                 ctx.swarm_event_tx,
             ),
+            ctx.turn_coordinator,
+            "session-notification-wake",
         )
         .await
     } else {
@@ -930,6 +933,7 @@ pub(super) async fn handle_resume_all_sessions(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     // Snapshot live sessions (those with at least one live client attachment).
     let live_session_ids: Vec<String> = {
@@ -975,7 +979,23 @@ pub(super) async fn handle_resume_all_sessions(
             .unwrap_or_else(|| session_id[..8.min(session_id.len())].to_string());
         drop(agent_guard);
 
-        // Best-effort: record that the durable recovery intent was delivered.
+        let Ok(turn_lease) = turn_coordinator.begin_server_turn(
+            &session_id,
+            crate::tool::TurnOrigin::ServerInitiated {
+                kind: "resume-all".to_string(),
+            },
+        ) else {
+            skipped += 1;
+            continue;
+        };
+        if agent.try_lock().is_err() {
+            skipped += 1;
+            continue;
+        }
+
+        // Best-effort: only record delivery after this path owns the server turn
+        // and has rechecked the agent lock, so a competing starter cannot consume
+        // the durable recovery intent without actually launching its continuation.
         if let Err(error) = super::reload_recovery::mark_delivered_if_matching_continuation(
             &session_id,
             &reminder,
@@ -1000,6 +1020,7 @@ pub(super) async fn handle_resume_all_sessions(
                 event_counter,
                 swarm_event_tx,
             ),
+            turn_lease,
         )
         .await;
 
@@ -1087,6 +1108,7 @@ pub(super) struct AgentTaskContext<'a> {
     pub(super) event_history: &'a Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     pub(super) event_counter: &'a Arc<std::sync::atomic::AtomicU64>,
     pub(super) swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
+    pub(super) turn_coordinator: &'a super::turn_coordinator::TurnCoordinator,
 }
 
 pub(super) async fn handle_agent_task(
@@ -1108,13 +1130,30 @@ pub(super) async fn handle_agent_task(
     )
     .await;
 
+    let turn_lease = match ctx.turn_coordinator.begin_server_turn(
+        client_session_id,
+        crate::tool::TurnOrigin::ServerInitiated {
+            kind: "agent-task".to_string(),
+        },
+    ) {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = ctx.client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!("Cannot start agent task: {error}"),
+                retry_after_secs: None,
+            });
+            return;
+        }
+    };
+
     let result = process_message_streaming_mpsc(
         Arc::clone(agent),
         &task,
         vec![],
         None,
         ctx.client_event_tx.clone(),
-        crate::tool::TurnExecutionContext::server_initiated("agent-task"),
+        turn_lease,
     )
     .await;
     match result {

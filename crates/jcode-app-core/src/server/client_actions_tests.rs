@@ -430,6 +430,7 @@ async fn notify_session_runs_scheduled_task_immediately_for_idle_live_session() 
             event_counter: &event_counter,
             swarm_event_tx: &swarm_event_tx,
             client_event_tx: &client_event_tx,
+            turn_coordinator: &crate::server::turn_coordinator::TurnCoordinator::default(),
         },
     )
     .await;
@@ -549,6 +550,7 @@ async fn notify_session_queues_soft_interrupt_when_live_session_is_busy() {
             event_counter: &event_counter,
             swarm_event_tx: &swarm_event_tx,
             client_event_tx: &client_event_tx,
+            turn_coordinator: &crate::server::turn_coordinator::TurnCoordinator::default(),
         },
     )
     .await;
@@ -665,6 +667,7 @@ async fn resume_all_continues_interrupted_idle_live_session() {
         &event_counter,
         &swarm_event_tx,
         &client_event_tx,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -767,6 +770,7 @@ async fn resume_all_skips_session_with_completed_turn() {
         &event_counter,
         &swarm_event_tx,
         &client_event_tx,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

@@ -388,6 +388,7 @@ pub(super) async fn handle_client(
     soft_interrupt_queues: SessionInterruptQueues,
     await_members_runtime: AwaitMembersRuntime,
     swarm_mutation_runtime: SwarmMutationRuntime,
+    turn_coordinator: super::turn_coordinator::TurnCoordinator,
 ) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -439,6 +440,7 @@ pub(super) async fn handle_client(
                             soft_interrupt_queues: &soft_interrupt_queues,
                             await_members_runtime: &await_members_runtime,
                             swarm_mutation_runtime: &swarm_mutation_runtime,
+                            turn_coordinator: &turn_coordinator,
                         },
                     )
                     .await?;
@@ -990,6 +992,7 @@ pub(super) async fn handle_client(
                 request_decoded_at.elapsed().as_millis()
             ));
             let cancel_dispatch_start = Instant::now();
+            turn_coordinator.cancel_session(&client_session_id);
             cancel_processing_message(
                 &mut ProcessingState {
                     client_is_processing: &mut client_is_processing,
@@ -1145,6 +1148,7 @@ pub(super) async fn handle_client(
                     &client_event_tx,
                     &processing_done_tx,
                     active_terminal_env.clone(),
+                    &turn_coordinator,
                     &SwarmStatusRefs {
                         members: &swarm_members,
                         swarms_by_id: &swarms_by_id,
@@ -1157,6 +1161,7 @@ pub(super) async fn handle_client(
             }
 
             Request::Cancel { id } => {
+                turn_coordinator.cancel_session(&client_session_id);
                 cancel_processing_message(
                     &mut ProcessingState {
                         client_is_processing: &mut client_is_processing,
@@ -1740,6 +1745,7 @@ pub(super) async fn handle_client(
                     &event_counter,
                     &swarm_event_tx,
                     &client_event_tx,
+                    &turn_coordinator,
                 )
                 .await;
             }
@@ -1978,6 +1984,7 @@ pub(super) async fn handle_client(
                         event_history: &event_history,
                         event_counter: &event_counter,
                         swarm_event_tx: &swarm_event_tx,
+                        turn_coordinator: &turn_coordinator,
                     },
                 )
                 .await;
@@ -2010,6 +2017,7 @@ pub(super) async fn handle_client(
                         event_counter: &event_counter,
                         swarm_event_tx: &swarm_event_tx,
                         client_event_tx: &client_event_tx,
+                        turn_coordinator: &turn_coordinator,
                     },
                 )
                 .await;
@@ -2119,6 +2127,7 @@ pub(super) async fn handle_client(
                     &event_counter,
                     &swarm_event_tx,
                     &client_connections,
+                    &turn_coordinator,
                 )
                 .await;
             }
@@ -2379,6 +2388,7 @@ pub(super) async fn handle_client(
                     &soft_interrupt_queues,
                     &swarm_mutation_runtime,
                     &client_connections,
+                    &turn_coordinator,
                 )
                 .await;
             }
@@ -2423,6 +2433,7 @@ pub(super) async fn handle_client(
                     &swarm_event_tx,
                     &soft_interrupt_queues,
                     &swarm_mutation_runtime,
+                    &turn_coordinator,
                 )
                 .await;
             }
@@ -2601,6 +2612,7 @@ pub(super) async fn handle_client(
                     &event_counter,
                     &swarm_event_tx,
                     &swarm_mutation_runtime,
+                    &turn_coordinator,
                 )
                 .await;
             }
@@ -2641,6 +2653,7 @@ pub(super) async fn handle_client(
                     &swarm_event_tx,
                     &mcp_pool,
                     &swarm_mutation_runtime,
+                    &turn_coordinator,
                 )
                 .await;
             }
@@ -2672,6 +2685,7 @@ pub(super) async fn handle_client(
                     &event_counter,
                     &swarm_event_tx,
                     &swarm_mutation_runtime,
+                    &turn_coordinator,
                 )
                 .await;
             }
@@ -2800,6 +2814,7 @@ pub(super) async fn handle_client(
             &event_history,
             &event_counter,
             &swarm_event_tx,
+            &turn_coordinator,
         ),
     )
     .await?;
@@ -2845,6 +2860,7 @@ async fn start_processing_message(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     processing_done_tx: &mpsc::UnboundedSender<(u64, Result<()>, Option<String>)>,
     client_terminal_env: Vec<(String, String)>,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
     swarm: &SwarmStatusRefs<'_>,
 ) {
     let ProcessingMessage {
@@ -2870,6 +2886,20 @@ async fn start_processing_message(
         });
         return;
     }
+
+    let turn_lease = match turn_coordinator
+        .begin_server_turn(client_session_id, crate::tool::TurnOrigin::NormalUser)
+    {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!("Cannot start this turn because the session is busy: {error}"),
+                retry_after_secs: Some(1),
+            });
+            return;
+        }
+    };
 
     *state.client_is_processing = true;
     *state.message_id = Some(id);
@@ -2912,7 +2942,6 @@ async fn start_processing_message(
         client_event_tx.clone(),
     );
     let done_tx = processing_done_tx.clone();
-    let turn_session_id = client_session_id.to_string();
     crate::logging::info(&format!("Processing message id={} spawning task", id));
     *state.task = Some(tokio::spawn(async move {
         let event_tx = tx.clone();
@@ -2924,12 +2953,7 @@ async fn start_processing_message(
                 images,
                 system_reminder,
                 event_tx,
-                crate::tool::TurnExecutionContext {
-                    origin: crate::tool::TurnOrigin::NormalUser,
-                    server_session_id: Some(turn_session_id),
-                    turn_generation: None,
-                    turn_capability: None,
-                },
+                turn_lease,
             ),
         ))
         .catch_unwind()
@@ -3269,8 +3293,10 @@ pub(super) async fn process_message_streaming_mpsc(
     images: Vec<(String, String)>,
     system_reminder: Option<String>,
     event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
-    turn_execution: crate::tool::TurnExecutionContext,
+    turn_lease: super::turn_coordinator::ServerTurnLease,
 ) -> Result<()> {
+    let turn_execution = turn_lease.context().clone();
+    let _turn_lease = turn_lease;
     let mut agent = agent.lock().await;
     let session_id = agent.session_id().to_string();
     let result = agent

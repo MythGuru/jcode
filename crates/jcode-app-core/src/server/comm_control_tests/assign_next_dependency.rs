@@ -86,6 +86,7 @@ async fn assign_next_prefers_worker_with_dependency_context() {
         &swarm_event_tx,
         &mcp_pool,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

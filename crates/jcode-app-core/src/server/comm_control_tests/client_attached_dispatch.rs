@@ -101,6 +101,7 @@ async fn assign_task_to_client_attached_session_skips_server_side_run() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

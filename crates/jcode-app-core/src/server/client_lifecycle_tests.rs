@@ -512,6 +512,15 @@ fn cancel_aborts_detached_streaming_turn_with_stale_stop_signal() -> anyhow::Res
         // Start the turn the way server-initiated paths do: no entry in any
         // connection's processing-task map.
         let turn_agent = Arc::clone(&agent);
+        let turn_coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+        let turn_lease = turn_coordinator
+            .begin_server_turn(
+                session_id,
+                crate::tool::TurnOrigin::ServerInitiated {
+                    kind: "lifecycle-test".to_string(),
+                },
+            )
+            .expect("test turn lease");
         let turn = tokio::spawn(async move {
             process_message_streaming_mpsc(
                 turn_agent,
@@ -519,7 +528,7 @@ fn cancel_aborts_detached_streaming_turn_with_stale_stop_signal() -> anyhow::Res
                 Vec::new(),
                 None,
                 event_tx,
-                crate::tool::TurnExecutionContext::server_initiated("lifecycle-test"),
+                turn_lease,
             )
             .await
         });
@@ -928,6 +937,7 @@ fn reload_starting_rejects_new_turn_without_spawning_processing_task() {
             &client_event_tx,
             &processing_done_tx,
             Vec::new(),
+            &crate::server::turn_coordinator::TurnCoordinator::default(),
             &SwarmStatusRefs {
                 members: &swarm_members,
                 swarms_by_id: &swarms_by_id,
@@ -1029,6 +1039,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
         &origin_tx,
         &processing_done_tx,
         Vec::new(),
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
         &SwarmStatusRefs {
             members: &swarm_members,
             swarms_by_id: &swarms_by_id,
@@ -1153,6 +1164,7 @@ fn accepted_reload_recovery_continuation_marks_intent_delivered() -> anyhow::Res
             &client_event_tx,
             &processing_done_tx,
             Vec::new(),
+            &crate::server::turn_coordinator::TurnCoordinator::default(),
             &SwarmStatusRefs {
                 members: &swarm_members,
                 swarms_by_id: &swarms_by_id,
@@ -1252,6 +1264,7 @@ fn reload_starting_rejects_new_turns_for_multiple_sessions() {
                 &client_event_tx,
                 &processing_done_tx,
                 Vec::new(),
+                &crate::server::turn_coordinator::TurnCoordinator::default(),
                 &SwarmStatusRefs {
                     members: &swarm_members,
                     swarms_by_id: &swarms_by_id,
@@ -1357,6 +1370,7 @@ async fn lightweight_comm_request_skips_full_session_initialization() {
         soft_interrupt_queues,
         AwaitMembersRuntime::default(),
         SwarmMutationRuntime::default(),
+        crate::server::turn_coordinator::TurnCoordinator::default(),
     ));
 
     let (client_reader, mut client_writer) = client_stream.into_split();

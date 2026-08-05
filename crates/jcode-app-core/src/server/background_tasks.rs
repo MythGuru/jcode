@@ -27,6 +27,7 @@ pub(super) async fn dispatch_background_task_completion(
     event_history: &Arc<RwLock<VecDeque<SwarmEvent>>>,
     event_counter: &Arc<AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     let notification = format_background_task_notification_markdown(task);
 
@@ -70,6 +71,8 @@ pub(super) async fn dispatch_background_task_completion(
                 event_counter,
                 swarm_event_tx,
             ),
+            turn_coordinator,
+            "background-task-completion",
         )
         .await
         && !queue_soft_interrupt_for_session(
@@ -106,6 +109,7 @@ pub(super) async fn dispatch_swarm_await_completion(
     event_history: &Arc<RwLock<VecDeque<SwarmEvent>>>,
     event_counter: &Arc<AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     if event.notify
         && fanout_session_event(
@@ -150,6 +154,8 @@ pub(super) async fn dispatch_swarm_await_completion(
             event_counter,
             swarm_event_tx,
         ),
+        turn_coordinator,
+        "swarm-await-completion",
     )
     .await
         && !queue_soft_interrupt_for_session(

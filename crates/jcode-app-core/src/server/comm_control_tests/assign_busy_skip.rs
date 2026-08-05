@@ -52,7 +52,10 @@ fn auto_pick_with_only_busy_workers_reports_no_target_for_spawn_fallback() {
         err.starts_with("No ready or completed swarm agents are available"),
         "unexpected error: {err}"
     );
-    assert!(err.contains("Skipped 1 worker(s)"), "unexpected error: {err}");
+    assert!(
+        err.contains("Skipped 1 worker(s)"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -168,6 +171,7 @@ async fn assign_task_does_not_stack_on_busy_worker() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

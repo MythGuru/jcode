@@ -165,6 +165,7 @@ async fn comm_message_default_does_not_queue_soft_interrupt_for_connected_sessio
         &event_counter,
         &swarm_event_tx,
         &client_connections,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -327,6 +328,7 @@ async fn comm_message_with_wake_queues_soft_interrupt_for_busy_connected_session
             &event_counter,
             &swarm_event_tx,
             &client_connections,
+            &crate::server::turn_coordinator::TurnCoordinator::default(),
         ),
     )
     .await
@@ -570,6 +572,7 @@ async fn comm_message_accepts_friendly_name_dm_target() {
         &event_counter,
         &swarm_event_tx,
         &client_connections,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -734,6 +737,7 @@ async fn comm_message_rejects_ambiguous_friendly_name_dm_target() {
         &event_counter,
         &swarm_event_tx,
         &client_connections,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -845,6 +849,7 @@ async fn comm_broadcast_reaches_only_senders_spawned_subtree() {
         &event_counter,
         &swarm_event_tx,
         &client_connections,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -886,6 +891,7 @@ async fn comm_broadcast_reaches_only_senders_spawned_subtree() {
         &event_counter,
         &swarm_event_tx,
         &client_connections,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
     match client_event_rx.recv().await.expect("done event") {

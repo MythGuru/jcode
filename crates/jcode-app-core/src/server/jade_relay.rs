@@ -3,6 +3,7 @@ use super::state::{
     SessionControlHandle, SessionInterruptQueues, queue_soft_interrupt_for_session,
     session_event_fanout_sender,
 };
+use super::turn_coordinator::TurnCoordinator;
 use super::{SessionAgents, SwarmMember};
 use crate::config::SafetyConfig;
 use crate::session::Session;
@@ -147,6 +148,7 @@ pub(super) fn spawn_if_configured(
     soft_interrupt_queues: SessionInterruptQueues,
     shutdown_signals: SessionCancelSignals,
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+    turn_coordinator: TurnCoordinator,
 ) {
     if let Some(config) = RelayListenerConfig::from_safety(safety) {
         crate::logging::info(&format!(
@@ -158,6 +160,7 @@ pub(super) fn spawn_if_configured(
         let session_interrupts = Arc::clone(&soft_interrupt_queues);
         let session_shutdown_signals = Arc::clone(&shutdown_signals);
         let session_swarm = Arc::clone(&swarm_members);
+        let session_turn_coordinator = turn_coordinator.clone();
         tokio::spawn(async move {
             let client = RelayClient::new(config);
             client
@@ -166,6 +169,7 @@ pub(super) fn spawn_if_configured(
                     session_interrupts,
                     session_shutdown_signals,
                     session_swarm,
+                    session_turn_coordinator,
                 )
                 .await;
         });
@@ -185,6 +189,7 @@ pub(super) fn spawn_if_configured(
                     soft_interrupt_queues,
                     shutdown_signals,
                     swarm_members,
+                    turn_coordinator,
                 )
                 .await;
         });
@@ -218,6 +223,7 @@ impl RelayClient {
         soft_interrupt_queues: SessionInterruptQueues,
         shutdown_signals: SessionCancelSignals,
         swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        turn_coordinator: TurnCoordinator,
     ) {
         let after = if self.config.process_existing_prompts {
             0
@@ -236,6 +242,7 @@ impl RelayClient {
             soft_interrupt_queues,
             shutdown_signals,
             swarm_members,
+            turn_coordinator,
         )
         .await;
     }
@@ -247,6 +254,7 @@ impl RelayClient {
         soft_interrupt_queues: SessionInterruptQueues,
         shutdown_signals: SessionCancelSignals,
         swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        turn_coordinator: TurnCoordinator,
     ) {
         let mut last_heartbeat = Instant::now()
             .checked_sub(HEARTBEAT_INTERVAL)
@@ -274,6 +282,7 @@ impl RelayClient {
                                     &sessions,
                                     &soft_interrupt_queues,
                                     Arc::clone(&swarm_members),
+                                    &turn_coordinator,
                                 )
                                 .await
                             }
@@ -391,6 +400,7 @@ impl RelayClient {
         sessions: &SessionAgents,
         soft_interrupt_queues: &SessionInterruptQueues,
         swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        turn_coordinator: &TurnCoordinator,
     ) -> Result<()> {
         let text = event.text.unwrap_or_default();
         let text = text.trim();
@@ -423,6 +433,7 @@ impl RelayClient {
             sessions,
             soft_interrupt_queues,
             swarm_members,
+            turn_coordinator,
         )
         .await
         {
@@ -608,6 +619,7 @@ impl RelayLauncherClient {
         soft_interrupt_queues: SessionInterruptQueues,
         shutdown_signals: SessionCancelSignals,
         swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        turn_coordinator: TurnCoordinator,
     ) {
         let mut after = match self.poll_launches(0, 0).await {
             Ok(response) => response.next_after,
@@ -644,6 +656,7 @@ impl RelayLauncherClient {
                                 &soft_interrupt_queues,
                                 &shutdown_signals,
                                 Arc::clone(&swarm_members),
+                                &turn_coordinator,
                             )
                             .await
                         {
@@ -790,6 +803,7 @@ impl RelayLauncherClient {
         soft_interrupt_queues: &SessionInterruptQueues,
         shutdown_signals: &SessionCancelSignals,
         swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        turn_coordinator: &TurnCoordinator,
     ) -> Result<()> {
         let request =
             LaunchRequest::from_event(&event, self.config.default_working_dir.as_deref())?;
@@ -832,6 +846,7 @@ impl RelayLauncherClient {
                 soft_interrupt_queues,
                 shutdown_signals,
                 swarm_members,
+                turn_coordinator.clone(),
             );
             return Ok(());
         }
@@ -885,6 +900,7 @@ impl RelayLauncherClient {
             &request.text,
             sessions,
             Arc::clone(&swarm_members),
+            turn_coordinator,
         )
         .await
         {
@@ -974,6 +990,7 @@ impl RelayLauncherClient {
             soft_interrupt_queues,
             shutdown_signals,
             swarm_members,
+            turn_coordinator.clone(),
         );
         Ok(())
     }
@@ -986,6 +1003,7 @@ impl RelayLauncherClient {
         soft_interrupt_queues: &SessionInterruptQueues,
         shutdown_signals: &SessionCancelSignals,
         swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        turn_coordinator: TurnCoordinator,
     ) {
         let config = RelayListenerConfig {
             api: self.config.api.clone(),
@@ -1007,6 +1025,7 @@ impl RelayLauncherClient {
                     soft_interrupt_queues,
                     shutdown_signals,
                     swarm_members,
+                    turn_coordinator,
                 )
                 .await;
         });
@@ -1189,6 +1208,7 @@ async fn deliver_to_session(
     sessions: &SessionAgents,
     soft_interrupt_queues: &SessionInterruptQueues,
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+    turn_coordinator: &TurnCoordinator,
 ) -> Result<String> {
     let agent = {
         let guard = sessions.read().await;
@@ -1214,6 +1234,15 @@ async fn deliver_to_session(
         anyhow::bail!("session '{session_id}' is busy and could not accept a queued interrupt")
     }
 
+    let turn_lease = turn_coordinator
+        .begin_server_turn(
+            session_id,
+            crate::tool::TurnOrigin::ServerInitiated {
+                kind: "jade-relay".to_string(),
+            },
+        )
+        .map_err(|error| anyhow::anyhow!("session '{session_id}' is busy: {error}"))?;
+
     let start_message_index = {
         let agent_guard = agent.lock().await;
         agent_guard.message_count()
@@ -1225,7 +1254,7 @@ async fn deliver_to_session(
         Vec::new(),
         None,
         event_tx,
-        crate::tool::TurnExecutionContext::server_initiated("jade-relay"),
+        turn_lease,
     )
     .await?;
     let reply = {
@@ -1240,6 +1269,7 @@ async fn deliver_to_launched_session(
     text: &str,
     sessions: &SessionAgents,
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+    turn_coordinator: &TurnCoordinator,
 ) -> Result<String> {
     let agent = {
         let guard = sessions.read().await;
@@ -1248,6 +1278,15 @@ async fn deliver_to_launched_session(
     let Some(agent) = agent else {
         anyhow::bail!("session '{session_id}' is not live in this Jcode server")
     };
+
+    let turn_lease = turn_coordinator
+        .begin_server_turn(
+            session_id,
+            crate::tool::TurnOrigin::ServerInitiated {
+                kind: "jade-relay-launch".to_string(),
+            },
+        )
+        .map_err(|error| anyhow::anyhow!("session '{session_id}' is busy: {error}"))?;
 
     // A just-spawned headed TUI briefly owns the agent lock while it subscribes
     // and restores history. For launch commands, wait for that startup work and
@@ -1264,7 +1303,7 @@ async fn deliver_to_launched_session(
         Vec::new(),
         None,
         event_tx,
-        crate::tool::TurnExecutionContext::server_initiated("jade-relay-launch"),
+        turn_lease,
     )
     .await?;
     let reply = {

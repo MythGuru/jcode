@@ -14,6 +14,7 @@
 //! started turn in their UI.
 
 use super::client_lifecycle::process_message_streaming_mpsc;
+use super::turn_coordinator::{ServerTurnLease, TurnCoordinator};
 use super::{
     SwarmEvent, SwarmMember, session_event_fanout_sender, truncate_detail, update_member_status,
     update_member_status_with_report,
@@ -97,6 +98,7 @@ pub(super) async fn spawn_tracked_live_turn(
     system_reminder: Option<String>,
     status_detail: Option<String>,
     swarm: LiveTurnSwarmContext,
+    turn_lease: ServerTurnLease,
 ) {
     update_member_status(
         session_id,
@@ -123,7 +125,7 @@ pub(super) async fn spawn_tracked_live_turn(
             vec![],
             system_reminder,
             event_tx.clone(),
-            crate::tool::TurnExecutionContext::server_initiated("live-turn"),
+            turn_lease,
         )
         .await;
         match result {
@@ -180,10 +182,23 @@ pub(super) async fn run_live_turn_if_idle(
     system_reminder: Option<String>,
     sessions: &SessionAgents,
     swarm: LiveTurnSwarmContext,
+    turn_coordinator: &TurnCoordinator,
+    turn_kind: &'static str,
 ) -> bool {
     let Some(agent) = idle_live_agent(session_id, sessions, &swarm.members).await else {
         return false;
     };
+    let Ok(turn_lease) = turn_coordinator.begin_server_turn(
+        session_id,
+        crate::tool::TurnOrigin::ServerInitiated {
+            kind: turn_kind.to_string(),
+        },
+    ) else {
+        return false;
+    };
+    if agent.try_lock().is_err() {
+        return false;
+    }
     let detail = Some(truncate_detail(message, 120)).filter(|detail| !detail.is_empty());
     spawn_tracked_live_turn(
         session_id,
@@ -192,6 +207,7 @@ pub(super) async fn run_live_turn_if_idle(
         system_reminder,
         detail,
         swarm,
+        turn_lease,
     )
     .await;
     true

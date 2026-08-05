@@ -89,7 +89,8 @@ async fn removing_server_session_clears_active_pid_marker() {
         session_id.to_string(),
         "agent",
     )])));
-    let removed = remove_session_entry(&sessions, session_id).await;
+    let coordinator = super::turn_coordinator::TurnCoordinator::default();
+    let removed = remove_session_entry(&sessions, session_id, &coordinator).await;
 
     assert_eq!(removed, Some("agent"));
     assert!(!sessions.read().await.contains_key(session_id));
@@ -365,6 +366,7 @@ async fn background_task_wake_runs_live_session_immediately_when_idle() {
         &event_history,
         &event_counter,
         &swarm_event_tx,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -458,6 +460,8 @@ async fn wake_turn_tracks_member_status_and_emits_terminal_done() {
             &event_counter,
             &swarm_event_tx,
         ),
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
+        "server-test",
     )
     .await;
     assert!(started, "idle live session should accept the wake turn");
@@ -567,6 +571,7 @@ async fn background_task_notify_without_wake_does_not_queue_soft_interrupt() {
         &event_history,
         &event_counter,
         &swarm_event_tx,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 

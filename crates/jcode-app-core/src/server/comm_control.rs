@@ -770,6 +770,7 @@ fn spawn_assigned_task_run(
     event_history: Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: broadcast::Sender<SwarmEvent>,
+    turn_lease: super::turn_coordinator::ServerTurnLease,
 ) {
     let assignment_text = append_swarm_completion_report_instructions(&assignment_text);
     tokio::spawn(async move {
@@ -894,7 +895,7 @@ fn spawn_assigned_task_run(
             vec![],
             None,
             event_tx,
-            crate::tool::TurnExecutionContext::server_initiated("assigned-task"),
+            turn_lease,
         )
         .await;
         let completion_report = if result.is_ok() {
@@ -1407,6 +1408,7 @@ pub(super) async fn handle_comm_assign_task(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     swarm_mutation_runtime: &SwarmMutationRuntime,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     handle_comm_assign_task_with_mode(
         id,
@@ -1427,6 +1429,7 @@ pub(super) async fn handle_comm_assign_task(
         event_counter,
         swarm_event_tx,
         swarm_mutation_runtime,
+        turn_coordinator,
     )
     .await;
 }
@@ -1454,6 +1457,7 @@ async fn handle_comm_assign_task_with_mode(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     swarm_mutation_runtime: &SwarmMutationRuntime,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     let requested_target_session = target_session.and_then(|target| {
         let trimmed = target.trim();
@@ -1793,6 +1797,22 @@ async fn handle_comm_assign_task_with_mode(
         let event_history_for_run = Arc::clone(event_history);
         let event_counter_for_run = Arc::clone(event_counter);
         let swarm_event_tx_for_run = swarm_event_tx.clone();
+        let turn_lease = match turn_coordinator.begin_server_turn(
+            &target_session_for_run,
+            crate::tool::TurnOrigin::ServerInitiated {
+                kind: "assigned-task".to_string(),
+            },
+        ) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id,
+                    message: format!("Cannot start assigned task: {error}"),
+                    retry_after_secs: None,
+                });
+                return;
+            }
+        };
         spawn_assigned_task_run(
             agent_arc,
             target_session_for_run,
@@ -1806,6 +1826,7 @@ async fn handle_comm_assign_task_with_mode(
             event_history_for_run,
             event_counter_for_run,
             swarm_event_tx_for_run,
+            turn_lease,
         );
     }
 
@@ -1872,6 +1893,7 @@ pub(super) async fn handle_comm_assign_next(
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
     swarm_mutation_runtime: &SwarmMutationRuntime,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     if target_session.is_none() {
         let swarm_id = match require_plan_driver_swarm(
@@ -1941,6 +1963,7 @@ pub(super) async fn handle_comm_assign_next(
                 mcp_pool,
                 soft_interrupt_queues,
                 client_connections,
+                turn_coordinator,
             )
             .await
             {
@@ -1963,6 +1986,7 @@ pub(super) async fn handle_comm_assign_next(
                         event_counter,
                         swarm_event_tx,
                         swarm_mutation_runtime,
+                        turn_coordinator,
                     )
                     .await;
                     return;
@@ -1998,6 +2022,7 @@ pub(super) async fn handle_comm_assign_next(
                     event_counter,
                     swarm_event_tx,
                     swarm_mutation_runtime,
+                    turn_coordinator,
                 )
                 .await;
                 // The pick was claimed at resolve time; by now the assignment
@@ -2034,6 +2059,7 @@ pub(super) async fn handle_comm_assign_next(
         event_counter,
         swarm_event_tx,
         swarm_mutation_runtime,
+        turn_coordinator,
     )
     .await;
 }
@@ -2061,6 +2087,7 @@ pub(super) async fn handle_comm_task_control(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     swarm_mutation_runtime: &SwarmMutationRuntime,
+    turn_coordinator: &super::turn_coordinator::TurnCoordinator,
 ) {
     let Some(action) = TaskControlAction::parse(&action) else {
         let _ = client_event_tx.send(ServerEvent::Error {
@@ -2250,6 +2277,22 @@ pub(super) async fn handle_comm_task_control(
                     .await;
                 }
 
+                let turn_lease = match turn_coordinator.begin_server_turn(
+                    &assignee,
+                    crate::tool::TurnOrigin::ServerInitiated {
+                        kind: "assigned-task".to_string(),
+                    },
+                ) {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        let _ = client_event_tx.send(ServerEvent::Error {
+                            id,
+                            message: format!("Cannot restart assigned task: {error}"),
+                            retry_after_secs: None,
+                        });
+                        return;
+                    }
+                };
                 spawn_assigned_task_run(
                     agent_arc,
                     assignee.clone(),
@@ -2263,6 +2306,7 @@ pub(super) async fn handle_comm_task_control(
                     Arc::clone(event_history),
                     Arc::clone(event_counter),
                     swarm_event_tx.clone(),
+                    turn_lease,
                 );
                 let summary = plan_graph_status_for(&swarm_id, swarm_plans).await;
                 let _ = client_event_tx.send(ServerEvent::CommTaskControlResponse {
@@ -2351,6 +2395,7 @@ pub(super) async fn handle_comm_task_control(
                 event_counter,
                 swarm_event_tx,
                 swarm_mutation_runtime,
+                turn_coordinator,
             )
             .await;
         }
@@ -2478,6 +2523,7 @@ pub(super) async fn handle_comm_task_control(
                 event_counter,
                 swarm_event_tx,
                 swarm_mutation_runtime,
+                turn_coordinator,
             )
             .await;
 

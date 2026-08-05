@@ -77,7 +77,9 @@ fn active_assignment_conflict_detects_only_assigned_and_fresh_items() {
 
     // Assigned with no progress record or no timestamps -> allow (treated
     // stale, mirroring refresh_swarm_task_staleness).
-    assert!(super::active_assignment_conflict("running", Some("snail"), None, now, window).is_none());
+    assert!(
+        super::active_assignment_conflict("running", Some("snail"), None, now, window).is_none()
+    );
     assert!(
         super::active_assignment_conflict(
             "running",
@@ -96,13 +98,26 @@ fn active_assignment_conflict_detects_only_assigned_and_fresh_items() {
         ..Default::default()
     };
     assert!(
-        super::active_assignment_conflict("queued", Some("snail"), Some(&just_assigned), now, window)
-            .is_some(),
+        super::active_assignment_conflict(
+            "queued",
+            Some("snail"),
+            Some(&just_assigned),
+            now,
+            window
+        )
+        .is_some(),
         "an assignment made moments ago is active even before its first heartbeat"
     );
 
     // running_stale and terminal statuses -> allow (existing recovery paths).
-    for status in ["running_stale", "failed", "stopped", "crashed", "completed", "done"] {
+    for status in [
+        "running_stale",
+        "failed",
+        "stopped",
+        "crashed",
+        "completed",
+        "done",
+    ] {
         assert!(
             super::active_assignment_conflict(
                 status,
@@ -234,6 +249,7 @@ async fn assign_task_rejects_double_assignment_of_actively_worked_task() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -318,6 +334,7 @@ async fn assign_task_allows_taking_over_stale_assignment() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -408,6 +425,7 @@ async fn task_control_reassign_tells_displaced_worker_to_stand_down() {
         &event_counter,
         &swarm_event_tx,
         &mutation_runtime,
+        &crate::server::turn_coordinator::TurnCoordinator::default(),
     )
     .await;
 
@@ -445,8 +463,7 @@ async fn task_control_reassign_tells_displaced_worker_to_stand_down() {
             })
         })
     };
-    let stand_down =
-        stand_down.expect("displaced worker must receive a stand-down soft interrupt");
+    let stand_down = stand_down.expect("displaced worker must receive a stand-down soft interrupt");
     assert!(
         stand_down.contains("'contested'") && stand_down.contains("'penguin'"),
         "stand-down order must name the task and the new assignee: {stand_down}"
