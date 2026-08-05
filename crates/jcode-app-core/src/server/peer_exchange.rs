@@ -186,7 +186,7 @@ struct ActiveExchange {
     sender_generation: u64,
     recipient_generation: u64,
     recipient_cancellation: InterruptSignal,
-    _reservation: ActivePeerReservation,
+    reservation: ActivePeerReservation,
     result_tx: Option<oneshot::Sender<PeerExchangeResult>>,
 }
 
@@ -501,7 +501,7 @@ impl PeerExchangeRegistry {
             sender_generation,
             recipient_generation,
             recipient_cancellation: recipient_cancellation.clone(),
-            _reservation: reservation,
+            reservation,
             result_tx: Some(result_tx),
         };
         state
@@ -569,6 +569,15 @@ impl PeerExchangeRegistry {
         result: Result<(), String>,
     ) -> Option<PeerExchangeResult> {
         self.finish(exchange_id, FinishReason::Recipient(result))
+    }
+
+    pub(super) fn mark_recipient_delivery_started(&self, exchange_id: &str) -> bool {
+        let mut state = self.lock_state();
+        let Some(exchange) = state.exchanges.get_mut(exchange_id) else {
+            return false;
+        };
+        exchange.reservation.mark_delivery_started();
+        true
     }
 
     pub(super) fn cancel_exchange(&self, exchange_id: &str) -> Option<PeerExchangeResult> {

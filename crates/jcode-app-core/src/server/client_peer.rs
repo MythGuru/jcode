@@ -261,6 +261,14 @@ async fn begin_peer_send_transaction(
             });
         }
     };
+    if !context
+        .exchanges
+        .mark_recipient_delivery_started(&resolved.exchange_id)
+    {
+        return Err(PeerStartError::TargetOffline(
+            resolved.recipient.alias.clone(),
+        ));
+    }
 
     Ok(PreparedPeerSend {
         sender: resolved.sender,
@@ -857,7 +865,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn peer_send_rejects_locked_recipient_without_exchange_or_transcript_delivery() {
+    async fn peer_send_rejects_locked_recipient_then_allows_same_turn_retry() {
         let home = tempfile::TempDir::new().expect("peer config home");
         let eve_dir = tempfile::TempDir::new().expect("Eve project");
         let atlas_dir = tempfile::TempDir::new().expect("Atlas project");
@@ -945,6 +953,9 @@ mod tests {
         );
 
         drop(busy_guard);
+        let retry = begin_peer_send_transaction(&sender_context, "Atlas", &context).await;
+        let prepared = retry.expect("busy rejection must preserve the same-turn send permit");
+        drop(prepared);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
             recipient_agent.lock().await.message_count(),

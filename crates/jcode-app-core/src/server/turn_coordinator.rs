@@ -191,6 +191,7 @@ pub(super) struct ActivePeerReservation {
     sender_generation: u64,
     sender_cancellation: InterruptSignal,
     recipient_lease: Option<ServerTurnLease>,
+    delivery_started: bool,
 }
 
 impl PendingPeerStart {
@@ -222,6 +223,7 @@ impl PendingPeerStart {
             sender_generation: self.sender_generation,
             sender_cancellation: self.sender_cancellation.clone(),
             recipient_lease: self.recipient_lease.take(),
+            delivery_started: false,
         }
     }
 }
@@ -265,6 +267,10 @@ impl ActivePeerReservation {
             .take()
             .expect("active peer reservation must retain its recipient lease until delivery starts")
     }
+
+    pub(super) fn mark_delivery_started(&mut self) {
+        self.delivery_started = true;
+    }
 }
 
 impl Drop for ActivePeerReservation {
@@ -274,6 +280,7 @@ impl Drop for ActivePeerReservation {
             &self.exchange_id,
             &self.sender_session_id,
             self.sender_generation,
+            !self.delivery_started,
         );
     }
 }
@@ -673,11 +680,22 @@ impl TurnCoordinator {
     fn release_peer_reservations(
         &self,
         exchange_id: &str,
-        _sender_session_id: &str,
-        _sender_generation: u64,
+        sender_session_id: &str,
+        sender_generation: u64,
+        restore_sender_permit: bool,
     ) {
         let mut state = self.lock_state();
         Self::remove_matching_reservations(&mut state, exchange_id);
+        if restore_sender_permit
+            && let Some(active) = state
+                .sessions
+                .get_mut(sender_session_id)
+                .and_then(|session| session.active.as_mut())
+            && active.generation == sender_generation
+            && matches!(active.origin, TurnOrigin::NormalUser)
+        {
+            active.can_send = true;
+        }
     }
 
     fn remove_matching_reservations(state: &mut CoordinatorState, exchange_id: &str) {
@@ -907,6 +925,62 @@ mod tests {
                 .begin_server_turn("recipient", TurnOrigin::NormalUser)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn undelivered_reservation_does_not_restore_a_newer_sender_generation() {
+        let coordinator = TurnCoordinator::default();
+        let old_sender = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("old sender turn should start");
+        let active = coordinator
+            .begin_peer_turn(
+                old_sender.context(),
+                "recipient",
+                "exchange-old".to_string(),
+            )
+            .expect("old peer exchange should reserve both sessions")
+            .commit();
+
+        coordinator.remove_session("sender");
+        let new_sender = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("new sender generation should start");
+        assert!(
+            coordinator
+                .consume_send_permit(new_sender.context())
+                .is_ok()
+        );
+
+        drop(active);
+
+        assert_eq!(
+            coordinator.consume_send_permit(new_sender.context()),
+            Err(TurnValidationError::SendAlreadyConsumed),
+            "stale reservation cleanup must not grant a permit to a newer sender turn"
+        );
+    }
+
+    #[test]
+    fn delivered_reservation_keeps_the_sender_permit_consumed() {
+        let coordinator = TurnCoordinator::default();
+        let sender = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("sender turn should start");
+        let mut active = coordinator
+            .begin_peer_turn(sender.context(), "recipient", "exchange-1".to_string())
+            .expect("peer exchange should reserve both sessions")
+            .commit();
+        active.mark_delivery_started();
+
+        drop(active);
+
+        assert!(matches!(
+            coordinator.begin_peer_turn(sender.context(), "other", "exchange-2".to_string()),
+            Err(BeginPeerError::InvalidSender(
+                TurnValidationError::SendAlreadyConsumed
+            ))
+        ));
     }
 
     #[test]
