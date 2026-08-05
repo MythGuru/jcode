@@ -5,6 +5,74 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 use uuid::Uuid;
 
+#[cfg(test)]
+static ACTIVE_SERVER_CAPTURE_WATCHERS: std::sync::LazyLock<
+    Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+#[cfg(test)]
+struct ActiveServerCaptureWatcher {
+    session_id: String,
+}
+
+#[cfg(test)]
+impl ActiveServerCaptureWatcher {
+    fn new(session_id: String) -> Self {
+        ACTIVE_SERVER_CAPTURE_WATCHERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session_id.clone());
+        Self { session_id }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ActiveServerCaptureWatcher {
+    fn drop(&mut self) {
+        ACTIVE_SERVER_CAPTURE_WATCHERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.session_id);
+    }
+}
+
+#[cfg(test)]
+pub(super) fn server_capture_watcher_active(session_id: &str) -> bool {
+    ACTIVE_SERVER_CAPTURE_WATCHERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(session_id)
+}
+
+struct AbortTaskOnDrop<T> {
+    handle: Option<tokio::task::JoinHandle<T>>,
+}
+
+impl<T> AbortTaskOnDrop<T> {
+    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    async fn abort_and_join(&mut self) -> Result<T, tokio::task::JoinError> {
+        let handle = self
+            .handle
+            .take()
+            .expect("abort-on-drop task must retain its handle until joined");
+        handle.abort();
+        handle.await
+    }
+}
+
+impl<T> Drop for AbortTaskOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct TurnCoordinator {
     inner: Arc<Mutex<CoordinatorState>>,
@@ -254,14 +322,17 @@ impl TurnCoordinator {
         let mut agent = agent.lock().await;
         let agent_shutdown = agent.graceful_shutdown_signal();
         let watcher_shutdown = agent_shutdown.clone();
-        let cancellation_watcher = tokio::spawn(async move {
+        #[cfg(test)]
+        let watcher_session_id = session_id.to_string();
+        let mut cancellation_watcher = AbortTaskOnDrop::new(tokio::spawn(async move {
+            #[cfg(test)]
+            let _active_watcher = ActiveServerCaptureWatcher::new(watcher_session_id);
             lease_cancellation.notified().await;
             watcher_shutdown.fire();
             watcher_shutdown.epoch()
-        });
+        }));
         let result = agent.run_once_capture(message, turn_execution).await;
-        cancellation_watcher.abort();
-        if let Ok(cancel_epoch) = cancellation_watcher.await {
+        if let Ok(cancel_epoch) = cancellation_watcher.abort_and_join().await {
             agent_shutdown.reset_if_epoch(cancel_epoch);
         }
         result

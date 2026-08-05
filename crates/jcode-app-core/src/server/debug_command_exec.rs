@@ -652,7 +652,7 @@ pub(super) async fn execute_debug_command(
 
 #[cfg(test)]
 mod tests {
-    use super::{DebugInterruptContext, execute_debug_command};
+    use super::{DebugInterruptContext, execute_debug_command, run_debug_message_with_timeout};
     use crate::agent::Agent;
     use crate::provider::{EventStream, Provider};
     use crate::tool::Registry;
@@ -706,6 +706,10 @@ mod tests {
 
     struct CompleteProvider;
 
+    struct HangingProvider {
+        started: Arc<tokio::sync::Notify>,
+    }
+
     #[async_trait]
     impl Provider for TestProvider {
         async fn complete(
@@ -750,6 +754,74 @@ mod tests {
         fn fork(&self) -> Arc<dyn Provider> {
             Arc::new(Self)
         }
+    }
+
+    #[async_trait]
+    impl Provider for HangingProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::message::Message],
+            _tools: &[crate::message::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<EventStream> {
+            self.started.notify_one();
+            futures::future::pending::<Result<EventStream>>().await
+        }
+
+        fn name(&self) -> &str {
+            "hanging"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self {
+                started: Arc::clone(&self.started),
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn debug_message_timeout_does_not_detach_cancellation_watcher() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let provider: Arc<dyn Provider> = Arc::new(HangingProvider {
+            started: Arc::clone(&started),
+        });
+        let registry = Registry::new(provider.clone()).await;
+        let agent = Arc::new(AsyncMutex::new(Agent::new(provider, registry)));
+        let session_id = agent.lock().await.session_id().to_string();
+        let coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+
+        let timeout_task = tokio::spawn(run_debug_message_with_timeout(
+            Arc::clone(&agent),
+            session_id.clone(),
+            coordinator.clone(),
+            "hang until the debug timeout",
+            1,
+        ));
+        started.notified().await;
+        tokio::time::timeout(Duration::from_millis(250), async {
+            while !crate::server::turn_coordinator::server_capture_watcher_active(&session_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("debug capture cancellation watcher started");
+
+        let result = timeout_task.await.expect("debug timeout task");
+        assert!(
+            result
+                .expect_err("hanging debug message must time out")
+                .to_string()
+                .contains("timed out")
+        );
+        tokio::time::timeout(Duration::from_millis(250), async {
+            while crate::server::turn_coordinator::server_capture_watcher_active(&session_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed-out debug capture left a detached cancellation watcher");
+        assert!(!coordinator.session_is_busy(&session_id));
     }
 
     #[tokio::test]
