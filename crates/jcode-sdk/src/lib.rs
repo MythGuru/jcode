@@ -31,10 +31,14 @@ mod structured;
 mod parity_tests;
 
 pub use client::{
-    ConnectOptions, EventStream, FileContent, FileStatus, GlobalEventStream, GlobalEventsOptions,
-    JcodeClient, RunOptions, RuntimeInfo, SearchTextOptions, ToolCall, Transport, TurnResult,
-    UnixTransport, Usage,
+    ConnectOptions, DefaultTransport, EventStream, FileContent, FileStatus, GlobalEventStream,
+    GlobalEventsOptions, JcodeClient, RunOptions, RuntimeInfo, SearchTextOptions, ToolCall,
+    Transport, TurnResult, Usage,
 };
+#[cfg(unix)]
+pub use client::UnixTransport;
+#[cfg(windows)]
+pub use client::PipeTransport;
 pub use diagnostics::{SocketState, Stage, describe_disconnect, explain, human_duration};
 pub use errors::{Error, ErrorKind, Result};
 pub use launch::{

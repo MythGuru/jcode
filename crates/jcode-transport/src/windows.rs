@@ -10,7 +10,10 @@ use tokio::net::windows::named_pipe::{
 ///
 /// e.g. `/run/user/1000/jcode.sock` -> `\\.\pipe\jcode`
 /// e.g. `/run/user/1000/jcode/myserver.sock` -> `\\.\pipe\jcode-myserver`
-fn path_to_pipe_name(path: &Path) -> String {
+/// Public because clients that open the pipe directly, rather than through
+/// [`Stream`], still have to agree with the server on the name: deriving it
+/// twice is how the two sides drift apart.
+pub fn path_to_pipe_name(path: &Path) -> String {
     let stem: String = path
         .file_stem()
         .and_then(|s| s.to_str())

@@ -12,11 +12,28 @@
 //! exercise the client against an in-process scripted server:
 //!   cargo run -p jcode-harness-api --example harness_repl -- --demo
 
+// This example speaks the harness API over a Unix socket, and its `--demo`
+// mode builds an in-process server from `UnixStream::pair()`. Both are
+// Unix-only, so rather than grow a named pipe path it never demonstrates,
+// the example stays limited to the platform it documents. An example target
+// still needs a `main` everywhere, so Windows gets one that says as much.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!(
+        "harness_repl demonstrates the harness API over a Unix socket, which \
+         Windows does not have. The harness runs here over a named pipe; this \
+         reference client has not been ported to it yet."
+    );
+}
+
+#[cfg(unix)]
 use jcode_harness_api::{
     API_VERSION_MAJOR, ApiEvent, ApiRequest, HarnessClient, ServerFrame, write_frame,
 };
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 
+#[cfg(unix)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--demo") {
@@ -34,11 +51,13 @@ fn main() {
     run_session(HarnessClient::new(reader, stream), &message);
 }
 
+#[cfg(unix)]
 fn default_socket_path() -> String {
     let home = std::env::var("HOME").expect("HOME not set");
     format!("{home}/.jcode/jcode-api.sock")
 }
 
+#[cfg(unix)]
 fn run_session<R: BufRead, W: Write>(mut client: HarnessClient<R, W>, message: &str) {
     let hello = client.hello("harness_repl/0.1").expect("handshake");
     print_event(&hello);
@@ -75,6 +94,7 @@ fn run_session<R: BufRead, W: Write>(mut client: HarnessClient<R, W>, message: &
     }
 }
 
+#[cfg(unix)]
 fn print_event(frame: &ServerFrame) {
     match &frame.event {
         ApiEvent::TextDelta { text, .. } => {
@@ -88,6 +108,7 @@ fn print_event(frame: &ServerFrame) {
 
 /// Scripted in-process server so the client flow can be exercised before the
 /// real server adapter exists.
+#[cfg(unix)]
 fn run_demo() {
     let (client_stream, server_stream) =
         std::os::unix::net::UnixStream::pair().expect("socketpair");

@@ -63,9 +63,11 @@ pub trait Transport: Send {
     fn split(self: Box<Self>) -> Result<(Box<dyn BufRead + Send>, Box<dyn Write + Send>)>;
 }
 
-/// A Unix socket transport, the default.
+/// A Unix socket transport, the default on Unix.
+#[cfg(unix)]
 pub struct UnixTransport(std::os::unix::net::UnixStream);
 
+#[cfg(unix)]
 impl UnixTransport {
     pub fn connect(path: &std::path::Path) -> Result<Self> {
         // A bare `No such file or directory` names the syscall and hides the
@@ -98,6 +100,7 @@ impl UnixTransport {
     }
 }
 
+#[cfg(unix)]
 impl Transport for UnixTransport {
     fn shutdown_handle(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         let socket = self.0.try_clone().ok()?;
@@ -114,6 +117,78 @@ impl Transport for UnixTransport {
         Ok((Box::new(BufReader::new(self.0)), Box::new(writer)))
     }
 }
+
+/// A named pipe transport, the default on Windows.
+///
+/// The harness binds a pipe whose name `jcode-transport` derives from the
+/// socket path, so the client asks that crate for the name rather than
+/// re-deriving the convention and risking drift from the server.
+#[cfg(windows)]
+pub struct PipeTransport(std::fs::File);
+
+#[cfg(windows)]
+impl PipeTransport {
+    pub fn connect(path: &std::path::Path) -> Result<Self> {
+        // A bare `The system cannot find the file specified` names the syscall
+        // and hides the cause: the bridge is not running. Connecting is the
+        // first thing anyone does with this SDK, so say what to do about it.
+        let name = jcode_transport::path_to_pipe_name(path);
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .map_err(|cause| {
+                Error::new(
+                    ErrorKind::ConnectFailed,
+                    match cause.kind() {
+                        std::io::ErrorKind::NotFound => format!(
+                            "no harness API pipe for {}: the jcode harness is not running. \
+                             Start it with `jcode serve` and `jcode-harness-api-bridge`, or \
+                             connect with ensure_runtime enabled.",
+                            path.display()
+                        ),
+                        std::io::ErrorKind::PermissionDenied => format!(
+                            "permission denied on the harness pipe for {}: it belongs to \
+                             another user.",
+                            path.display()
+                        ),
+                        _ => format!("could not connect to {}: {cause}", path.display()),
+                    },
+                )
+            })?;
+        Ok(Self(handle))
+    }
+}
+
+#[cfg(windows)]
+impl Transport for PipeTransport {
+    fn shutdown_handle(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        // A pipe has no half-close. Dropping the cloned handle is what unblocks
+        // a reader, so the handle is held and released rather than shut down.
+        let handle = self.0.try_clone().ok()?;
+        let slot = std::sync::Mutex::new(Some(handle));
+        Some(Arc::new(move || {
+            if let Ok(mut slot) = slot.lock() {
+                slot.take();
+            }
+        }))
+    }
+
+    fn split(self: Box<Self>) -> Result<(Box<dyn BufRead + Send>, Box<dyn Write + Send>)> {
+        let writer = self
+            .0
+            .try_clone()
+            .map_err(|e| Error::new(ErrorKind::Transport, e.to_string()))?;
+        Ok((Box::new(BufReader::new(self.0)), Box::new(writer)))
+    }
+}
+
+/// The transport this platform connects with by default.
+#[cfg(unix)]
+pub type DefaultTransport = UnixTransport;
+/// The transport this platform connects with by default.
+#[cfg(windows)]
+pub type DefaultTransport = PipeTransport;
 
 /// A subscription to the event stream.
 ///
@@ -379,7 +454,7 @@ impl JcodeClient {
             ensure_runtime(&LaunchOptions::default(), &|_| {})?;
         }
         Self::over(
-            Box::new(UnixTransport::connect(&path)?),
+            Box::new(DefaultTransport::connect(&path)?),
             &options,
             path,
             true,

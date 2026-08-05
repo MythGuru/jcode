@@ -1,3 +1,10 @@
+// These tests stand up a fake harness on a Unix socket, so they exercise the
+// Unix transport specifically rather than platform-independent client
+// behaviour. On Windows the harness speaks named pipes and this file does not
+// compile, so the whole module is gated instead of being stubbed out: the
+// pipe transport really is uncovered here, and that should be visible.
+#![cfg(unix)]
+
 //! Lifecycle and all-session event behavior which cannot be exercised by the
 //! protocol-only socket-pair tests.
 

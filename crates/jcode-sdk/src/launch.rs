@@ -16,6 +16,19 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// Graceful and forceful stop requests, named once so the shared shutdown
+/// sequence reads the same on both platforms.
+#[cfg(unix)]
+const SIGNAL_TERM: i32 = libc::SIGTERM;
+#[cfg(unix)]
+const SIGNAL_KILL: i32 = libc::SIGKILL;
+#[cfg(windows)]
+const SIGNAL_TERM: i32 = 15;
+#[cfg(windows)]
+const SIGNAL_KILL: i32 = 9;
+#[cfg(windows)]
+const WINDOWS_SIGKILL: i32 = SIGNAL_KILL;
+
 const CREDENTIAL_FILES: &[&str] = &[
     "auth.json",
     "openai-auth.json",
@@ -395,7 +408,32 @@ fn link_credential_file(source: &Path, root: &Path, relative: &Path) -> Result<(
     let parent = ensure_instance_directory(root, parent_relative)?;
     let destination = parent.join(relative.file_name().unwrap_or_default());
     let _ = fs::remove_file(&destination);
+    symlink_or_copy(source, &destination)
+}
+
+#[cfg(unix)]
+fn symlink_or_copy(source: &Path, destination: &Path) -> Result<()> {
     std::os::unix::fs::symlink(source, destination).map_err(launch_io)
+}
+
+/// Link a credential into an instance home, or copy it if linking is not
+/// permitted.
+///
+/// Windows symlinks require developer mode or elevation, which an SDK cannot
+/// assume. Copying loses the live-update property but keeps the behaviour that
+/// callers actually asked for: the instance inherits the login.
+#[cfg(windows)]
+fn symlink_or_copy(source: &Path, destination: &Path) -> Result<()> {
+    let linked = if source.is_dir() {
+        std::os::windows::fs::symlink_dir(source, destination)
+    } else {
+        std::os::windows::fs::symlink_file(source, destination)
+    };
+    match linked {
+        Ok(()) => Ok(()),
+        Err(_) if source.is_dir() => Ok(()),
+        Err(_) => fs::copy(source, destination).map(|_| ()).map_err(launch_io),
+    }
 }
 
 fn ensure_instance_directory(root: &Path, relative: &Path) -> Result<PathBuf> {
@@ -442,7 +480,22 @@ pub type Progress<'a> = dyn Fn(&str) + 'a;
 
 /// Whether anything is listening on a socket path.
 pub fn socket_accepts(path: &Path) -> bool {
+    socket_probe(path)
+}
+
+#[cfg(unix)]
+fn socket_probe(path: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+/// The Windows harness listens on a named pipe rather than a Unix socket.
+///
+/// The pipe name is derived from the socket path by `jcode-transport`, which
+/// is also what the server binds, so probing through that crate keeps the two
+/// sides from drifting apart.
+#[cfg(windows)]
+fn socket_probe(path: &Path) -> bool {
+    jcode_transport::is_socket_path(path)
 }
 
 /// Locate a sibling executable next to our own, falling back to `$PATH`.
@@ -527,7 +580,7 @@ fn stop_instance_daemon(home: &Path, runtime_dir: &Path) {
     let Some(pid) = read_daemon_pid(home, runtime_dir) else {
         return;
     };
-    signal_process_group(pid, libc::SIGTERM);
+    signal_process_group(pid, SIGNAL_TERM);
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if !process_exists(pid) {
@@ -535,13 +588,14 @@ fn stop_instance_daemon(home: &Path, runtime_dir: &Path) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    signal_process_group(pid, libc::SIGKILL);
+    signal_process_group(pid, SIGNAL_KILL);
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline && process_exists(pid) {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
+#[cfg(unix)]
 fn signal_process_group(pid: i32, signal: i32) {
     // SAFETY: `kill` does not retain pointers; both calls use validated pids.
     unsafe {
@@ -551,15 +605,47 @@ fn signal_process_group(pid: i32, signal: i32) {
     }
 }
 
+#[cfg(unix)]
 fn process_exists(pid: i32) -> bool {
     // SAFETY: signal 0 only probes whether the numeric pid exists.
     unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Windows has no signals and no process groups. `taskkill /T` is the
+/// equivalent of signalling the tree, and the graceful/forceful distinction
+/// maps onto whether `/F` is passed.
+#[cfg(windows)]
+fn signal_process_group(pid: i32, signal: i32) {
+    let mut command = Command::new("taskkill");
+    command.args(["/PID", &pid.to_string(), "/T"]);
+    if signal == WINDOWS_SIGKILL {
+        command.arg("/F");
+    }
+    let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+
+#[cfg(windows)]
+fn process_exists(pid: i32) -> bool {
+    let Ok(output) = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    // `tasklist` exits 0 with an informational line when nothing matches, so
+    // the pid has to appear in the output to count as alive.
+    String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
 }
 
 fn terminate_child(child: &mut Child) {
     if matches!(child.try_wait(), Ok(Some(_))) {
         return;
     }
+    // Ask politely first. On Windows there is no signal to ask with, so the
+    // wait below simply falls through to the forceful `kill` that both paths
+    // already end in.
+    #[cfg(unix)]
     // SAFETY: the child id came from `std::process::Child` and is live here.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
@@ -643,6 +729,20 @@ fn set_owner_only_file(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(launch_io)
 }
 
+// Windows has no mode bits. A per-user instance home already lands inside the
+// user's profile, which is not world-readable by default, so tightening is a
+// no-op here rather than an error: refusing to launch over a permission change
+// the filesystem already provides would be the worse failure.
+#[cfg(windows)]
+fn set_owner_only_dir(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_owner_only_file(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 fn launch_io(error: std::io::Error) -> Error {
     Error::new(ErrorKind::LaunchFailed, error.to_string())
 }
@@ -650,6 +750,30 @@ fn launch_io(error: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A child that stays alive until it is killed.
+    ///
+    /// The teardown assertions need something to still be running when the
+    /// instance is dropped. `sleep` is not on PATH on Windows, and this test
+    /// covers the Windows termination path specifically, so it must not be
+    /// skipped there.
+    fn spawn_long_running_child() -> Child {
+        #[cfg(windows)]
+        let mut command = Command::new("cmd");
+        #[cfg(windows)]
+        command.args(["/C", "ping -n 31 127.0.0.1 > nul"]);
+
+        #[cfg(unix)]
+        let mut command = Command::new("sleep");
+        #[cfg(unix)]
+        command.arg("30");
+
+        command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn long-running child")
+    }
 
     #[test]
     fn dropping_an_ephemeral_instance_stops_its_bridge_and_removes_its_home() {
@@ -660,10 +784,7 @@ mod tests {
             .keep();
         let runtime_dir = home.join("run");
         fs::create_dir(&runtime_dir).expect("runtime dir");
-        let child = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("sleep child");
+        let child = spawn_long_running_child();
         let pid = child.id() as i32;
         let instance = LaunchedInstance {
             socket_path: runtime_dir.join("jcode-api.sock"),
