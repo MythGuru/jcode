@@ -134,7 +134,35 @@ pub fn reload_process_alive(pid: u32) -> bool {
         matches!(err.raw_os_error(), Some(libc::EPERM))
     }
 
-    #[cfg(not(unix))]
+    // Windows has no `kill(pid, 0)`, so ask the OS for the process directly.
+    // Returning a blanket `true` here (the previous behaviour) meant a reload
+    // that had actually died was reported as still running forever, so callers
+    // waited on a process that was never coming back.
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                // No such process, or it is gone and unqueryable.
+                return false;
+            }
+
+            let mut exit_code: u32 = 0;
+            let queried = GetExitCodeProcess(handle, &mut exit_code);
+            CloseHandle(handle);
+
+            // A pid can be reused, and an exited process still answers until its
+            // last handle closes, so trust the exit code rather than the handle.
+            queried != 0 && exit_code == STILL_ACTIVE as u32
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         true

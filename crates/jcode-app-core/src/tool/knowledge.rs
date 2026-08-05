@@ -69,9 +69,7 @@ impl Tool for KnowledgeTool {
     }
 
     fn description(&self) -> &str {
-        "Maintain the project's living knowledge map (structure, decisions, rules, known problems, responsibilities). \
-         Entries start as proposed; they become verified only after builds/tests pass (action=verify) or the user \
-         explicitly confirms them in conversation (action=confirm)."
+        "Maintain the project's knowledge map of structure, decisions, and rules."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -82,7 +80,7 @@ impl Tool for KnowledgeTool {
                 "action": {
                     "type": "string",
                     "enum": ["show", "propose", "revise", "verify", "confirm", "remove", "history"],
-                    "description": "Action. verify uses this session's build/test evidence; confirm records explicit user confirmation and must only be used after the user actually confirmed."
+                    "description": "Action. Entries start proposed; verify needs build/test evidence, confirm needs the user."
                 },
                 "section": {
                     "type": "string",
@@ -278,11 +276,33 @@ mod tests {
         }
     }
 
+    /// Isolated home + feature flag explicitly OFF, restored on drop.
+    ///
+    /// Reading the ambient config here is not good enough: a developer whose
+    /// own config enables the feature would see this test fail for a reason
+    /// that has nothing to do with the code under test.
+    fn setup_disabled() -> TestEnv {
+        let env = crate::storage::lock_test_env();
+        verification::clear_all();
+        let home = tempfile::tempdir().expect("home");
+        let prev_home = std::env::var_os("JCODE_HOME");
+        let prev_flag = std::env::var_os("JCODE_PROJECT_KNOWLEDGE_ENABLED");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var("JCODE_PROJECT_KNOWLEDGE_ENABLED", "false");
+        crate::config::invalidate_config_cache();
+        TestEnv {
+            _home: home,
+            _env: env,
+            prev_home,
+            prev_flag,
+        }
+    }
+
     #[tokio::test]
     async fn disabled_flag_short_circuits_every_action() {
-        let _env = crate::storage::lock_test_env();
-        // Default config: flag off. Every action must return the disabled
-        // message without touching disk.
+        // Pin the flag off rather than trusting the ambient config, so this
+        // tests the disabled path and not the developer's own settings.
+        let _env = setup_disabled();
         let tool = KnowledgeTool::new();
         for action in ["show", "propose", "verify", "confirm", "history"] {
             let out = tool

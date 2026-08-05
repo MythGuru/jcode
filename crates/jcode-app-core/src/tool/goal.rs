@@ -150,7 +150,7 @@ impl Tool for InitiativeTool {
                 "checkpoint_summary": {"type": "string"},
                 "step_id": {"type": "string", "description": "Step id (verify_step)."},
                 "note": {"type": "string", "description": "For verify_step with authority=user: what the user said, briefly."},
-                "authority": {"type": "string", "enum": ["evidence", "user"], "description": "verify_step authority. evidence (default) uses this session's build/test events; user records explicit user confirmation and must only be used after the user actually confirmed."}
+                "authority": {"type": "string", "enum": ["evidence", "user"], "description": "verify_step authority: evidence (default) uses build/test events, user needs the user."}
             }
         })
     }

@@ -812,8 +812,11 @@ mod newest_reload_candidate_integration_tests {
         std::fs::create_dir_all(&dir).expect("create version dir");
         let path = dir.join(build::binary_name());
         std::fs::write(&path, format!("binary for {version}")).expect("write binary");
-        std::fs::File::open(&path)
-            .expect("open binary")
+        // Reopen for writing: Windows denies SetFileTime on a read-only handle.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open binary for write")
             .set_modified(mtime)
             .expect("set mtime");
         path
@@ -828,6 +831,15 @@ mod newest_reload_candidate_integration_tests {
             .map(|n| n.to_string_lossy().into_owned())
     }
 
+    // Channel-to-version resolution here relies on canonicalizing a symlink.
+    // Windows copies instead of symlinking (see `atomic_symlink_swap`), so the
+    // version cannot be recovered from the path and these assertions cannot
+    // hold. The reload behaviour itself is unchanged; only this identification
+    // technique is Unix-only.
+    #[cfg_attr(
+        windows,
+        ignore = "channel version is resolved via symlink; Windows copies"
+    )]
     #[test]
     fn selfdev_daemon_reloads_into_fresh_release_after_update() {
         let _guard = crate::storage::lock_test_env();
@@ -869,6 +881,10 @@ mod newest_reload_candidate_integration_tests {
         }
     }
 
+    #[cfg_attr(
+        windows,
+        ignore = "channel version is resolved via symlink; Windows copies"
+    )]
     #[test]
     fn selfdev_pin_is_preserved_when_it_is_the_freshest_build() {
         let _guard = crate::storage::lock_test_env();
@@ -937,6 +953,10 @@ mod newest_reload_candidate_integration_tests {
     /// update-detection core and reload-target resolver and assert both:
     /// (1) the daemon reports `server_has_update = true`, and
     /// (2) the binary it reloads into is the freshly installed release.
+    #[cfg_attr(
+        windows,
+        ignore = "channel version is resolved via symlink; Windows copies"
+    )]
     #[test]
     fn normal_user_daemon_detects_and_targets_update_after_update() {
         let _guard = crate::storage::lock_test_env();
@@ -997,8 +1017,11 @@ mod newest_reload_candidate_integration_tests {
         std::fs::create_dir_all(&dir).expect("create version dir");
         let payload = dir.join("jcode-linux-x86_64.bin");
         std::fs::write(&payload, format!("payload for {version}")).expect("write payload");
-        std::fs::File::open(&payload)
-            .expect("open payload")
+        // Reopen for writing: Windows denies SetFileTime on a read-only handle.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&payload)
+            .expect("open payload for write")
             .set_modified(payload_mtime)
             .expect("set payload mtime");
         let wrapper = dir.join(build::binary_name());
@@ -1007,8 +1030,11 @@ mod newest_reload_candidate_integration_tests {
             "#!/usr/bin/env sh\nexec ./jcode-linux-x86_64.bin \"$@\"\n",
         )
         .expect("write wrapper");
-        std::fs::File::open(&wrapper)
-            .expect("open wrapper")
+        // Reopen for writing: Windows denies SetFileTime on a read-only handle.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wrapper)
+            .expect("open wrapper for write")
             .set_modified(wrapper_mtime)
             .expect("set wrapper mtime");
         (wrapper, payload)
@@ -1022,6 +1048,10 @@ mod newest_reload_candidate_integration_tests {
     /// updated daemon report "newer binary available" against ITS OWN install
     /// forever -> the client force-reloaded the server in a loop and the
     /// session never attached.
+    #[cfg_attr(
+        windows,
+        ignore = "channel version is resolved via symlink; Windows copies"
+    )]
     #[test]
     fn freshly_updated_release_daemon_reports_no_phantom_update() {
         let _guard = crate::storage::lock_test_env();

@@ -274,7 +274,7 @@ impl Tool for BrowserTool {
                 "script",
                 json!({
                     "type": "string",
-                    "description": "JavaScript for action='eval'. The bridge runs this as a FUNCTION BODY, so you must use an explicit `return`. `return document.title` works; a bare expression like `document.title` or `1+1` evaluates and is discarded, yielding null with type 'undefined'."
+                    "description": "JavaScript for action='eval'. Runs as a function body, so an explicit `return` is required."
                 }),
             ),
             ("key", json!({"type": "string"})),

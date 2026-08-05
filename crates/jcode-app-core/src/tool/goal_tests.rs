@@ -291,9 +291,13 @@ fn graph_milestone() -> crate::goal::GoalMilestone {
 
 #[tokio::test]
 async fn ready_action_is_flag_gated_and_lists_frontier() {
-    // Flag off: refused with a clear message.
+    // Flag off: refused with a clear message. Pin the flag rather than trusting
+    // the ambient config, which may well have the feature enabled.
     {
         let _env = crate::storage::lock_test_env();
+        let prev_flag = std::env::var_os("JCODE_TASK_GRAPH_ENABLED");
+        crate::env::set_var("JCODE_TASK_GRAPH_ENABLED", "false");
+        crate::config::invalidate_config_cache();
         let tool = InitiativeTool::new();
         let temp = tempfile::tempdir().expect("tempdir");
         let out = tool
@@ -304,6 +308,11 @@ async fn ready_action_is_flag_gated_and_lists_frontier() {
             .await
             .expect("ready while disabled");
         assert!(out.output.contains("disabled"));
+        match prev_flag {
+            Some(value) => crate::env::set_var("JCODE_TASK_GRAPH_ENABLED", value),
+            None => crate::env::remove_var("JCODE_TASK_GRAPH_ENABLED"),
+        }
+        crate::config::invalidate_config_cache();
     }
 
     let env = setup_task_graph_enabled();
