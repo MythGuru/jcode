@@ -183,7 +183,7 @@ impl Tool for PeerTool {
     }
 
     fn description(&self) -> &str {
-        "List allowlisted peer projects, send one bounded review request, or reply once to the fixed sender of an inbound peer turn."
+        "Message an allowlisted peer project once, or reply once to an inbound peer."
     }
 
     fn parameters_schema(&self) -> Value {
