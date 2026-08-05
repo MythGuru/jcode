@@ -136,7 +136,7 @@ impl Tool for MemoryTool {
                 "query": { "type": "string" },
                 "id": {
                     "type": "string",
-                    "description": "Memory id, or proposal id for core_confirm. For core_propose, optionally targets an existing global entry."
+                    "description": "Memory id, or proposal id for core_confirm. core_propose may target an existing global entry."
                 },
                 "tags": {
                     "type": "array",

@@ -69,9 +69,7 @@ impl Tool for KnowledgeTool {
     }
 
     fn description(&self) -> &str {
-        "Maintain the project's living knowledge map (structure, decisions, rules, known problems, responsibilities). \
-         Entries start as proposed; they become verified only after builds/tests pass (action=verify) or the user \
-         explicitly confirms them in conversation (action=confirm)."
+        "Maintain the project's knowledge map of structure, decisions, and rules."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -82,7 +80,7 @@ impl Tool for KnowledgeTool {
                 "action": {
                     "type": "string",
                     "enum": ["show", "propose", "revise", "verify", "confirm", "remove", "history"],
-                    "description": "Action. verify uses this session's build/test evidence; confirm records explicit user confirmation and must only be used after the user actually confirmed."
+                    "description": "Action. Entries start proposed; verify needs build/test evidence, confirm needs the user."
                 },
                 "section": {
                     "type": "string",

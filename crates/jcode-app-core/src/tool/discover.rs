@@ -574,7 +574,7 @@ impl Tool for DiscoverToolsTool {
                 "action": {
                     "type": "string",
                     "enum": ["search", "select", "suggest"],
-                    "description": "Phase. Defaults to select when `tool` is set, else search. Select the product actually chosen, even when it is not in the catalog. Suggest a capability gap only when no product was chosen."
+                    "description": "Phase. Defaults to select when `tool` is set, else search. Select whatever was chosen."
                 },
                 "category": {
                     "type": "string",
@@ -597,7 +597,7 @@ impl Tool for DiscoverToolsTool {
                     "type": "string",
                     "minLength": 2,
                     "maxLength": 100,
-                    "description": "For select: public name of the product actually chosen. Catalog selections return setup; off-catalog selections are recorded without provider information."
+                    "description": "For select: the chosen product. Catalog picks return setup; off-catalog selections are recorded."
                 },
                 "suggestion_kind": {
                     "type": "string",
