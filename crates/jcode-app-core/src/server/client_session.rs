@@ -596,6 +596,8 @@ pub(super) async fn handle_subscribe(
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    peer_groups: &jcode_base::peer_groups::PeerGroups,
+    peer_exchanges: &super::peer_exchange::PeerExchangeRegistry,
 ) {
     let subscribe_start = Instant::now();
     crate::logging::event_info(
@@ -769,6 +771,15 @@ pub(super) async fn handle_subscribe(
         {
             broadcast_swarm_status(&new_id, swarm_members, swarms_by_id).await;
         }
+    }
+
+    let peer_working_dir = swarm_members
+        .read()
+        .await
+        .get(client_session_id)
+        .and_then(|member| member.working_dir.clone());
+    if let Some(peer_working_dir) = peer_working_dir {
+        peer_exchanges.pin_or_invalidate_session(client_session_id, &peer_working_dir, peer_groups);
     }
 
     let should_selfdev = *client_selfdev || matches!(selfdev, Some(true));

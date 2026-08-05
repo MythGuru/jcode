@@ -1,6 +1,7 @@
 use super::live_turn::{LiveTurnSwarmContext, spawn_tracked_live_turn_with_completion};
 use super::peer_exchange::{
     PeerExchangeRegistry, PeerExchangeResult, PeerIdentity, PeerRecipientOutcome,
+    PinnedPeerIdentity,
 };
 use super::turn_coordinator::{BeginPeerError, TurnCoordinator};
 use super::{SessionAgents, SwarmEvent, SwarmMember, session_event_fanout_sender};
@@ -13,7 +14,7 @@ use crate::tool::{TurnExecutionContext, TurnOrigin};
 use jcode_base::peer_groups::{PeerGroup, PeerGroups, PeerMember};
 use jcode_swarm_core::validate_swarm_tldr;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
@@ -37,7 +38,7 @@ pub(super) struct PeerServerContext<'a> {
 struct SessionPeerSnapshot {
     session_id: String,
     agent: Arc<Mutex<Agent>>,
-    working_dir: Option<PathBuf>,
+    identity: Option<PinnedPeerIdentity>,
     live: bool,
 }
 
@@ -96,9 +97,9 @@ async fn session_snapshots(context: &PeerServerContext<'_>) -> Vec<SessionPeerSn
         .map(|(session_id, agent)| {
             let member = members.get(&session_id);
             SessionPeerSnapshot {
+                identity: context.exchanges.pinned_session_identity(&session_id),
                 session_id,
                 agent,
-                working_dir: member.and_then(|member| member.working_dir.clone()),
                 live: member.is_some_and(|member| {
                     !member.event_txs.is_empty() || !member.event_tx.is_closed()
                 }),
@@ -109,9 +110,18 @@ async fn session_snapshots(context: &PeerServerContext<'_>) -> Vec<SessionPeerSn
 
 fn configured_identity<'a>(
     groups: &'a PeerGroups,
-    working_dir: Option<&Path>,
+    identity: Option<&PinnedPeerIdentity>,
 ) -> Option<(&'a PeerGroup, &'a PeerMember)> {
-    working_dir.and_then(|working_dir| groups.identity_for_dir(working_dir))
+    let identity = identity?;
+    let group = groups
+        .groups()
+        .iter()
+        .find(|group| group.name == identity.group_name)?;
+    let member = group.members.iter().find(|member| {
+        member.alias.eq_ignore_ascii_case(&identity.alias)
+            && member.working_dir == identity.working_dir
+    })?;
+    Some((group, member))
 }
 
 fn find_snapshot<'a>(
@@ -123,7 +133,7 @@ fn find_snapshot<'a>(
     snapshots
         .iter()
         .filter(|snapshot| {
-            configured_identity(groups, snapshot.working_dir.as_deref()).is_some_and(
+            configured_identity(groups, snapshot.identity.as_ref()).is_some_and(
                 |(group, member)| {
                     group.name == group_name && member.alias.eq_ignore_ascii_case(alias)
                 },
@@ -170,7 +180,7 @@ fn validated_caller<'a>(
         .iter()
         .find(|snapshot| snapshot.session_id == caller.session_id)
         .ok_or_else(|| "The peer caller session is no longer live on this server.".to_string())?;
-    let (group, member) = configured_identity(context.peer_groups, snapshot.working_dir.as_deref())
+    let (group, member) = configured_identity(context.peer_groups, snapshot.identity.as_ref())
         .ok_or_else(|| "This project is not configured as a peer.".to_string())?;
     Ok(CallerIdentity {
         context: turn,

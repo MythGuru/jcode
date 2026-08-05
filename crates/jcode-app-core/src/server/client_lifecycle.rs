@@ -1517,6 +1517,8 @@ pub(super) async fn handle_client(
                                 &event_history,
                                 &event_counter,
                                 &swarm_event_tx,
+                                &peer_groups,
+                                &peer_exchanges,
                             )
                             .await;
                             if let Some(snapshot) = try_available_models_snapshot(&agent) {
@@ -1553,6 +1555,8 @@ pub(super) async fn handle_client(
                             &event_history,
                             &event_counter,
                             &swarm_event_tx,
+                            &peer_groups,
+                            &peer_exchanges,
                         )
                         .await;
                     }
@@ -1580,6 +1584,8 @@ pub(super) async fn handle_client(
                         &event_history,
                         &event_counter,
                         &swarm_event_tx,
+                        &peer_groups,
+                        &peer_exchanges,
                     )
                     .await;
                     if let Some(snapshot) = try_available_models_snapshot(&agent) {

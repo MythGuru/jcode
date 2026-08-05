@@ -95,6 +95,11 @@ async fn handle_resume_session_allows_live_attach_when_existing_agent_is_busy() 
     let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (swarm_event_tx, _swarm_event_rx) = broadcast::channel::<SwarmEvent>(8);
     let mcp_pool = Arc::new(crate::mcp::SharedMcpPool::from_default_config());
+    let peer_groups = jcode_base::peer_groups::PeerGroups::empty();
+    let peer_exchanges = crate::server::peer_exchange::PeerExchangeRegistry::new(
+        crate::server::turn_coordinator::TurnCoordinator::default(),
+        std::time::Duration::from_secs(60),
+    );
 
     let mut client_selfdev = false;
     let mut client_session_id = temp_session_id.to_string();
@@ -167,6 +172,8 @@ async fn handle_resume_session_allows_live_attach_when_existing_agent_is_busy() 
             &event_history,
             &event_counter,
             &swarm_event_tx,
+            &peer_groups,
+            &peer_exchanges,
         ),
     )
     .await

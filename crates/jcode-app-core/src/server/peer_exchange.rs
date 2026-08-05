@@ -3,8 +3,10 @@ use super::turn_coordinator::{
 };
 use crate::tool::{TurnExecutionContext, TurnOrigin};
 use jcode_agent_runtime::InterruptSignal;
+use jcode_base::peer_groups::PeerGroups;
 use std::collections::HashMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -16,6 +18,19 @@ pub(super) struct PeerIdentity {
     pub session_id: String,
     pub alias: String,
     pub project_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PinnedPeerIdentity {
+    pub group_name: String,
+    pub alias: String,
+    pub working_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PinnedSessionIdentity {
+    Eligible(PinnedPeerIdentity),
+    Invalidated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +136,7 @@ pub(super) struct PeerExchangeRegistry {
 struct RegistryState {
     exchanges: HashMap<String, ActiveExchange>,
     session_index: HashMap<String, String>,
+    pinned_identities: HashMap<String, PinnedSessionIdentity>,
 }
 
 struct ActiveExchange {
@@ -163,6 +179,53 @@ impl PeerExchangeRegistry {
             coordinator,
             deadline,
             inner: Arc::new(Mutex::new(RegistryState::default())),
+        }
+    }
+
+    pub(super) fn pin_or_invalidate_session(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+        peer_groups: &PeerGroups,
+    ) {
+        let resolved = peer_groups
+            .identity_for_dir(working_dir)
+            .map(|(group, member)| PinnedPeerIdentity {
+                group_name: group.name.clone(),
+                alias: member.alias.clone(),
+                working_dir: member.working_dir.clone(),
+            });
+        let mut state = self.lock_state();
+        match state.pinned_identities.get_mut(session_id) {
+            None => {
+                state.pinned_identities.insert(
+                    session_id.to_string(),
+                    resolved
+                        .map(PinnedSessionIdentity::Eligible)
+                        .unwrap_or(PinnedSessionIdentity::Invalidated),
+                );
+            }
+            Some(PinnedSessionIdentity::Eligible(current)) => {
+                let unchanged = resolved.as_ref().is_some_and(|resolved| {
+                    resolved.group_name == current.group_name
+                        && resolved.alias.eq_ignore_ascii_case(&current.alias)
+                        && resolved.working_dir == current.working_dir
+                });
+                if !unchanged {
+                    state
+                        .pinned_identities
+                        .insert(session_id.to_string(), PinnedSessionIdentity::Invalidated);
+                }
+            }
+            Some(PinnedSessionIdentity::Invalidated) => {}
+        }
+    }
+
+    pub(super) fn pinned_session_identity(&self, session_id: &str) -> Option<PinnedPeerIdentity> {
+        let state = self.lock_state();
+        match state.pinned_identities.get(session_id) {
+            Some(PinnedSessionIdentity::Eligible(identity)) => Some(identity.clone()),
+            Some(PinnedSessionIdentity::Invalidated) | None => None,
         }
     }
 
@@ -326,7 +389,8 @@ impl PeerExchangeRegistry {
 
     pub(super) fn remove_session(&self, session_id: &str) -> Option<PeerExchangeResult> {
         let exchange_id = {
-            let state = self.lock_state();
+            let mut state = self.lock_state();
+            state.pinned_identities.remove(session_id);
             state.session_index.get(session_id).cloned()
         }?;
         let sender_removed = {
@@ -537,6 +601,50 @@ mod tests {
             )
             .expect("exchange should register");
         (coordinator, sender_lease, registry, registered)
+    }
+
+    #[test]
+    fn later_working_dir_change_invalidates_pinned_peer_identity() {
+        let home = tempfile::TempDir::new().expect("peer config home");
+        let eve_dir = tempfile::TempDir::new().expect("Eve project");
+        let atlas_dir = tempfile::TempDir::new().expect("Atlas project");
+        let config = serde_json::json!({
+            "version": 1,
+            "groups": [{
+                "name": "reviewers",
+                "members": [
+                    { "alias": "Eve", "working_dir": eve_dir.path() },
+                    { "alias": "Atlas", "working_dir": atlas_dir.path() }
+                ]
+            }]
+        });
+        std::fs::write(
+            home.path().join("peer-groups.json"),
+            serde_json::to_vec(&config).expect("serialize peer config"),
+        )
+        .expect("write peer config");
+        let groups = jcode_base::peer_groups::PeerGroups::load_from_jcode_home(home.path())
+            .expect("load peer groups");
+        let registry =
+            PeerExchangeRegistry::new(TurnCoordinator::default(), Duration::from_secs(60));
+
+        registry.pin_or_invalidate_session("session", eve_dir.path(), &groups);
+        assert_eq!(
+            registry
+                .pinned_session_identity("session")
+                .map(|identity| identity.alias),
+            Some("Eve".to_string())
+        );
+
+        registry.pin_or_invalidate_session("session", atlas_dir.path(), &groups);
+        assert_eq!(registry.pinned_session_identity("session"), None);
+
+        registry.pin_or_invalidate_session("session", atlas_dir.path(), &groups);
+        assert_eq!(
+            registry.pinned_session_identity("session"),
+            None,
+            "an invalidated session must never remap to the later Atlas identity"
+        );
     }
 
     #[tokio::test]
