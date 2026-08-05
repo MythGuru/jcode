@@ -10,6 +10,9 @@ impl App {
             "compact" => {
                 "/compact\nForce context compaction now.\nStarts background summarization and applies it automatically when ready.\n\n/compact mode\nShow current compaction mode for this session.\n\n/compact mode <reactive|proactive|semantic>\nChange compaction mode for this session."
             }
+            "lift" => {
+                "/lift\nReconstruct the task graph this session actually executed.\nGroups tool calls into steps and draws a dependency only where the trace shows real dataflow (a step read what an earlier step wrote), never from mere ordering.\n\n/lift <session-id-or-path>\nLift a stored session instead of the current one.\n\nRead-only and local: no model is called, so it costs nothing. The reported round count is a lower bound and the independent-step count an upper bound, because dependencies that left no trace cannot be recovered."
+            }
             "cache" => {
                 "/cache stats\nShow KV cache stats for this session: cache read/write totals, hit ratios, current baseline, and recent miss attributions.\n\n/cache\nToggle Anthropic cache TTL between 5 minutes and 1 hour.\n\n/cache 1h  or  /cache 5m\nSet Anthropic cache TTL explicitly."
             }

@@ -70,6 +70,7 @@ jcode-fuzzy = { path = "../jcode-fuzzy" }
 jcode-config-types = { path = "../jcode-config-types" }
 jcode-selfdev-types = { path = "../jcode-selfdev-types" }
 jcode-session-types = { path = "../jcode-session-types" }
+jcode-plan = { path = "../jcode-plan" }
 jcode-provider-core = { path = "../jcode-provider-core" }
 jcode-tui-markdown = { path = "../jcode-tui-markdown" }
 jcode-tui-messages = { path = "../jcode-tui-messages" }

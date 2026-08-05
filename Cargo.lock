@@ -4523,6 +4523,7 @@ dependencies = [
  "jcode-core",
  "jcode-fuzzy",
  "jcode-logging",
+ "jcode-plan",
  "jcode-productivity-core",
  "jcode-provider-core",
  "jcode-selfdev-types",

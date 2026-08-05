@@ -55,6 +55,7 @@ mod catchup;
 mod commands;
 mod commands_dispatch;
 mod commands_improve;
+mod commands_lift;
 mod commands_overnight;
 mod commands_plan;
 mod commands_remote;

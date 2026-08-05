@@ -1570,6 +1570,68 @@ fn transcript_path_message(path: &std::path::Path) -> String {
     format!("Transcript file:\n\n  {}", path.display())
 }
 
+/// `/lift`: show the task graph the session actually executed.
+///
+/// Read-only and entirely local: the live session is flushed to disk (so the
+/// most recent turns are included), the stored file is lifted in-process, and
+/// the result is printed. No model call, so no cost.
+fn handle_lift_command(app: &mut App, trimmed: &str) -> bool {
+    use super::commands_lift::{LiftCommand, lift_session_at, parse, usage};
+
+    let Some(command) = parse(trimmed) else {
+        return false;
+    };
+    let target = match command {
+        LiftCommand::Usage => {
+            app.push_display_message(DisplayMessage::system(usage()));
+            return true;
+        }
+        LiftCommand::Current => {
+            let session_id = active_session_id(app);
+            // Flush first, or the lift misses everything since the last save.
+            if !app.is_remote && app.session.id == session_id {
+                let _ = app.session.save();
+            }
+            match crate::session::session_path(&session_id) {
+                Ok(path) => path,
+                Err(error) => {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Failed to resolve session path: {error}"
+                    )));
+                    return true;
+                }
+            }
+        }
+        LiftCommand::Session(reference) => {
+            // Accept either a stored session id or a path, so the command works
+            // for sessions the picker lists as well as for files on disk.
+            let as_path = std::path::PathBuf::from(&reference);
+            if as_path.is_file() {
+                as_path
+            } else {
+                match crate::session::session_path(&reference) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Unknown session '{reference}': {error}"
+                        )));
+                        return true;
+                    }
+                }
+            }
+        }
+    };
+
+    match lift_session_at(&target) {
+        Ok(report) => {
+            app.push_display_message(DisplayMessage::system(report));
+            app.set_status_notice("Lifted session graph");
+        }
+        Err(error) => app.push_display_message(DisplayMessage::error(error)),
+    }
+    true
+}
+
 fn handle_transcript_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed != "/transcript" && trimmed != "/transcript path" {
         if trimmed.starts_with("/transcript ") {
@@ -1644,6 +1706,7 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         || handle_btw_command(app, trimmed)
         || handle_fork_command(app, trimmed)
         || handle_transcript_command(app, trimmed)
+        || handle_lift_command(app, trimmed)
         || handle_git_command(app, trimmed)
         || handle_catchup_command(app, trimmed)
         || handle_back_command(app, trimmed)

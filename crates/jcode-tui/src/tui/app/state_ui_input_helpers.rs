@@ -86,6 +86,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Triage new GitHub issues and autonomously fix the safe ones",
     ),
     RegisteredCommand::public("/transcript", "Open the current session transcript file"),
+    RegisteredCommand::public("/lift", "Show the task graph this session executed"),
     RegisteredCommand::public("/subagent-model", "Show/change subagent model policy"),
     RegisteredCommand::public("/autoreview", "Show/toggle automatic end-of-turn review"),
     RegisteredCommand::public("/autojudge", "Show/toggle automatic end-of-turn judging"),
@@ -1582,6 +1583,7 @@ impl App {
                 | "/fork"
                 | "/git"
                 | "/transcript"
+                | "/lift"
                 | "/observe"
                 | "/todos"
                 | "/splitview"
