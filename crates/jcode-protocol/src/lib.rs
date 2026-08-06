@@ -93,6 +93,33 @@ pub struct PeerInfo {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum PeerOverviewState {
+    Enabled,
+    Disabled,
+    ConfigurationError,
+    Unlisted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerIdentityInfo {
+    pub alias: String,
+    pub group: String,
+    pub project: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerOverview {
+    pub state: PeerOverviewState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<PeerIdentityInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum PeerOutcome {
     Replied,
     CompletedWithoutReply,
@@ -688,6 +715,7 @@ impl Request {
             Request::CommSubscribeChannel { id, .. } => *id,
             Request::CommUnsubscribeChannel { id, .. } => *id,
             Request::CommAwaitMembers { id, .. } => *id,
+            Request::PeerOverview { id, .. } => *id,
             Request::PeerList { id, .. } => *id,
             Request::PeerSend { id, .. } => *id,
             Request::PeerReply { id, .. } => *id,
@@ -728,6 +756,7 @@ impl Request {
                 | Request::CommSubscribeChannel { .. }
                 | Request::CommUnsubscribeChannel { .. }
                 | Request::CommAwaitMembers { .. }
+                | Request::PeerOverview { .. }
                 | Request::PeerList { .. }
                 | Request::PeerSend { .. }
                 | Request::PeerReply { .. }

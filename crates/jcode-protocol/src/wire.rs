@@ -719,6 +719,10 @@ pub enum Request {
         wake: bool,
     },
 
+    /// Read the current session's sanitized peer configuration and availability.
+    #[serde(rename = "peer_overview")]
+    PeerOverview { id: u64, session_id: String },
+
     /// List allowlisted peers visible to the validated caller.
     #[serde(rename = "peer_list")]
     PeerList { id: u64, caller: PeerCaller },
@@ -758,6 +762,9 @@ pub enum ServerEvent {
     /// Acknowledgment of request
     #[serde(rename = "ack")]
     Ack { id: u64 },
+
+    #[serde(rename = "peer_overview_result")]
+    PeerOverviewResult { id: u64, overview: PeerOverview },
 
     #[serde(rename = "peer_list_result")]
     PeerListResult { id: u64, peers: Vec<PeerInfo> },

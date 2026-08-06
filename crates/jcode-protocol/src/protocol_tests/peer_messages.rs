@@ -165,3 +165,70 @@ fn peer_reply_and_cancel_acknowledgements_roundtrip() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn peer_overview_is_read_only_lightweight_and_contains_no_path_or_capability() -> Result<()> {
+    let request = Request::PeerOverview {
+        id: 21,
+        session_id: "current-session".to_string(),
+    };
+
+    let json = serde_json::to_string(&request)?;
+    assert!(json.contains("\"type\":\"peer_overview\""));
+    assert!(!json.contains("capability"));
+    assert!(!json.contains("working_dir"));
+    let decoded = parse_request_json(&json)?;
+    assert_eq!(decoded.id(), 21);
+    assert!(decoded.is_lightweight_control_request());
+    match decoded {
+        Request::PeerOverview { session_id, .. } => {
+            assert_eq!(session_id, "current-session");
+        }
+        other => return Err(anyhow!("unexpected request: {other:?}")),
+    }
+    Ok(())
+}
+
+#[test]
+fn peer_overview_result_preserves_identity_and_sanitized_states() -> Result<()> {
+    let event = ServerEvent::PeerOverviewResult {
+        id: 22,
+        overview: PeerOverview {
+            state: PeerOverviewState::Enabled,
+            identity: Some(PeerIdentityInfo {
+                alias: "Jcode".to_string(),
+                group: "product".to_string(),
+                project: "jcode".to_string(),
+            }),
+            peers: vec![PeerInfo {
+                alias: "Atlas".to_string(),
+                group: "product".to_string(),
+                project: "tracker".to_string(),
+                state: PeerState::Busy,
+            }],
+            error: None,
+        },
+    };
+
+    let json = serde_json::to_string(&event)?;
+    assert!(!json.contains("session_id"));
+    assert!(!json.contains("working_dir"));
+    assert!(!json.contains("capability"));
+    let decoded = parse_event_json(&json)?;
+    match decoded {
+        ServerEvent::PeerOverviewResult { id, overview } => {
+            assert_eq!(id, 22);
+            assert_eq!(overview.state, PeerOverviewState::Enabled);
+            let identity = overview.identity.expect("identity should roundtrip");
+            assert_eq!(identity.alias, "Jcode");
+            assert_eq!(identity.group, "product");
+            assert_eq!(identity.project, "jcode");
+            assert_eq!(overview.peers.len(), 1);
+            assert_eq!(overview.peers[0].alias, "Atlas");
+            assert_eq!(overview.peers[0].state, PeerState::Busy);
+            assert!(overview.error.is_none());
+        }
+        other => return Err(anyhow!("unexpected event: {other:?}")),
+    }
+    Ok(())
+}
