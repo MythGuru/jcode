@@ -1916,6 +1916,25 @@ async fn peer_tool_is_only_offered_to_turns_holding_a_live_server_capability() {
 #[tokio::test]
 async fn feature_off_real_agent_surfaces_do_not_expose_peer() {
     let _guard = crate::storage::lock_test_env();
+
+    struct EnvRestore(Option<std::ffi::OsString>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => crate::env::set_var("JCODE_PEER_MESSAGING_ENABLED", value),
+                None => crate::env::remove_var("JCODE_PEER_MESSAGING_ENABLED"),
+            }
+            crate::config::invalidate_config_cache();
+        }
+    }
+    let _restore = EnvRestore(std::env::var_os("JCODE_PEER_MESSAGING_ENABLED"));
+    crate::env::set_var("JCODE_PEER_MESSAGING_ENABLED", "0");
+    crate::config::invalidate_config_cache();
+    assert!(
+        !crate::config::config().features.peer_messaging,
+        "test setup failed: peer messaging should be disabled here"
+    );
+
     let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
     let registry = Registry::new(provider.clone()).await;
 
