@@ -77,6 +77,47 @@ thinks, and optionally replies once. The reply comes back into the same turn.
 
 You see everything in both transcripts.
 
+### Check peers without asking a model
+
+Type `/peers` in any interactive session to open a native status card. This is
+ordinary Jcode code, not an AI prompt, so it makes **no model call and uses no
+provider tokens**.
+
+The card combines two deliberately separate sources:
+
+- **Live availability** comes from the Jcode server that owns the current
+  session. An approved peer is shown as ready, busy, offline, or ambiguous.
+- **Recent activity** comes from the existing saved session transcripts for the
+  exact current working directory. It shows at most the latest five peer events,
+  so it survives a restart without creating a second message database.
+
+The history reader is intentionally bounded to keep `/peers` quick. It checks at
+most 12 matching sessions, reads at most the newest 500 messages from each, and
+skips any unusually large saved session. When a limit or unreadable file is
+encountered, the card says that some older activity was skipped.
+
+Privacy is part of the design. The card may show an approved alias, approved
+project name, direction, time, and outcome such as `replied` or `timed out`. It
+does **not** show message bodies, reply bodies, full paths, session IDs,
+capabilities, message IDs, exchange IDs, or raw configuration errors.
+
+The main states are explained in plain language:
+
+- **OFF** means peer messaging is disabled. No transcript history is scanned.
+- **CONFIGURATION ERROR** means `peer-groups.json` needs attention. The private
+  raw error is not printed in the card, and no history is scanned.
+- **Project not listed** means the current exact working directory is not in an
+  approved group. Existing local peer history may still be summarized safely.
+- **No saved peer activity yet** means the feature is working but no matching
+  activity was found.
+- **Unable to load peer overview** means the current Jcode server could not be
+  reached or did not return a valid overview.
+
+The card also reports whether Ambient Mode is on or off. It does not turn
+Ambient Mode on. Even if Ambient Mode is enabled separately, ambient background
+work cannot initiate peer messages. This feature therefore leaves the existing
+Ambient setting unchanged.
+
 **This needs real interactive sessions.** `jcode run "..."` will not work: a
 one-shot command runs its own local agent that holds no live server turn, so the
 tool is not offered there at all. That is deliberate. Advertising a tool whose
