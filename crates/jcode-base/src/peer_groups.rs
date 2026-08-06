@@ -196,6 +196,64 @@ fn path_key(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Peer identity is decided by the exact configured directory.
+    ///
+    /// This is the whole access-control model, so it is worth pinning down
+    /// precisely. A sibling directory, a parent, or a child of a configured
+    /// path is not a peer; only the path itself is. The documentation used to
+    /// claim members had to be separate git repositories, which the loader
+    /// never checked; the real and stronger guarantee is that a session is a
+    /// peer only if its directory was written into the config by hand.
+    #[test]
+    fn only_the_exact_configured_directory_resolves_to_a_peer_identity() {
+        let root = tempfile::TempDir::new().expect("temp root");
+        let listed = root.path().join("listed");
+        let sibling = root.path().join("sibling");
+        let child = listed.join("nested");
+        let other = root.path().join("other");
+        for dir in [&listed, &sibling, &child, &other] {
+            std::fs::create_dir_all(dir).expect("create dir");
+        }
+
+        let home = tempfile::TempDir::new().expect("temp home");
+        let config = serde_json::json!({
+            "version": 1,
+            "groups": [{
+                "name": "g",
+                "members": [
+                    { "alias": "Listed", "working_dir": listed },
+                    { "alias": "Other", "working_dir": other }
+                ]
+            }]
+        });
+        std::fs::write(
+            home.path().join("peer-groups.json"),
+            serde_json::to_vec(&config).expect("serialize"),
+        )
+        .expect("write config");
+
+        let groups = PeerGroups::load_from_jcode_home(home.path()).expect("load");
+
+        let listed_identity = groups.identity_for_dir(&listed);
+        assert!(
+            listed_identity.is_some_and(|(_, member)| member.alias == "Listed"),
+            "the configured directory should resolve to its own alias"
+        );
+
+        assert!(
+            groups.identity_for_dir(&sibling).is_none(),
+            "a sibling directory must not inherit a peer identity"
+        );
+        assert!(
+            groups.identity_for_dir(&child).is_none(),
+            "a subdirectory of a configured path must not be a peer"
+        );
+        assert!(
+            groups.identity_for_dir(root.path()).is_none(),
+            "a parent of a configured path must not be a peer"
+        );
+    }
+
     /// A hand-edited config that parses as JSON but omits or misspells a
     /// field must say which field is missing.
     ///

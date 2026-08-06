@@ -30,10 +30,20 @@ file at `docs/peer-groups.example.json`:
 Rules the loader enforces, with a plain error if you get one wrong:
 
 - Each `working_dir` must be an absolute path that exists.
-- Each must be a **real git repository of its own**. Two folders inside the same
-  repo are not peers.
-- Aliases must be unique within a group; directories must be unique everywhere.
+- Aliases must be unique within a group.
+- The same directory may not appear twice, including across different groups.
 - A group needs at least two members.
+
+What decides identity is the **exact directory**, not the git repository. A
+session is a peer only when its working directory resolves to a path you listed
+here, compared after resolving symlinks (and case-insensitively on Windows). The
+loader does not check that a directory is a git repo, so two folders inside one
+repository would work if you listed them. That is not the intended use, and the
+sessions would share a checkout, but nothing stops you.
+
+The practical consequence is the one that matters: **a session can only be a
+peer if you personally wrote its directory into this file.** Nothing is
+discovered automatically.
 
 The file holds no secrets. It is read **once when the server starts**, so edits
 take effect after a restart, never mid-conversation.
