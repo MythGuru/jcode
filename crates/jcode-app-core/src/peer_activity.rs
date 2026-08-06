@@ -115,6 +115,7 @@ pub fn load_recent_peer_activity(canonical_working_dir: &Path) -> Result<PeerAct
             Ok(Some(workspace)) if workspace == canonical_working_dir => {
                 matching.push(candidate.path);
                 if matching.len() == MAX_MATCHING_SESSIONS {
+                    history_limited = true;
                     break;
                 }
             }
@@ -539,6 +540,32 @@ mod tests {
             assert!(report.activities.iter().all(|activity| {
                 activity.peer_alias != "TooOldSession" && activity.peer_alias != "OutsideNewest500"
             }));
+        });
+    }
+
+    #[test]
+    fn recent_peer_activity_reports_when_the_session_scan_reaches_its_cap() {
+        with_temp_home(|_| {
+            let workspace = tempfile::TempDir::new().expect("workspace");
+            let canonical = workspace
+                .path()
+                .canonicalize()
+                .expect("canonical workspace");
+            let base = Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0).unwrap();
+            for index in 0..MAX_MATCHING_SESSIONS {
+                save_activity_session(
+                    &format!("matching-cap-{index}"),
+                    workspace.path(),
+                    base + Duration::minutes(index as i64),
+                    None,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+
+            let report = load_recent_peer_activity(&canonical).expect("bounded scan");
+
+            assert!(report.history_limited);
+            assert_eq!(report.read_errors, 0);
         });
     }
 
