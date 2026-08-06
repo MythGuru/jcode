@@ -37,6 +37,7 @@ pub mod network_retry;
 pub mod notifications;
 pub mod overnight;
 pub mod peer_activity;
+pub mod peer_overview;
 mod peer_timing;
 pub mod perf;
 pub mod replay;

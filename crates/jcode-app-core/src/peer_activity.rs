@@ -1,15 +1,24 @@
 use crate::message::ContentBlock;
-use crate::session::{StoredDisplayRole, StoredMessage};
+use crate::session::{Session, StoredDisplayRole, StoredMessage};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const MAX_MATCHING_SESSIONS: usize = 12;
+const MAX_SNAPSHOT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_MESSAGES_PER_SESSION: usize = 500;
+const MAX_RECENT_ACTIVITIES: usize = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PeerActivityDirection {
     Inbound,
     Outbound,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PeerActivityOutcome {
     Sent,
     Replied,
@@ -21,13 +30,148 @@ pub enum PeerActivityOutcome {
     OutcomeUnavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PeerActivity {
     pub occurred_at: Option<DateTime<Utc>>,
     pub direction: PeerActivityDirection,
     pub peer_alias: String,
     pub peer_project: Option<String>,
     pub outcome: PeerActivityOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerActivityReport {
+    pub activities: Vec<PeerActivity>,
+    pub history_limited: bool,
+    pub read_errors: usize,
+}
+
+#[derive(Debug)]
+struct SessionCandidate {
+    path: PathBuf,
+    modified: SystemTime,
+    size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionWorkspaceMetadata {
+    #[serde(default)]
+    working_dir: Option<String>,
+}
+
+#[derive(Debug)]
+struct RankedActivity {
+    activity: PeerActivity,
+    sort_at: DateTime<Utc>,
+    session_order: usize,
+    activity_order: usize,
+}
+
+fn candidate_files(sessions_dir: &Path) -> Result<Vec<SessionCandidate>> {
+    if !sessions_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(sessions_dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        candidates.push(SessionCandidate {
+            path,
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            size: metadata.len(),
+        });
+    }
+    candidates.sort_unstable_by(|left, right| right.modified.cmp(&left.modified));
+    Ok(candidates)
+}
+
+fn snapshot_workspace(path: &Path) -> Result<Option<PathBuf>> {
+    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let metadata: SessionWorkspaceMetadata = serde_json::from_reader(reader)?;
+    let Some(working_dir) = metadata.working_dir else {
+        return Ok(None);
+    };
+    Ok(Some(std::fs::canonicalize(working_dir)?))
+}
+
+pub fn load_recent_peer_activity(canonical_working_dir: &Path) -> Result<PeerActivityReport> {
+    let sessions_dir = crate::storage::jcode_dir()?.join("sessions");
+    let candidates = candidate_files(&sessions_dir)?;
+    let mut matching = Vec::new();
+    let mut history_limited = false;
+    let mut read_errors = 0;
+
+    for candidate in candidates {
+        if candidate.size > MAX_SNAPSHOT_BYTES {
+            history_limited = true;
+            continue;
+        }
+        match snapshot_workspace(&candidate.path) {
+            Ok(Some(workspace)) if workspace == canonical_working_dir => {
+                matching.push(candidate.path);
+                if matching.len() == MAX_MATCHING_SESSIONS {
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => read_errors += 1,
+        }
+    }
+
+    let mut ranked = Vec::new();
+    for (session_order, path) in matching.iter().enumerate() {
+        let session = match Session::load_from_path(path) {
+            Ok(session) => session,
+            Err(_) => {
+                read_errors += 1;
+                continue;
+            }
+        };
+        let message_start = session
+            .messages
+            .len()
+            .saturating_sub(MAX_MESSAGES_PER_SESSION);
+        for (activity_order, activity) in
+            extract_peer_activities(&session.messages[message_start..])
+                .into_iter()
+                .enumerate()
+        {
+            ranked.push(RankedActivity {
+                sort_at: activity.occurred_at.unwrap_or(session.updated_at),
+                activity,
+                session_order,
+                activity_order,
+            });
+        }
+    }
+    ranked.sort_by(|left, right| {
+        right
+            .sort_at
+            .cmp(&left.sort_at)
+            .then_with(|| left.session_order.cmp(&right.session_order))
+            .then_with(|| right.activity_order.cmp(&left.activity_order))
+    });
+
+    let mut seen = HashSet::new();
+    let mut activities = Vec::new();
+    for item in ranked {
+        if seen.insert(item.activity.clone()) {
+            activities.push(item.activity);
+            if activities.len() == MAX_RECENT_ACTIVITIES {
+                break;
+            }
+        }
+    }
+    Ok(PeerActivityReport {
+        activities,
+        history_limited,
+        read_errors,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -180,9 +324,10 @@ pub fn extract_peer_activities(messages: &[StoredMessage]) -> Vec<PeerActivity> 
 mod tests {
     use super::*;
     use crate::message::{ContentBlock, Role};
-    use crate::session::StoredDisplayRole;
-    use chrono::TimeZone;
+    use crate::session::{Session, StoredDisplayRole};
+    use chrono::{Duration, TimeZone};
     use serde_json::json;
+    use std::path::Path;
 
     fn stored(
         id: &str,
@@ -241,6 +386,160 @@ mod tests {
                 is_error: None,
             }],
         )
+    }
+
+    fn with_temp_home<T>(test: impl FnOnce(&Path) -> T) -> T {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("create temp home");
+        let previous_home = std::env::var("JCODE_HOME").ok();
+        crate::env::set_var("JCODE_HOME", temp.path());
+        std::fs::create_dir_all(temp.path().join("sessions")).expect("create sessions dir");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(temp.path())));
+        if let Some(previous_home) = previous_home {
+            crate::env::set_var("JCODE_HOME", previous_home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
+        result.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    }
+
+    fn save_activity_session(
+        id: &str,
+        working_dir: &Path,
+        timestamp: DateTime<Utc>,
+        activity: Option<StoredMessage>,
+    ) {
+        let mut session = Session::create_with_id(id.to_string(), None, None);
+        session.working_dir = Some(working_dir.to_string_lossy().into_owned());
+        session.updated_at = timestamp;
+        if let Some(activity) = activity {
+            session.messages.push(activity);
+        }
+        session.save().expect("save activity session");
+    }
+
+    fn inbound(alias: &str, project: &str, timestamp: DateTime<Utc>) -> StoredMessage {
+        StoredMessage {
+            id: format!("inbound-{alias}"),
+            role: Role::User,
+            content: vec![text(&format!(
+                "Verified peer message from {alias} (`{project}`) to Jcode (`jcode`).\nMessage ID: `private-id`\n\nPRIVATE BODY"
+            ))],
+            display_role: Some(StoredDisplayRole::Peer),
+            timestamp: Some(timestamp),
+            tool_duration_ms: None,
+            token_usage: None,
+        }
+    }
+
+    #[test]
+    fn recent_peer_activity_is_workspace_scoped_newest_first_and_capped_at_five() {
+        with_temp_home(|_| {
+            let workspace = tempfile::TempDir::new().expect("workspace");
+            let other = tempfile::TempDir::new().expect("other workspace");
+            let canonical = workspace
+                .path()
+                .canonicalize()
+                .expect("canonical workspace");
+            let base = Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0).unwrap();
+            for index in 0..7 {
+                let timestamp = base + Duration::minutes(index);
+                save_activity_session(
+                    &format!("matching-{index}"),
+                    workspace.path(),
+                    timestamp,
+                    Some(inbound(&format!("Peer{index}"), "approved", timestamp)),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let other_time = base + Duration::hours(2);
+            save_activity_session(
+                "different-workspace",
+                other.path(),
+                other_time,
+                Some(inbound("WrongWorkspace", "private", other_time)),
+            );
+
+            let report = load_recent_peer_activity(&canonical).expect("load recent activity");
+
+            assert_eq!(report.activities.len(), 5);
+            assert_eq!(
+                report
+                    .activities
+                    .iter()
+                    .map(|activity| activity.peer_alias.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Peer6", "Peer5", "Peer4", "Peer3", "Peer2"]
+            );
+            assert!(!report.history_limited);
+            assert_eq!(report.read_errors, 0);
+        });
+    }
+
+    #[test]
+    fn recent_peer_activity_applies_session_message_size_and_error_bounds() {
+        with_temp_home(|home| {
+            let workspace = tempfile::TempDir::new().expect("workspace");
+            let canonical = workspace
+                .path()
+                .canonicalize()
+                .expect("canonical workspace");
+            let base = Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0).unwrap();
+
+            let old_future_activity =
+                inbound("TooOldSession", "approved", base + Duration::days(1));
+            save_activity_session(
+                "oldest-matching",
+                workspace.path(),
+                base,
+                Some(old_future_activity),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            for index in 0..12 {
+                save_activity_session(
+                    &format!("newer-empty-{index}"),
+                    workspace.path(),
+                    base + Duration::minutes(index + 1),
+                    None,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+
+            let mut many_messages =
+                Session::create_with_id("message-bound".to_string(), None, None);
+            many_messages.working_dir = Some(workspace.path().to_string_lossy().into_owned());
+            many_messages
+                .messages
+                .push(inbound("OutsideNewest500", "approved", base));
+            for index in 0..500 {
+                many_messages.messages.push(StoredMessage {
+                    id: format!("ordinary-{index}"),
+                    role: Role::Assistant,
+                    content: vec![text("ordinary")],
+                    display_role: None,
+                    timestamp: Some(base + Duration::seconds(index)),
+                    tool_duration_ms: None,
+                    token_usage: None,
+                });
+            }
+            many_messages.save().expect("save bounded-message session");
+
+            std::fs::write(home.join("sessions").join("malformed.json"), b"{not-json")
+                .expect("write malformed snapshot");
+            std::fs::write(
+                home.join("sessions").join("oversized.json"),
+                vec![b' '; 2 * 1024 * 1024 + 1],
+            )
+            .expect("write oversized snapshot");
+
+            let report = load_recent_peer_activity(&canonical).expect("bounded scan");
+
+            assert!(report.history_limited);
+            assert!(report.read_errors >= 1);
+            assert!(report.activities.iter().all(|activity| {
+                activity.peer_alias != "TooOldSession" && activity.peer_alias != "OutsideNewest500"
+            }));
+        });
     }
 
     #[test]

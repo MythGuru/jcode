@@ -6,6 +6,7 @@ mod batch;
 mod bg;
 mod browser;
 mod communicate;
+pub(crate) use communicate::transport::send_request as send_lightweight_request;
 #[cfg(target_os = "macos")]
 mod computer;
 mod conversation_search;
