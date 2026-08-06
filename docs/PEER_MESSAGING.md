@@ -93,9 +93,15 @@ every call fails would waste tokens and invite the model to keep retrying.
   member of your peer group."
 - A session cannot message **itself**.
 - It cannot start a **loop**. One message causes at most one reply, enforced by
-  the server rather than by asking the model nicely.
-- A peer message can never appear as though **you** sent it. It is stored and
-  displayed with its own role and the sender's alias and project name.
+  the server rather than by asking the model nicely. Tested by instructing both
+  agents to volley back and forth indefinitely: the sender's second attempt was
+  refused with "This normal turn has already started a peer exchange", and the
+  recipient trying to peer back found the sender busy. Two barriers, not one.
+  The whole exercise cost 2 peer calls per side and ended in 39 seconds.
+- A peer message can never appear as though **you** sent it. In the stored
+  session it carries `display_role: peer` and reads "Verified peer message from
+  Eve (`repo-eve`)", with the sender's alias and project name. Your own messages
+  carry no such marker, so the two cannot be confused after the fact.
 - Only projects listed in the file can talk. Anything else is refused.
 
 ## Turning it off

@@ -972,6 +972,47 @@ mod tests {
         );
     }
 
+    /// One turn gets one peer send. This is the runaway-cost guard.
+    ///
+    /// Two agents told to volley back and forth would otherwise burn tokens
+    /// unattended. Observed live: the model does try again the moment a peer
+    /// exchange returns, and the second attempt is refused with "This normal
+    /// turn has already started a peer exchange." The guarantee has to hold
+    /// in the coordinator rather than in prompt wording, so pin it here.
+    #[test]
+    fn a_turn_gets_one_peer_send_no_matter_how_often_the_model_retries() {
+        let coordinator = TurnCoordinator::default();
+        let sender = coordinator
+            .begin_server_turn("sender", TurnOrigin::NormalUser)
+            .expect("sender turn should start");
+
+        let pending = coordinator
+            .begin_peer_turn(sender.context(), "recipient", "exchange-1".to_string())
+            .expect("first peer send should be allowed");
+        pending.commit();
+        coordinator
+            .consume_send_permit(sender.context())
+            .expect("first send consumes the permit");
+
+        // The model tries to keep the volley going within the same turn.
+        for attempt in 0..5 {
+            let retry = coordinator.begin_peer_turn(
+                sender.context(),
+                "recipient",
+                format!("exchange-retry-{attempt}"),
+            );
+            assert!(
+                matches!(
+                    retry,
+                    Err(BeginPeerError::InvalidSender(
+                        TurnValidationError::SendAlreadyConsumed
+                    ))
+                ),
+                "retry {attempt} should be refused, the turn already sent one peer message"
+            );
+        }
+    }
+
     #[test]
     fn uncommitted_peer_start_rolls_back_lease_reservations_and_send_permit() {
         let coordinator = TurnCoordinator::default();
