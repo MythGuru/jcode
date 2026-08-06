@@ -11,7 +11,7 @@ use crate::protocol::{ServerEvent, TranscriptMode};
 use crate::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteEventState, RemoteRead};
 use anyhow::Result;
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use ratatui::{DefaultTerminal, Terminal, backend::Backend};
 use std::time::{Duration, Instant};
@@ -336,22 +336,21 @@ pub(super) async fn handle_terminal_event(
     app: &mut App,
     terminal: &mut DefaultTerminal,
     remote: &mut RemoteConnection,
+    event_stream: &mut EventStream,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
-    let mut needs_redraw = apply_terminal_event(app, terminal, remote, event).await?;
+    let Some(first) = event else {
+        return Ok(false);
+    };
     // Coalesce bursts of already-buffered input (fast typing, key repeat,
     // scroll wheels) into a single frame instead of paying one full render per
     // event. Without this, typing faster than the frame rate queues events and
     // each one costs handle + full draw serially, which reads as input-line
-    // lag. Mirrors the identical drain in `local::handle_terminal_event`.
-    const MAX_DRAINED_EVENTS_PER_WAKE: usize = 32;
-    for _ in 0..MAX_DRAINED_EVENTS_PER_WAKE {
-        if !crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-            break;
-        }
-        if let Ok(event) = crossterm::event::read() {
-            needs_redraw |= apply_terminal_event(app, terminal, remote, Some(Ok(event))).await?;
-        }
+    // lag. The batch stays entirely on EventStream because crossterm forbids
+    // mixing EventStream with its synchronous poll/read API.
+    let mut needs_redraw = false;
+    for event in super::terminal_events::ready_event_batch(first, event_stream).await {
+        needs_redraw |= apply_terminal_event(app, terminal, remote, Some(event)).await?;
     }
     Ok(needs_redraw)
 }

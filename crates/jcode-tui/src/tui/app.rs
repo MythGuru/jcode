@@ -103,6 +103,7 @@ mod state_ui_storage;
 mod subscribe_nudge;
 mod support;
 mod swarm_hint;
+mod terminal_events;
 mod terminal_liveness;
 mod terminal_setup_command;
 mod todos_view;

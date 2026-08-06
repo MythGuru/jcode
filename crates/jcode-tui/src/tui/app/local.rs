@@ -133,21 +133,19 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw
 }
 
-pub(super) fn handle_terminal_event(
+pub(super) async fn handle_terminal_event(
     app: &mut App,
     terminal: &mut DefaultTerminal,
+    event_stream: &mut EventStream,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
     crate::logging::watchdog::beat("tui.terminal_event");
-    let mut needs_redraw = apply_terminal_event(app, terminal, event)?;
-    const MAX_DRAINED_EVENTS_PER_WAKE: usize = 32;
-    for _ in 0..MAX_DRAINED_EVENTS_PER_WAKE {
-        if !crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-            break;
-        }
-        if let Ok(event) = crossterm::event::read() {
-            needs_redraw |= apply_terminal_event(app, terminal, Some(Ok(event)))?;
-        }
+    let Some(first) = event else {
+        return Ok(false);
+    };
+    let mut needs_redraw = false;
+    for event in super::terminal_events::ready_event_batch(first, event_stream).await {
+        needs_redraw |= apply_terminal_event(app, terminal, Some(event))?;
     }
     Ok(needs_redraw)
 }
@@ -506,6 +504,28 @@ fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {
         crate::message::format_input_shell_result_markdown(&shell.result),
     ));
     app.set_status_notice(crate::message::input_shell_status_notice(&shell.result));
+}
+
+#[cfg(test)]
+mod terminal_event_reader_tests {
+    #[test]
+    fn terminal_handlers_do_not_mix_event_stream_with_sync_reader() {
+        let sync_poll = ["crossterm::event::", "poll"].concat();
+        let sync_read = ["crossterm::event::", "read"].concat();
+        for (name, source) in [
+            ("local", include_str!("local.rs")),
+            ("remote", include_str!("remote.rs")),
+        ] {
+            assert!(
+                !source.contains(&sync_poll),
+                "{name} terminal handler must not combine EventStream with the synchronous poll API"
+            );
+            assert!(
+                !source.contains(&sync_read),
+                "{name} terminal handler must not combine EventStream with the synchronous read API"
+            );
+        }
+    }
 }
 
 pub(super) fn finish_turn(app: &mut App) {
