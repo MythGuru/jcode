@@ -30,15 +30,15 @@ mod structured;
 #[path = "sdk_tests/parity.rs"]
 mod parity_tests;
 
+#[cfg(windows)]
+pub use client::PipeTransport;
+#[cfg(unix)]
+pub use client::UnixTransport;
 pub use client::{
     ConnectOptions, DefaultTransport, EventStream, FileContent, FileStatus, GlobalEventStream,
     GlobalEventsOptions, JcodeClient, RunOptions, RuntimeInfo, SearchTextOptions, ToolCall,
     Transport, TurnResult, Usage,
 };
-#[cfg(unix)]
-pub use client::UnixTransport;
-#[cfg(windows)]
-pub use client::PipeTransport;
 pub use diagnostics::{SocketState, Stage, describe_disconnect, explain, human_duration};
 pub use errors::{Error, ErrorKind, Result};
 pub use launch::{

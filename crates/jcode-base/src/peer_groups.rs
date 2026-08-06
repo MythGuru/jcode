@@ -265,8 +265,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp home");
 
         let write = |body: &str| {
-            std::fs::write(dir.path().join("peer-groups.json"), body)
-                .expect("write peer config");
+            std::fs::write(dir.path().join("peer-groups.json"), body).expect("write peer config");
             match PeerGroups::load_from_jcode_home(dir.path()) {
                 Ok(_) => String::from("(loaded without error)"),
                 Err(error) => error.to_string(),

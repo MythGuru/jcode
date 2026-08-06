@@ -85,7 +85,9 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
                             None
                         } else {
                             Some(ContentBlock::Text {
-                                text: format!("[Recovered orphaned tool output: {tool_use_id}]\n{text}"),
+                                text: format!(
+                                    "[Recovered orphaned tool output: {tool_use_id}]\n{text}"
+                                ),
                                 cache_control: None,
                             })
                         }
