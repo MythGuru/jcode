@@ -21,6 +21,7 @@
 //! authored edges to prove the description stays faithful. That gives the
 //! anti-drift guarantee without a risky rewrite of the running flow.
 
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A node in the onboarding graph.
@@ -82,6 +83,7 @@ impl NodeId {
     /// Every node. The invariant checks iterate this, so a new variant is
     /// automatically covered once added here (and the compiler forces that via
     /// the wildcard-free `label`/`props` matches).
+    #[cfg(test)]
     pub fn all() -> [NodeId; 12] {
         [
             NodeId::Start,
@@ -145,6 +147,7 @@ pub enum EdgeId {
 
 impl EdgeId {
     /// Closed-vocabulary label. Safe to send in telemetry verbatim.
+    #[cfg(test)]
     pub fn label(self) -> &'static str {
         match self {
             EdgeId::RouteEnvBlocked => "route_env_blocked",
@@ -172,6 +175,7 @@ impl EdgeId {
 
 /// Structural properties of a node, used by the invariant checks and the
 /// efficiency scorecard.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub struct NodeProps {
     /// The user must make a choice here.
@@ -198,6 +202,7 @@ pub struct NodeProps {
 }
 
 /// Per-node properties. Wildcard-free: a new node must be classified here.
+#[cfg(test)]
 pub fn node_props(node: NodeId) -> NodeProps {
     use NodeId::*;
     match node {
@@ -322,11 +327,14 @@ pub fn node_props(node: NodeId) -> NodeProps {
 pub struct Edge {
     pub from: NodeId,
     pub to: NodeId,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub edge: EdgeId,
     /// In-TUI keystrokes to traverse this edge on the default path.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub keystrokes: u32,
     /// Whether this edge is an escape hatch (skip/defer/continue-degraded).
     /// Every non-terminal node needs at least one, so nobody is ever trapped.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub is_escape: bool,
 }
 
@@ -574,6 +582,7 @@ pub fn transition_is_declared(from: NodeId, to: NodeId) -> bool {
 }
 
 /// A violated structural property, with enough detail to fix it.
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct Violation {
     pub invariant: &'static str,
@@ -584,6 +593,7 @@ pub struct Violation {
 ///
 /// This is the payoff of writing the graph down: these are the bugs that used
 /// to be found by users, checked here in microseconds instead.
+#[cfg(test)]
 pub fn check_invariants() -> Vec<Violation> {
     let edges = graph();
     let mut violations = Vec::new();
@@ -742,6 +752,7 @@ pub fn check_invariants() -> Vec<Violation> {
 /// Bellman-Ford style relaxation: the graph is tiny, and this stays correct if
 /// someone later adds a cycle (which the invariants permit as long as it makes
 /// visible progress).
+#[cfg(test)]
 pub fn min_keystrokes_to<F: Fn(NodeId) -> bool>(
     start: NodeId,
     edges: &[Edge],

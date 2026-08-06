@@ -14,19 +14,19 @@ use jcode_tui_style::palette::role_for_rendered;
 use ratatui::style::Color;
 use std::collections::BTreeMap;
 
+type RoleArea = BTreeMap<&'static str, u32>;
+type RoleTouches = BTreeMap<(&'static str, &'static str), u32>;
+
 /// Render a set of representative frames and tally role area plus adjacency.
-fn measure() -> (
-    BTreeMap<&'static str, u32>,
-    BTreeMap<(&'static str, &'static str), u32>,
-) {
+fn measure() -> (RoleArea, RoleTouches) {
     // Attribution matches rendered RGB back to role defaults, so the frame
     // must be rendered in truecolor. A hosted CI runner without COLORTERM
     // detects 256-color and quantizes every cell, which pushed most colors
     // out of their role's family radius and left the adjacency graph nearly
     // empty (4 edges instead of the required 5+).
     jcode_tui_style::color::pin_truecolor_for_tests();
-    let mut area: BTreeMap<&'static str, u32> = BTreeMap::new();
-    let mut touches: BTreeMap<(&'static str, &'static str), u32> = BTreeMap::new();
+    let mut area = RoleArea::new();
+    let mut touches = RoleTouches::new();
 
     // A few sizes, so layout-dependent widgets (wrapping, panes) contribute.
     for (width, height) in [(80u16, 24u16), (120, 40), (60, 20)] {

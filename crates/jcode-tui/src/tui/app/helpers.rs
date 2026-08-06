@@ -378,7 +378,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
     // only assert "a copy happened" get a truthy result either way.
     //
     // The OS paths are cfg'd out (not merely skipped) so the test build does
-    // not carry an unreachable tail after this block's `return`.
+    // not carry an unreachable production tail after this block produces its result.
     #[cfg(test)]
     {
         if let Ok(mut sink) = TEST_CLIPBOARD.lock() {
@@ -390,7 +390,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                 None => *sink = Some(text.to_string()),
             }
         }
-        return true;
+        true
     }
 
     #[cfg(not(test))]
@@ -408,7 +408,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
             {
                 return true;
             }
-            return copy_to_clipboard_osc52(text);
+            copy_to_clipboard_osc52(text)
         }
 
         // Same class of bug on macOS: Apple Terminal (Terminal.app) silently
@@ -491,6 +491,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
 /// terminal emulator to set the system clipboard without needing a local
 /// display server, making it work over SSH, inside Docker, and under tmux
 /// (with `set -g set-clipboard on`). Returns false if stdout is not a TTY.
+#[cfg(not(test))]
 fn copy_to_clipboard_osc52(text: &str) -> bool {
     use base64::Engine as _;
     use std::io::{IsTerminal, Write};

@@ -506,28 +506,6 @@ fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {
     app.set_status_notice(crate::message::input_shell_status_notice(&shell.result));
 }
 
-#[cfg(test)]
-mod terminal_event_reader_tests {
-    #[test]
-    fn terminal_handlers_do_not_mix_event_stream_with_sync_reader() {
-        let sync_poll = ["crossterm::event::", "poll"].concat();
-        let sync_read = ["crossterm::event::", "read"].concat();
-        for (name, source) in [
-            ("local", include_str!("local.rs")),
-            ("remote", include_str!("remote.rs")),
-        ] {
-            assert!(
-                !source.contains(&sync_poll),
-                "{name} terminal handler must not combine EventStream with the synchronous poll API"
-            );
-            assert!(
-                !source.contains(&sync_read),
-                "{name} terminal handler must not combine EventStream with the synchronous read API"
-            );
-        }
-    }
-}
-
 pub(super) fn finish_turn(app: &mut App) {
     let turn_duration_secs = app.display_turn_duration_secs();
     app.token_accounting.total_input_tokens += app.streaming.streaming_input_tokens;
@@ -552,4 +530,26 @@ pub(super) fn finish_turn(app: &mut App) {
         }
     }
     let _ = super::commands::maybe_begin_pending_local_transfer(app);
+}
+
+#[cfg(test)]
+mod terminal_event_reader_tests {
+    #[test]
+    fn terminal_handlers_do_not_mix_event_stream_with_sync_reader() {
+        let sync_poll = ["crossterm::event::", "poll"].concat();
+        let sync_read = ["crossterm::event::", "read"].concat();
+        for (name, source) in [
+            ("local", include_str!("local.rs")),
+            ("remote", include_str!("remote.rs")),
+        ] {
+            assert!(
+                !source.contains(&sync_poll),
+                "{name} terminal handler must not combine EventStream with the synchronous poll API"
+            );
+            assert!(
+                !source.contains(&sync_read),
+                "{name} terminal handler must not combine EventStream with the synchronous read API"
+            );
+        }
+    }
 }

@@ -485,7 +485,10 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");
+    let prev_initial_provider_explicit =
+        std::env::var_os("JCODE_INITIAL_PROVIDER_EXPLICIT");
     crate::env::set_var("JCODE_HOME", temp.path());
+    crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
     crate::auth::claude::set_active_account_override(None);
     crate::auth::codex::set_active_account_override(None);
     crate::auth::AuthStatus::invalidate_cache();
@@ -504,6 +507,11 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
         crate::env::set_var("JCODE_HOME", prev_home);
     } else {
         crate::env::remove_var("JCODE_HOME");
+    }
+    if let Some(value) = prev_initial_provider_explicit {
+        crate::env::set_var("JCODE_INITIAL_PROVIDER_EXPLICIT", value);
+    } else {
+        crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
     }
     // Drop any config loaded from the temp home so it cannot leak into the next
     // test, which is process-global state shared across this suite.
