@@ -447,10 +447,7 @@ impl Agent {
         if !self.disabled_tools.is_empty() {
             tools.retain(|tool| !self.disabled_tools.contains(&tool.name));
         }
-        crate::tool::filter_tool_definitions_for_features(
-            &mut tools,
-            crate::config::config().features.peer_messaging,
-        );
+        crate::tool::filter_tool_definitions_for_features(&mut tools, self.peer_tool_is_usable());
         Self::apply_selfdev_tool_surface(&mut tools, self.session.is_canary);
         tools
     }
@@ -463,6 +460,27 @@ impl Agent {
     #[cfg(test)]
     pub(crate) async fn build_filtered_tool_definitions_for_test(&self) -> Vec<ToolDefinition> {
         self.build_filtered_tool_definitions().await
+    }
+
+    /// Whether the `peer` tool can actually do anything for this turn.
+    ///
+    /// The config flag is necessary but not sufficient. Every peer action
+    /// needs a live server turn (session id + generation + capability) to
+    /// authorize against the turn coordinator, and only server-backed turns
+    /// carry one. Standalone turns (`jcode run`, the local non-server TUI
+    /// loop, skill sub-turns) would otherwise advertise a tool whose every
+    /// call fails with "This tool call does not have a valid live server turn
+    /// capability", which wastes tokens and invites the model to retry a
+    /// call that cannot succeed. Gate on the capability actually held.
+    fn peer_tool_is_usable(&self) -> bool {
+        if !crate::config::config().features.peer_messaging {
+            return false;
+        }
+        self.current_turn_execution.as_ref().is_some_and(|turn| {
+            turn.server_session_id.is_some()
+                && turn.turn_generation.is_some()
+                && turn.turn_capability.is_some()
+        })
     }
 
     /// Tailor the `selfdev` tool definition to the session mode.

@@ -1832,6 +1832,80 @@ async fn feature_off_tool_definitions_match_the_pre_peer_baseline() {
     assert_eq!(actual.replace("\r\n", "\n"), expected.replace("\r\n", "\n"));
 }
 
+/// The `peer` tool must only be advertised when the turn can actually
+/// authorize a peer call.
+///
+/// Peer actions authorize against the turn coordinator using the live
+/// server turn's session id, generation, and capability. A standalone turn
+/// (`jcode run`, the local non-server TUI loop, a skill sub-turn) holds none
+/// of those, so every call would fail with "This tool call does not have a
+/// valid live server turn capability". Advertising it there wastes tokens
+/// and invites retries of a call that cannot succeed.
+#[tokio::test]
+async fn peer_tool_is_only_offered_to_turns_holding_a_live_server_capability() {
+    let _guard = crate::storage::lock_test_env();
+    let home = tempfile::TempDir::new().expect("peer capability test home");
+
+    // Restore the ambient config on every exit path. A bare `set_var` here
+    // would survive an assertion failure and silently enable peer messaging
+    // for every later test in this binary.
+    struct EnvRestore {
+        home: Option<std::ffi::OsString>,
+        flag: Option<std::ffi::OsString>,
+    }
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match self.home.take() {
+                Some(value) => crate::env::set_var("JCODE_HOME", value),
+                None => crate::env::remove_var("JCODE_HOME"),
+            }
+            match self.flag.take() {
+                Some(value) => crate::env::set_var("JCODE_PEER_MESSAGING_ENABLED", value),
+                None => crate::env::remove_var("JCODE_PEER_MESSAGING_ENABLED"),
+            }
+            crate::config::invalidate_config_cache();
+        }
+    }
+    let _restore = EnvRestore {
+        home: std::env::var_os("JCODE_HOME"),
+        flag: std::env::var_os("JCODE_PEER_MESSAGING_ENABLED"),
+    };
+
+    crate::env::set_var("JCODE_HOME", home.path());
+    crate::env::set_var("JCODE_PEER_MESSAGING_ENABLED", "1");
+    crate::config::invalidate_config_cache();
+    assert!(
+        crate::config::config().features.peer_messaging,
+        "test setup failed: peer messaging should be enabled here"
+    );
+
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+
+    // Standalone turn: flag on, but no live server turn backs it.
+    agent.current_turn_execution =
+        Some(crate::tool::TurnExecutionContext::standalone("agent-repl"));
+    let standalone_surface = agent.build_filtered_tool_definitions_for_test().await;
+    assert!(
+        !standalone_surface.iter().any(|tool| tool.name == "peer"),
+        "peer tool was offered to a standalone turn, where every call fails"
+    );
+
+    // Server-backed turn: the capability exists, so the tool is usable.
+    agent.locked_tools = None;
+    agent.current_turn_execution = Some(crate::tool::TurnExecutionContext::normal_user(
+        "session-under-test".to_string(),
+        1,
+        crate::tool::TurnCapability::new("capability-under-test".to_string()),
+    ));
+    let live_surface = agent.build_filtered_tool_definitions_for_test().await;
+    assert!(
+        live_surface.iter().any(|tool| tool.name == "peer"),
+        "peer tool was withheld from a live server turn that could have used it"
+    );
+}
+
 /// The real prompt-facing and debug-facing surfaces must not expose `peer`
 /// while the feature is disabled.
 ///
