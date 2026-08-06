@@ -78,6 +78,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 
 use winit::window::{Window, WindowId};
 
+type ResumeScanChannel = (Sender<Vec<resume::Record>>, Receiver<Vec<resume::Record>>);
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Every entry point that runs *instead of* the window lives in `cli`, so
@@ -130,7 +132,7 @@ struct App {
     /// Its own channel rather than the harness one: a scan is local disk work
     /// with no daemon involved, and routing it through the connection would
     /// mean a disconnected window could not list its own history.
-    resume_scans: Option<(Sender<Vec<resume::Record>>, Receiver<Vec<resume::Record>>)>,
+    resume_scans: Option<ResumeScanChannel>,
     clipboard: clipboard::Clipboard,
     /// Images pasted into the composer, waiting for the next submission.
     ///

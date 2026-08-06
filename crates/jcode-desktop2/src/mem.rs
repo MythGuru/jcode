@@ -193,6 +193,7 @@ mod tests {
         assert_eq!(alone.caption(), "ui 105 MB");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_sampler_throttles_between_refreshes() {
         let mut sampler = Sampler::default();

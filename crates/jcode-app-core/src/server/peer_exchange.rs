@@ -708,13 +708,11 @@ impl PeerExchangeRegistry {
                 | FinishReason::Cancelled
                 | FinishReason::SenderRemoved
                 | FinishReason::RecipientRemoved
+        ) && !self.coordinator.cancel_generation(
+            &exchange.recipient.session_id,
+            exchange.recipient_generation,
         ) {
-            if !self.coordinator.cancel_generation(
-                &exchange.recipient.session_id,
-                exchange.recipient_generation,
-            ) {
-                exchange.recipient_cancellation.fire();
-            }
+            exchange.recipient_cancellation.fire();
         }
 
         let (recipient_outcome, detail) = match reason {

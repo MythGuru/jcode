@@ -2227,6 +2227,9 @@ impl Palette<'_> {
     }
 }
 
+// These are independent layout inputs. Grouping them solely to satisfy the
+// argument-count heuristic would make the only call site less explicit.
+#[allow(clippy::too_many_arguments)]
 pub fn layout_rich(
     text: &mut TextSystem,
     source: &str,
