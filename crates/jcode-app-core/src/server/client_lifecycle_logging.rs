@@ -66,7 +66,19 @@ pub(super) fn request_type_is_read_only(kind: &str) -> bool {
             | "comm_plan_status"
             | "comm_read_context"
             | "comm_await_members"
+            | "peer_overview"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_type_is_read_only;
+
+    #[test]
+    fn peer_overview_is_logged_as_read_only_control_traffic() {
+        assert!(request_type_is_read_only("peer_overview"));
+        assert!(!request_type_is_read_only("peer_send"));
+    }
 }
 
 pub(super) fn request_payload_summary(kind: &str, line: &str) -> Vec<(String, String)> {

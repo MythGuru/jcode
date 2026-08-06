@@ -9,14 +9,14 @@ use super::turn_coordinator::{BeginPeerError, TurnCoordinator, TurnValidationErr
 use super::{SessionAgents, SwarmEvent, SwarmMember, session_event_fanout_sender};
 use crate::agent::Agent;
 use crate::protocol::{
-    NotificationType, PeerCaller, PeerInfo, PeerOutcome, PeerResult, PeerState, Request,
-    ServerEvent,
+    NotificationType, PeerCaller, PeerIdentityInfo, PeerInfo, PeerOutcome, PeerOverview,
+    PeerOverviewState, PeerResult, PeerState, Request, ServerEvent,
 };
 use crate::tool::{TurnExecutionContext, TurnOrigin};
 use jcode_base::peer_groups::{PeerGroup, PeerGroups, PeerMember};
 use jcode_swarm_core::validate_swarm_tldr;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, broadcast, mpsc, oneshot};
@@ -40,6 +40,7 @@ struct SessionPeerSnapshot {
     session_id: String,
     agent: Arc<Mutex<Agent>>,
     identity: Option<PinnedPeerIdentity>,
+    working_dir: Option<PathBuf>,
     live: bool,
 }
 
@@ -131,12 +132,113 @@ async fn session_snapshots(context: &PeerServerContext<'_>) -> Vec<SessionPeerSn
                 identity: context.exchanges.pinned_session_identity(&session_id),
                 session_id,
                 agent,
+                working_dir: member.and_then(|member| member.working_dir.clone()),
                 live: member.is_some_and(|member| {
                     !member.event_txs.is_empty() || !member.event_tx.is_closed()
                 }),
             }
         })
         .collect()
+}
+
+fn overview_identity<'a>(
+    groups: &'a PeerGroups,
+    snapshot: &SessionPeerSnapshot,
+) -> Option<(&'a PeerGroup, &'a PeerMember)> {
+    groups.identity_for_dir(snapshot.working_dir.as_deref()?)
+}
+
+fn find_overview_snapshots<'a>(
+    snapshots: &'a [SessionPeerSnapshot],
+    groups: &PeerGroups,
+    group_name: &str,
+    alias: &str,
+) -> Vec<&'a SessionPeerSnapshot> {
+    snapshots
+        .iter()
+        .filter(|snapshot| {
+            overview_identity(groups, snapshot).is_some_and(|(group, member)| {
+                group.name == group_name && member.alias.eq_ignore_ascii_case(alias)
+            })
+        })
+        .collect()
+}
+
+fn build_peer_overview_from_snapshots(
+    feature_enabled: bool,
+    session_id: &str,
+    groups: &PeerGroups,
+    snapshots: &[SessionPeerSnapshot],
+    coordinator: &TurnCoordinator,
+) -> Result<PeerOverview, String> {
+    if !feature_enabled {
+        return Ok(PeerOverview {
+            state: PeerOverviewState::Disabled,
+            identity: None,
+            peers: Vec::new(),
+            error: None,
+        });
+    }
+    if let Some(error) = groups.load_error() {
+        return Ok(PeerOverview {
+            state: PeerOverviewState::ConfigurationError,
+            identity: None,
+            peers: Vec::new(),
+            error: Some(error.to_string()),
+        });
+    }
+
+    let current = snapshots
+        .iter()
+        .find(|snapshot| snapshot.session_id == session_id && snapshot.live)
+        .ok_or_else(|| "This session is not currently attached to the Jcode server.".to_string())?;
+    let Some((group, member)) = overview_identity(groups, current) else {
+        return Ok(PeerOverview {
+            state: PeerOverviewState::Unlisted,
+            identity: None,
+            peers: Vec::new(),
+            error: None,
+        });
+    };
+
+    let peers = group
+        .members
+        .iter()
+        .filter(|peer| !peer.alias.eq_ignore_ascii_case(&member.alias))
+        .map(|peer| {
+            let matching = find_overview_snapshots(snapshots, groups, &group.name, &peer.alias);
+            PeerInfo {
+                alias: peer.alias.clone(),
+                group: group.name.clone(),
+                project: project_name(&peer.working_dir),
+                state: visible_state(&matching, coordinator),
+            }
+        })
+        .collect();
+    Ok(PeerOverview {
+        state: PeerOverviewState::Enabled,
+        identity: Some(PeerIdentityInfo {
+            alias: member.alias.clone(),
+            group: group.name.clone(),
+            project: project_name(&member.working_dir),
+        }),
+        peers,
+        error: None,
+    })
+}
+
+async fn build_peer_overview(
+    session_id: &str,
+    context: &PeerServerContext<'_>,
+) -> Result<PeerOverview, String> {
+    let snapshots = session_snapshots(context).await;
+    build_peer_overview_from_snapshots(
+        crate::config::config().features.peer_messaging,
+        session_id,
+        context.peer_groups,
+        &snapshots,
+        context.turn_coordinator,
+    )
 }
 
 fn configured_identity<'a>(
@@ -361,6 +463,15 @@ pub(super) async fn handle_peer_request(
     tx: &mpsc::UnboundedSender<ServerEvent>,
     context: PeerServerContext<'_>,
 ) {
+    if let Request::PeerOverview { id, session_id } = &request {
+        match build_peer_overview(session_id, &context).await {
+            Ok(overview) => {
+                let _ = tx.send(ServerEvent::PeerOverviewResult { id: *id, overview });
+            }
+            Err(error) => send_error(*id, error, tx),
+        }
+        return;
+    }
     if !crate::config::config().features.peer_messaging {
         send_error(request.id(), "Peer messaging is disabled.", tx);
         return;
@@ -650,6 +761,142 @@ mod tests {
             },
             event_rx,
         )
+    }
+
+    fn overview_groups(
+        home: &tempfile::TempDir,
+        members: &[(&str, &std::path::Path)],
+    ) -> PeerGroups {
+        let config = serde_json::json!({
+            "version": 1,
+            "groups": [{
+                "name": "reviewers",
+                "members": members
+                    .iter()
+                    .map(|(alias, working_dir)| serde_json::json!({
+                        "alias": alias,
+                        "working_dir": working_dir,
+                    }))
+                    .collect::<Vec<_>>()
+            }]
+        });
+        std::fs::write(
+            home.path().join("peer-groups.json"),
+            serde_json::to_vec(&config).expect("serialize peer config"),
+        )
+        .expect("write peer config");
+        PeerGroups::load_from_jcode_home(home.path()).expect("load peer groups")
+    }
+
+    #[tokio::test]
+    async fn peer_overview_uses_exact_server_directory_and_reports_live_states() {
+        let home = tempfile::TempDir::new().expect("peer config home");
+        let self_dir = tempfile::TempDir::new().expect("self project");
+        let busy_dir = tempfile::TempDir::new().expect("busy project");
+        let offline_dir = tempfile::TempDir::new().expect("offline project");
+        let groups = overview_groups(
+            &home,
+            &[
+                ("Jcode", self_dir.path()),
+                ("Atlas", busy_dir.path()),
+                ("Planner", offline_dir.path()),
+            ],
+        );
+        let self_agent = test_agent("self").await;
+        let busy_agent = test_agent("busy").await;
+        let _busy_guard = busy_agent.lock().await;
+        let snapshots = vec![
+            SessionPeerSnapshot {
+                session_id: "self".to_string(),
+                agent: self_agent,
+                identity: None,
+                working_dir: Some(self_dir.path().to_path_buf()),
+                live: true,
+            },
+            SessionPeerSnapshot {
+                session_id: "busy".to_string(),
+                agent: Arc::clone(&busy_agent),
+                identity: None,
+                working_dir: Some(busy_dir.path().to_path_buf()),
+                live: true,
+            },
+        ];
+
+        let overview = build_peer_overview_from_snapshots(
+            true,
+            "self",
+            &groups,
+            &snapshots,
+            &TurnCoordinator::default(),
+        )
+        .expect("overview");
+
+        assert_eq!(overview.state, PeerOverviewState::Enabled);
+        assert_eq!(overview.identity.expect("identity").alias, "Jcode");
+        assert_eq!(overview.peers.len(), 2);
+        assert_eq!(overview.peers[0].alias, "Atlas");
+        assert_eq!(overview.peers[0].state, PeerState::Busy);
+        assert_eq!(overview.peers[1].alias, "Planner");
+        assert_eq!(overview.peers[1].state, PeerState::Offline);
+    }
+
+    #[test]
+    fn peer_overview_reports_disabled_invalid_and_detached_states() {
+        let coordinator = TurnCoordinator::default();
+        let disabled = build_peer_overview_from_snapshots(
+            false,
+            "missing",
+            &PeerGroups::empty(),
+            &[],
+            &coordinator,
+        )
+        .expect("disabled overview");
+        assert_eq!(disabled.state, PeerOverviewState::Disabled);
+
+        let invalid_groups = PeerGroups::invalid("bad peer configuration");
+        let invalid =
+            build_peer_overview_from_snapshots(true, "missing", &invalid_groups, &[], &coordinator)
+                .expect("invalid overview");
+        assert_eq!(invalid.state, PeerOverviewState::ConfigurationError);
+        assert_eq!(invalid.error.as_deref(), Some("bad peer configuration"));
+
+        let detached = build_peer_overview_from_snapshots(
+            true,
+            "missing",
+            &PeerGroups::empty(),
+            &[],
+            &coordinator,
+        )
+        .expect_err("detached session must be rejected");
+        assert_eq!(
+            detached,
+            "This session is not currently attached to the Jcode server."
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_overview_marks_an_attached_unconfigured_directory_as_unlisted() {
+        let project = tempfile::TempDir::new().expect("unlisted project");
+        let snapshots = vec![SessionPeerSnapshot {
+            session_id: "self".to_string(),
+            agent: test_agent("self").await,
+            identity: None,
+            working_dir: Some(project.path().to_path_buf()),
+            live: true,
+        }];
+
+        let overview = build_peer_overview_from_snapshots(
+            true,
+            "self",
+            &PeerGroups::empty(),
+            &snapshots,
+            &TurnCoordinator::default(),
+        )
+        .expect("unlisted overview");
+
+        assert_eq!(overview.state, PeerOverviewState::Unlisted);
+        assert!(overview.identity.is_none());
+        assert!(overview.peers.is_empty());
     }
 
     #[test]

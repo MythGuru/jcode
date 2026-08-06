@@ -131,6 +131,24 @@ pub(super) async fn handle_lightweight_control_request(
     });
 
     match request {
+        request @ Request::PeerOverview { .. } => {
+            handle_peer_request(
+                request,
+                &client_event_tx,
+                PeerServerContext {
+                    sessions,
+                    peer_groups,
+                    exchanges: peer_exchanges,
+                    swarm_members,
+                    swarms_by_id,
+                    event_history,
+                    event_counter,
+                    swarm_event_tx,
+                    turn_coordinator,
+                },
+            )
+            .await;
+        }
         request @ (Request::PeerList { .. }
         | Request::PeerSend { .. }
         | Request::PeerReply { .. }
