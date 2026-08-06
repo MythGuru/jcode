@@ -578,6 +578,10 @@ pub(super) async fn handle_bus_event(
             super::commands::handle_git_status_completed(app, result);
             true
         }
+        Ok(BusEvent::PeerOverviewCompleted(result)) => {
+            super::commands_peers::handle_peer_overview_completed(app, result);
+            true
+        }
         Ok(BusEvent::MermaidRenderCompleted) => true,
         Ok(BusEvent::UsageReportProgress(progress)) => {
             app.handle_usage_report_progress(progress);

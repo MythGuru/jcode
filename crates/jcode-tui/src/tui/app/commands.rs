@@ -1714,6 +1714,7 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         || handle_transcript_command(app, trimmed)
         || handle_lift_command(app, trimmed)
         || handle_git_command(app, trimmed)
+        || super::commands_peers::handle_peers_command(app, trimmed)
         || handle_catchup_command(app, trimmed)
         || handle_back_command(app, trimmed)
         || handle_autoreview_command_local(app, trimmed)

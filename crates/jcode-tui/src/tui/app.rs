@@ -58,6 +58,7 @@ mod commands_dispatch;
 mod commands_improve;
 mod commands_lift;
 mod commands_overnight;
+mod commands_peers;
 mod commands_plan;
 mod commands_remote;
 mod commands_review;

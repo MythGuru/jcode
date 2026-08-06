@@ -271,6 +271,12 @@ pub struct GitStatusCompleted {
     pub result: std::result::Result<String, String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct PeerOverviewCompleted {
+    pub session_id: String,
+    pub result: std::result::Result<String, String>,
+}
+
 /// A backgrounded `swarm await_members` watcher reached a terminal result
 /// (members satisfied the target status, or the wait timed out).
 ///
@@ -425,6 +431,8 @@ pub enum BusEvent {
     UiActivity(UiActivity),
     /// Local git status command completed off the UI thread
     GitStatusCompleted(GitStatusCompleted),
+    /// Native peer overview completed off the UI thread
+    PeerOverviewCompleted(PeerOverviewCompleted),
     /// Update check status from background thread
     UpdateStatus(UpdateStatus),
     /// Interactive client update status for a specific session
