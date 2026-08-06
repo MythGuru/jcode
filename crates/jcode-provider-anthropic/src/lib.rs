@@ -74,7 +74,7 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
             content_blocks = msg
                 .content
                 .iter()
-                .map(|block| match block {
+                .filter_map(|block| match block {
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
@@ -94,7 +94,6 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
                     }
                     other => Some(other.clone()),
                 })
-                .flatten()
                 .collect::<Vec<_>>();
             &content_blocks
         };
