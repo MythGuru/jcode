@@ -61,7 +61,7 @@ fn describe_json_error(error: &serde_json::Error) -> String {
                 error.column()
             );
         }
-        return format!("{text}");
+        return text;
     }
     format!("malformed JSON: {text}")
 }
