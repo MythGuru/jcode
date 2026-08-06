@@ -49,6 +49,11 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
         .await
         .set_working_dir(&atlas_dir.path().to_string_lossy());
     peer_exchanges.pin_or_invalidate_session(target_session_id, eve_dir.path(), &peer_groups);
+    peer_exchanges.pin_or_invalidate_session(temp_session_id, atlas_dir.path(), &peer_groups);
+    let _temp_turn = peer_exchanges
+        .coordinator_for_test()
+        .begin_server_turn(temp_session_id, crate::tool::TurnOrigin::NormalUser)
+        .expect("temporary active turn");
 
     let sessions = Arc::new(RwLock::new(HashMap::from([(
         temp_session_id.to_string(),
@@ -211,6 +216,13 @@ async fn handle_resume_session_registers_live_events_before_history_replay() -> 
     assert!(
         !resume_task.is_finished(),
         "resume should still be blocked on history replay while writer is locked"
+    );
+    assert_eq!(peer_exchanges.pinned_session_identity(temp_session_id), None);
+    assert!(
+        !peer_exchanges
+            .coordinator_for_test()
+            .session_is_busy(temp_session_id),
+        "successful resume must remove temporary coordinator state"
     );
     assert_eq!(
         agent.lock().await.working_dir(),

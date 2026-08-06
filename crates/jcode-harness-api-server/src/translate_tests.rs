@@ -286,6 +286,78 @@ fn history_reply_is_mapped() {
 }
 
 #[test]
+fn peer_history_uses_documented_tool_role_with_explicit_peer_content() {
+    let mut state = state_with_session();
+    let out = state.api_request_to_legacy(&json!({"req": "get_history", "id": 4}));
+    let Outbound::Legacy(get) = &out[0] else {
+        panic!("expected legacy outbound");
+    };
+    let legacy_id = get["id"].as_u64().unwrap();
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "history",
+        "id": legacy_id,
+        "session_id": "s1",
+        "messages": [{"role": "peer", "content": "Hello from Planner"}],
+    }));
+    match &frames[0].event {
+        ApiEvent::History { messages, .. } => {
+            assert_eq!(messages[0].role, "tool");
+            assert_eq!(messages[0].content, "[Peer message]\nHello from Planner");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn system_prefixed_peer_history_uses_tool_role_without_double_wrapping() {
+    let mut state = state_with_session();
+    let out = state.api_request_to_legacy(&json!({"req": "get_history", "id": 4}));
+    let Outbound::Legacy(get) = &out[0] else {
+        panic!("expected legacy outbound");
+    };
+    let legacy_id = get["id"].as_u64().unwrap();
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "history",
+        "id": legacy_id,
+        "session_id": "s1",
+        "messages": [{"role": "system", "content": "[Peer message]\nHello from Planner"}],
+    }));
+    match &frames[0].event {
+        ApiEvent::History { messages, .. } => {
+            assert_eq!(messages[0].role, "tool");
+            assert_eq!(messages[0].content, "[Peer message]\nHello from Planner");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_display_provenance_uses_tool_role_with_explicit_prefix() {
+    let mut state = state_with_session();
+    let out = state.api_request_to_legacy(&json!({"req": "get_history", "id": 4}));
+    let Outbound::Legacy(get) = &out[0] else {
+        panic!("expected legacy outbound");
+    };
+    let legacy_id = get["id"].as_u64().unwrap();
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "history",
+        "id": legacy_id,
+        "session_id": "s1",
+        "messages": [{"role": "background_task", "content": "Finished work"}],
+    }));
+    match &frames[0].event {
+        ApiEvent::History { messages, .. } => {
+            assert_eq!(messages[0].role, "tool");
+            assert_eq!(
+                messages[0].content,
+                "[background_task message]\nFinished work"
+            );
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
 fn unknown_legacy_events_are_dropped() {
     let mut state = state_with_session();
     let frames = state.legacy_event_to_api(&json!({"type": "swarm_event", "data": {}}));

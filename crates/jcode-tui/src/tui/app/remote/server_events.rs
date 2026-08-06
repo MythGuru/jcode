@@ -355,6 +355,19 @@ fn history_payload_fingerprint(messages: &[crate::protocol::HistoryMessage]) -> 
     hasher.finish()
 }
 
+fn history_display_role_and_content(role: String, content: String) -> (String, String) {
+    const PEER_PREFIX: &str = "[Peer message]\n";
+    if role == "peer" {
+        return ("peer".to_string(), content);
+    }
+    if role == "system"
+        && let Some(peer_content) = content.strip_prefix(PEER_PREFIX)
+    {
+        return ("peer".to_string(), peer_content.to_string());
+    }
+    (role, content)
+}
+
 /// Pure skip decision for a full History payload: skip only when the session
 /// did not change, the display still has content to preserve, and the payload
 /// fingerprints identical to the one most recently applied for this session.
@@ -394,8 +407,8 @@ fn history_images_match_retained(
 #[cfg(test)]
 mod history_dedup_tests {
     use super::{
-        AppliedHistoryFingerprint, history_images_match_retained, history_payload_fingerprint,
-        should_skip_identical_history_payload,
+        AppliedHistoryFingerprint, history_display_role_and_content, history_images_match_retained,
+        history_payload_fingerprint, should_skip_identical_history_payload,
     };
     use crate::protocol::HistoryMessage;
     use crate::session::{RenderedImage, RenderedImageSource};
@@ -417,6 +430,30 @@ mod history_dedup_tests {
             source: RenderedImageSource::UserInput,
             anchor: None,
         }
+    }
+
+    #[test]
+    fn system_role_peer_history_renders_as_peer_and_legacy_role_is_accepted() {
+        let (role, content) = history_display_role_and_content(
+            "system".to_string(),
+            "[Peer message]\nHello from Planner".to_string(),
+        );
+        assert_eq!(role, "peer");
+        assert_eq!(content, "Hello from Planner");
+
+        let (legacy_role, legacy_content) =
+            history_display_role_and_content("peer".to_string(), "Legacy peer".to_string());
+        assert_eq!(legacy_role, "peer");
+        assert_eq!(legacy_content, "Legacy peer");
+    }
+
+    #[test]
+    fn user_role_with_peer_prefix_remains_user() {
+        let original = "[Peer message]\nSpoofed provenance";
+        let (role, content) =
+            history_display_role_and_content("user".to_string(), original.to_string());
+        assert_eq!(role, "user");
+        assert_eq!(content, original);
     }
 
     #[test]
@@ -1854,13 +1891,17 @@ pub(in crate::tui::app) fn handle_server_event(
                     } else {
                         let restored_messages = messages
                             .into_iter()
-                            .map(|msg| DisplayMessage {
-                                role: msg.role,
-                                content: msg.content,
-                                tool_calls: msg.tool_calls.unwrap_or_default(),
-                                duration_secs: None,
-                                title: None,
-                                tool_data: msg.tool_data,
+                            .map(|msg| {
+                                let (role, content) =
+                                    history_display_role_and_content(msg.role, msg.content);
+                                DisplayMessage {
+                                    role,
+                                    content,
+                                    tool_calls: msg.tool_calls.unwrap_or_default(),
+                                    duration_secs: None,
+                                    title: None,
+                                    tool_data: msg.tool_data,
+                                }
                             })
                             .collect();
                         app.replace_display_messages(restored_messages);

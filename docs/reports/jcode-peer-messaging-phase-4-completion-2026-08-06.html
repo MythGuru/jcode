@@ -225,24 +225,26 @@
         <div class="mini-card"><strong>Hidden</strong><p>Message bodies, error details, capability values, full paths, raw request IDs, raw session IDs, and unrelated workspace history.</p></div>
         <div class="mini-card"><strong>Never triggered</strong><p>No model call, no peer wake-up, no outbound message, no Ambient Mode change, and no new conversation turn.</p></div>
       </div>
-      <h3>Hard limits that prevent an unlimited history scan</h3>
+      <h3>Hard limits that bound transcript parsing</h3>
       <table>
         <thead><tr><th>Limit</th><th>Exact rule</th><th>Reason</th></tr></thead>
         <tbody>
-          <tr><td>Saved sessions</td><td>At most 12 matching sessions</td><td>Stops the command from walking through an unlimited archive.</td></tr>
-          <tr><td>Total snapshot</td><td>At most 2 MiB</td><td>Keeps memory and disk work predictable.</td></tr>
+          <tr><td>Candidate files</td><td>Newest 256 session files</td><td>Bounds how many saved transcripts may be opened and parsed.</td></tr>
+          <tr><td>Matching sessions</td><td>At most 12 within that candidate window</td><td>Bounds workspace-specific history loading.</td></tr>
+          <tr><td>Individual snapshot</td><td>At most 2 MiB per file</td><td>Unusually large transcripts are skipped and reported as limited.</td></tr>
           <tr><td>Messages per session</td><td>Newest 500 only</td><td>Old history cannot make the overview grow forever.</td></tr>
           <tr><td>Displayed activities</td><td>Newest 5 only</td><td>The card stays useful and readable.</td></tr>
           <tr><td>Workspace matching</td><td>Exact canonical workspace</td><td>History from similarly named or unrelated folders is excluded.</td></tr>
         </tbody>
       </table>
       <div class="callout amber"><strong>Honest limitation:</strong> If the saved history hits a safety limit, Jcode marks the history as limited rather than silently pretending the result is complete.</div>
+      <div class="callout amber"><strong>Local-daemon trust boundary:</strong> The server requires a live session ID and uses that session's pinned peer identity, but the lightweight overview request has no separate server-minted capability. A local process with daemon-socket access and knowledge of another live session ID could request that sanitized overview. Stronger request binding is required before treating the socket as a multi-user or network boundary.</div>
     </section>
 
     <section id="proof">
       <span class="badge good">Verification evidence</span>
       <h2>How we proved it works</h2>
-      <p>We did not rely on “the code looks right.” We checked the small pieces, the connected system, the full affected application, the workspace build, and finally the actual Windows terminal interface.</p>
+      <p>We did not rely on “the code looks right.” We checked the small pieces, connected peer paths, focused affected suites, production-target warning checks, and the actual Windows terminal interface. Broader checks that were not fully green are reported honestly below.</p>
       <table>
         <thead><tr><th>Check</th><th>Result</th><th>What it proves</th></tr></thead>
         <tbody>
@@ -251,9 +253,10 @@
           <tr><td>TUI command and renderer tests</td><td class="test-pass">Passed</td><td>The slash command is registered once, parses correctly, and draws the expected card.</td></tr>
           <tr><td>Feature-off tests</td><td class="test-pass">Passed</td><td>Turning peer messaging off still preserves the old safe behavior.</td></tr>
           <tr><td>Formatting</td><td class="test-pass">Passed</td><td>The Rust source follows the project formatting rules.</td></tr>
-          <tr><td>Strict Clippy</td><td class="test-pass">Passed</td><td>The whole workspace passed Rust’s strict warning checks with warnings treated as errors.</td></tr>
+          <tr><td>Scoped strict Clippy</td><td class="test-pass">Passed after one fix</td><td>The six affected production library/binary targets passed with warnings treated as errors. Full workspace all-target Clippy remains blocked by unrelated pre-existing test-only lints.</td></tr>
           <tr><td>Full protocol suite</td><td class="test-pass">84 passed</td><td>No protocol regression was introduced.</td></tr>
-          <tr><td>Full application-core suite, serial</td><td class="test-pass">1,141 passed</td><td>The large affected application suite completed with zero failures and 11 intentionally ignored tests.</td></tr>
+          <tr><td>Focused application peer suite</td><td class="test-pass">53 passed</td><td>All app-core tests selected by <code>peer_</code> passed after the compatibility and lifecycle corrections.</td></tr>
+          <tr><td>Broader application-core suite</td><td>1,117 passed; 15 pre-existing failures; 6 ignored</td><td>No peer-related failure was present, but the broader suite was not fully green and is not claimed as such.</td></tr>
           <tr><td>TUI compile</td><td class="test-pass">Passed</td><td>The full terminal interface compiles with the change.</td></tr>
           <tr><td>Full workspace compile, no run</td><td class="test-pass">Passed</td><td>Every workspace test target compiles together.</td></tr>
           <tr><td>Real Windows TUI dogfood</td><td class="test-pass">Passed</td><td>The actual current Jcode binary accepted /peers and displayed the live card.</td></tr>
@@ -276,7 +279,7 @@
       <p>Software work is rarely a straight line. These issues were encountered and handled without hiding them.</p>
       <div class="timeline">
         <article><h3>The outside Claude review command failed</h3><p>The local Claude command was first called with an invalid tool option and then failed again without useful output. This was a review-tool problem, not a feature failure. We stopped wasting time and tokens on it, then relied on direct code tests and runtime evidence.</p></article>
-        <article><h3>One large test failed only during parallel execution</h3><p>A restart snapshot test saw two live test sessions because other tests were changing the same process-wide test home at the same time. The test passed alone, all six related restart tests passed serially, and the full application suite then passed serially with 1,141 successes. No unrelated code was changed to disguise the interference.</p></article>
+        <article><h3>Broader checks exposed pre-existing failures</h3><p>The broader application-core run completed with 1,117 passing tests, 15 pre-existing failures, and 6 ignored tests; none of the failures were peer-related. Full workspace all-target Clippy also reaches unrelated test-only lints. We therefore use focused peer suites and affected production-target Clippy as the merge evidence instead of claiming every historical workspace check is green.</p></article>
         <article><h3>The first full workspace compile hit the time limit</h3><p>It was still compiling and showed no code error. We reran it after the compiler cache was warm, and it finished successfully.</p></article>
         <article><h3>The official self-development command could publish but not open a screen</h3><p>The build ran in the background without an interactive terminal. Publishing succeeded, then the attempt to launch the visual interface failed because no terminal was attached. We verified the published executable directly and aligned the shared server using Jcode’s Windows-safe staged replacement method.</p></article>
         <article><h3>The first live terminal test typed too early</h3><p>The Jcode screen was still changing sessions, so the first /peers input was lost. The harness was changed to wait for the stable branch and provider display. The second attempt passed every live check.</p></article>

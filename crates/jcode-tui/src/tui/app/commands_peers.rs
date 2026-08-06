@@ -32,6 +32,20 @@ fn should_load_history(state: PeerOverviewState) -> bool {
     )
 }
 
+fn should_load_activity(
+    state: PeerOverviewState,
+    working_dir: Option<&std::path::PathBuf>,
+) -> bool {
+    should_load_history(state) && working_dir.is_some()
+}
+
+fn activity_working_dir(
+    is_remote: bool,
+    working_dir: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    (!is_remote).then_some(working_dir).flatten()
+}
+
 fn render_peer_overview(
     overview: &PeerOverview,
     activity: Option<&PeerActivityReport>,
@@ -159,8 +173,8 @@ fn build_peer_overview_card(
     let overview = runtime
         .block_on(crate::peer_overview::fetch_peer_overview(session_id))
         .map_err(|error| error.to_string())?;
-    let activity =
-        should_load_history(overview.state).then(|| load_activity_for_workspace(working_dir));
+    let activity = should_load_activity(overview.state, working_dir.as_ref())
+        .then(|| load_activity_for_workspace(working_dir));
     Ok(render_peer_overview(
         &overview,
         activity.as_ref(),
@@ -179,7 +193,7 @@ pub(super) fn handle_peers_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     let session_id = super::commands::active_session_id(app);
-    let working_dir = super::commands::active_working_dir(app);
+    let working_dir = activity_working_dir(app.is_remote, super::commands::active_working_dir(app));
     if !app.is_remote
         && app.session.id == session_id
         && let Err(error) = app.session.save()
@@ -244,6 +258,28 @@ mod tests {
     fn peers_command_completion_is_scoped_to_the_active_session() {
         assert!(completion_belongs_to_session("active", "active"));
         assert!(!completion_belongs_to_session("old", "active"));
+    }
+
+    #[test]
+    fn remote_peers_command_never_reuses_local_working_directory_for_activity() {
+        let stale_local = Some(std::path::PathBuf::from("C:\\stale-local"));
+        let working_dir = activity_working_dir(true, stale_local);
+        assert_eq!(working_dir, None);
+        assert!(!should_load_activity(
+            PeerOverviewState::Enabled,
+            working_dir.as_ref()
+        ));
+
+        let overview = PeerOverview {
+            state: PeerOverviewState::Enabled,
+            identity: None,
+            peers: Vec::new(),
+            error: None,
+        };
+        assert!(
+            render_peer_overview(&overview, None, false)
+                .contains("Recent activity is unavailable in this state.")
+        );
     }
 
     #[test]

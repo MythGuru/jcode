@@ -238,6 +238,11 @@ impl PeerExchangeRegistry {
     }
 
     #[cfg(test)]
+    pub(super) fn coordinator_for_test(&self) -> TurnCoordinator {
+        self.coordinator.clone()
+    }
+
+    #[cfg(test)]
     fn pause_atomic_start_for_test(&self) {
         let mut hook = self
             .atomic_start_hook
@@ -672,6 +677,7 @@ impl PeerExchangeRegistry {
     }
 
     pub(super) fn remove_session(&self, session_id: &str) -> Option<PeerExchangeResult> {
+        self.coordinator.remove_session(session_id);
         let exchange_id = {
             let mut state = self.lock_state();
             state.pinned_identities.remove(session_id);
@@ -1137,7 +1143,7 @@ mod tests {
         assert_eq!(result.recipient_outcome, PeerRecipientOutcome::Failed);
         assert_eq!(
             registry.record_reply(&recipient_context, "late".to_string()),
-            Err(PeerReplyError::UnknownExchange)
+            Err(PeerReplyError::InvalidTurn)
         );
     }
 

@@ -16,7 +16,7 @@ use crate::tool::{TurnExecutionContext, TurnOrigin};
 use jcode_base::peer_groups::{PeerGroup, PeerGroups, PeerMember};
 use jcode_swarm_core::validate_swarm_tldr;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, broadcast, mpsc, oneshot};
@@ -40,7 +40,6 @@ struct SessionPeerSnapshot {
     session_id: String,
     agent: Arc<Mutex<Agent>>,
     identity: Option<PinnedPeerIdentity>,
-    working_dir: Option<PathBuf>,
     live: bool,
 }
 
@@ -132,7 +131,6 @@ async fn session_snapshots(context: &PeerServerContext<'_>) -> Vec<SessionPeerSn
                 identity: context.exchanges.pinned_session_identity(&session_id),
                 session_id,
                 agent,
-                working_dir: member.and_then(|member| member.working_dir.clone()),
                 live: member.is_some_and(|member| {
                     !member.event_txs.is_empty() || !member.event_tx.is_closed()
                 }),
@@ -145,7 +143,7 @@ fn overview_identity<'a>(
     groups: &'a PeerGroups,
     snapshot: &SessionPeerSnapshot,
 ) -> Option<(&'a PeerGroup, &'a PeerMember)> {
-    groups.identity_for_dir(snapshot.working_dir.as_deref()?)
+    configured_identity(groups, snapshot.identity.as_ref())
 }
 
 fn find_overview_snapshots<'a>(
@@ -179,19 +177,18 @@ fn build_peer_overview_from_snapshots(
             error: None,
         });
     }
-    if let Some(error) = groups.load_error() {
-        return Ok(PeerOverview {
-            state: PeerOverviewState::ConfigurationError,
-            identity: None,
-            peers: Vec::new(),
-            error: Some(error.to_string()),
-        });
-    }
-
     let current = snapshots
         .iter()
         .find(|snapshot| snapshot.session_id == session_id && snapshot.live)
         .ok_or_else(|| "This session is not currently attached to the Jcode server.".to_string())?;
+    if groups.load_error().is_some() {
+        return Ok(PeerOverview {
+            state: PeerOverviewState::ConfigurationError,
+            identity: None,
+            peers: Vec::new(),
+            error: Some("Peer configuration is invalid.".to_string()),
+        });
+    }
     let Some((group, member)) = overview_identity(groups, current) else {
         return Ok(PeerOverview {
             state: PeerOverviewState::Unlisted,
@@ -788,6 +785,17 @@ mod tests {
         PeerGroups::load_from_jcode_home(home.path()).expect("load peer groups")
     }
 
+    fn pinned_identity(groups: &PeerGroups, working_dir: &Path) -> PinnedPeerIdentity {
+        let (group, member) = groups
+            .identity_for_dir(working_dir)
+            .expect("configured identity");
+        PinnedPeerIdentity {
+            group_name: group.name.clone(),
+            alias: member.alias.clone(),
+            working_dir: member.working_dir.clone(),
+        }
+    }
+
     #[tokio::test]
     async fn peer_overview_uses_exact_server_directory_and_reports_live_states() {
         let home = tempfile::TempDir::new().expect("peer config home");
@@ -809,15 +817,13 @@ mod tests {
             SessionPeerSnapshot {
                 session_id: "self".to_string(),
                 agent: self_agent,
-                identity: None,
-                working_dir: Some(self_dir.path().to_path_buf()),
+                identity: Some(pinned_identity(&groups, self_dir.path())),
                 live: true,
             },
             SessionPeerSnapshot {
                 session_id: "busy".to_string(),
                 agent: Arc::clone(&busy_agent),
-                identity: None,
-                working_dir: Some(busy_dir.path().to_path_buf()),
+                identity: Some(pinned_identity(&groups, busy_dir.path())),
                 live: true,
             },
         ];
@@ -840,8 +846,8 @@ mod tests {
         assert_eq!(overview.peers[1].state, PeerState::Offline);
     }
 
-    #[test]
-    fn peer_overview_reports_disabled_invalid_and_detached_states() {
+    #[tokio::test]
+    async fn peer_overview_reports_disabled_invalid_and_detached_states() {
         let coordinator = TurnCoordinator::default();
         let disabled = build_peer_overview_from_snapshots(
             false,
@@ -854,11 +860,25 @@ mod tests {
         assert_eq!(disabled.state, PeerOverviewState::Disabled);
 
         let invalid_groups = PeerGroups::invalid("bad peer configuration");
-        let invalid =
-            build_peer_overview_from_snapshots(true, "missing", &invalid_groups, &[], &coordinator)
-                .expect("invalid overview");
+        let invalid_snapshot = SessionPeerSnapshot {
+            session_id: "attached".to_string(),
+            agent: test_agent("attached").await,
+            identity: None,
+            live: true,
+        };
+        let invalid = build_peer_overview_from_snapshots(
+            true,
+            "attached",
+            &invalid_groups,
+            &[invalid_snapshot],
+            &coordinator,
+        )
+        .expect("invalid overview");
         assert_eq!(invalid.state, PeerOverviewState::ConfigurationError);
-        assert_eq!(invalid.error.as_deref(), Some("bad peer configuration"));
+        assert_eq!(
+            invalid.error.as_deref(),
+            Some("Peer configuration is invalid.")
+        );
 
         let detached = build_peer_overview_from_snapshots(
             true,
@@ -876,12 +896,10 @@ mod tests {
 
     #[tokio::test]
     async fn peer_overview_marks_an_attached_unconfigured_directory_as_unlisted() {
-        let project = tempfile::TempDir::new().expect("unlisted project");
         let snapshots = vec![SessionPeerSnapshot {
             session_id: "self".to_string(),
             agent: test_agent("self").await,
             identity: None,
-            working_dir: Some(project.path().to_path_buf()),
             live: true,
         }];
 
@@ -899,11 +917,56 @@ mod tests {
         assert!(overview.peers.is_empty());
     }
 
+    #[tokio::test]
+    async fn peer_overview_uses_pinned_identity_not_mutable_working_directory() {
+        let home = tempfile::TempDir::new().expect("peer config home");
+        let pinned_dir = tempfile::TempDir::new().expect("pinned project");
+        let peer_dir = tempfile::TempDir::new().expect("peer project");
+        let groups = overview_groups(
+            &home,
+            &[("Jcode", pinned_dir.path()), ("Atlas", peer_dir.path())],
+        );
+        let snapshots = vec![SessionPeerSnapshot {
+            session_id: "self".to_string(),
+            agent: test_agent("self").await,
+            identity: Some(pinned_identity(&groups, pinned_dir.path())),
+            live: true,
+        }];
+
+        let overview = build_peer_overview_from_snapshots(
+            true,
+            "self",
+            &groups,
+            &snapshots,
+            &TurnCoordinator::default(),
+        )
+        .expect("overview");
+
+        assert_eq!(overview.state, PeerOverviewState::Enabled);
+        assert_eq!(overview.identity.expect("pinned identity").alias, "Jcode");
+    }
+
+    #[test]
+    fn peer_overview_validates_live_session_before_reporting_configuration_state() {
+        let overview = build_peer_overview_from_snapshots(
+            true,
+            "missing",
+            &PeerGroups::invalid("secret parser detail"),
+            &[],
+            &TurnCoordinator::default(),
+        );
+
+        assert_eq!(
+            overview.expect_err("detached request must be rejected first"),
+            "This session is not currently attached to the Jcode server."
+        );
+    }
+
     #[test]
     fn peer_notification_identifies_sender_project_and_body() {
         let sender = PeerMember {
             alias: "Eve".to_string(),
-            working_dir: PathBuf::from("healthview-app"),
+            working_dir: std::path::PathBuf::from("healthview-app"),
         };
 
         let message = peer_notification_message(&sender, "  Please review this.  ");

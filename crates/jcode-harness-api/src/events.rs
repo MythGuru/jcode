@@ -283,7 +283,9 @@ pub struct TextMatch {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HistoryMessage {
-    /// "user" | "assistant" | "tool".
+    /// "user" | "assistant" | "tool". Display-only provenance such as peer
+    /// messages is encoded explicitly in `content` while retaining one of
+    /// these backwards-compatible roles.
     pub role: String,
     pub content: String,
 }

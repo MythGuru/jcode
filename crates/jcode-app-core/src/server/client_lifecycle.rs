@@ -1254,6 +1254,7 @@ pub(super) async fn handle_client(
                         &event_counter,
                         &swarm_event_tx,
                         &client_event_tx,
+                        Some((&peer_groups, &peer_exchanges)),
                     ),
                 )
                 .await;

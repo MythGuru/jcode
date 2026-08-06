@@ -151,6 +151,10 @@ pub(super) async fn handle_clear_session(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+    peer_context: Option<(
+        &jcode_base::peer_groups::PeerGroups,
+        &super::peer_exchange::PeerExchangeRegistry,
+    )>,
 ) {
     let clear_start = Instant::now();
     let old_session_id = client_session_id.clone();
@@ -171,6 +175,9 @@ pub(super) async fn handle_clear_session(
             agent_guard.working_dir().map(str::to_string),
         )
     };
+    if let Some((_, peer_exchanges)) = peer_context {
+        peer_exchanges.remove_session(&old_session_id);
+    }
 
     {
         let mut agent_guard = agent.lock().await;
@@ -183,6 +190,11 @@ pub(super) async fn handle_clear_session(
         working_dir.as_deref(),
     );
     let new_id = new_agent.session_id().to_string();
+    if let (Some((peer_groups, peer_exchanges)), Some(working_dir)) =
+        (peer_context, working_dir.as_deref())
+    {
+        peer_exchanges.pin_or_invalidate_session(&new_id, Path::new(working_dir), peer_groups);
+    }
 
     if client_selfdev {
         new_agent.set_canary("self-dev");
@@ -1403,6 +1415,9 @@ pub(super) async fn handle_resume_session(
         }
 
         *client_session_id = session_id.clone();
+        if let Some((_, peer_exchanges)) = peer_identity {
+            peer_exchanges.remove_session(&old_session_id);
+        }
 
         handle_get_history(
             id,
@@ -1648,6 +1663,9 @@ pub(super) async fn handle_resume_session(
     match result {
         Ok(_prev_status) => {
             let old_session_id = client_session_id.clone();
+            if let Some((_, peer_exchanges)) = peer_identity {
+                peer_exchanges.remove_session(&old_session_id);
+            }
             *client_session_id = session_id.clone();
 
             {

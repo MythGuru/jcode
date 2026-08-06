@@ -1,6 +1,10 @@
 use super::*;
 use crate::message::ToolDefinition;
 
+fn local_tui_may_advertise_peer_tool(_feature_enabled: bool) -> bool {
+    false
+}
+
 impl App {
     pub(super) fn append_current_turn_system_reminder(
         &self,
@@ -78,7 +82,7 @@ impl App {
             let mut tools = self.registry.definitions(None).await;
             crate::tool::filter_tool_definitions_for_features(
                 &mut tools,
-                crate::config::config().features.peer_messaging,
+                local_tui_may_advertise_peer_tool(crate::config::config().features.peer_messaging),
             );
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             let memory_pending = self.build_memory_prompt_nonblocking(&provider_messages);
@@ -1491,5 +1495,16 @@ impl App {
         super::commands::maybe_trigger_autoreview_local(self);
         super::commands::maybe_trigger_autojudge_local(self);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod peer_tool_tests {
+    use super::local_tui_may_advertise_peer_tool;
+
+    #[test]
+    fn standalone_tui_never_advertises_peer_tool() {
+        assert!(!local_tui_may_advertise_peer_tool(true));
+        assert!(!local_tui_may_advertise_peer_tool(false));
     }
 }

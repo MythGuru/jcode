@@ -51,8 +51,10 @@ provider tokens.
 
 ### 3.1 Live overview from the shared server
 
-The TUI asks the existing shared Jcode server for a read-only peer overview
-bound to the requesting interactive session.
+The TUI asks the existing shared Jcode server for a read-only peer overview over
+the local lightweight-control transport and includes the interactive session ID.
+The server requires that ID to name a currently live session and derives the
+visible identity only from that session's pinned allowlist identity.
 
 The server returns:
 
@@ -63,8 +65,14 @@ The server returns:
 - Other approved group members.
 - Each member's project label and current visible state.
 
-The request is authenticated by the existing attached client/session
-relationship. It does not use the model-only hidden turn capability because
+The request inherits the existing local-daemon socket trust model. The server
+validates that the requested session is live, but the lightweight connection is
+not cryptographically bound to the TUI attachment and carries no server-minted
+per-request capability. Therefore, a local process that can access the daemon
+socket and learn another live session ID could request that session's sanitized
+overview. This is accepted for the current single-user local daemon and must be
+revisited before the socket is treated as a multi-user or network security
+boundary. The route does not use the model-only hidden turn capability because
 `/peers` is a user command, not a model tool call.
 
 The route must be incapable of:
@@ -212,8 +220,11 @@ and outcome because those are necessary for the requested overview.
 
 History scanning uses these fixed first-release limits:
 
-- Inspect at most the 12 most recently updated local Jcode session files whose
-  canonical working directory matches the current workspace.
+- Consider at most the 256 most recently updated local Jcode session files as
+  candidates, regardless of workspace. If older candidates remain, record that
+  history was partially limited.
+- From that candidate window, load at most 12 sessions whose canonical working
+  directory matches the current workspace.
 - Skip any individual transcript larger than 2 MiB and record that history was
   partially limited.
 - Inspect at most the newest 500 persisted messages in each parsed transcript.
@@ -226,9 +237,9 @@ session use persisted message timestamps when available and transcript order as
 the stable fallback. A missing timestamp is displayed as `time unavailable`
 rather than guessed.
 
-If older or unusually large transcripts fall outside those limits, the command
-shows the newest evidence it found and does not claim completeness beyond the
-latest five displayed entries.
+If older candidates, matching sessions, or unusually large transcripts fall
+outside those limits, the command shows the newest evidence it found and does
+not claim completeness beyond the latest five displayed entries.
 
 ## 6. Error and empty states
 

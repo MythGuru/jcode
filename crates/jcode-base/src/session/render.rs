@@ -411,7 +411,10 @@ pub fn render_messages_and_images_with_compacted_history(
         let role = match msg.display_role {
             Some(StoredDisplayRole::System) => "system",
             Some(StoredDisplayRole::BackgroundTask) => "background_task",
-            Some(StoredDisplayRole::Peer) => "peer",
+            // Keep the history wire compatible with older TUI clients while
+            // preserving provenance: old clients display system messages, and
+            // current clients reinterpret only system + the explicit prefix.
+            Some(StoredDisplayRole::Peer) => "system",
             None if is_auto_poke_user_message(msg) => "system",
             None => match msg.role {
                 Role::User => "user",
@@ -431,6 +434,7 @@ pub fn render_messages_and_images_with_compacted_history(
             });
             continue;
         }
+        let is_peer = msg.display_role == Some(StoredDisplayRole::Peer);
         let message_role = msg.role.clone();
         let mut text = String::new();
         // Reasoning is accumulated separately so it can be rendered *before* the
@@ -558,9 +562,14 @@ pub fn render_messages_and_images_with_compacted_history(
             if role == "user" && !is_attached_image_label_text(&text) {
                 user_prompt_count += 1;
             }
+            let content = if is_peer {
+                format!("[Peer message]\n{combined}")
+            } else {
+                combined
+            };
             rendered.push(RenderedMessage {
                 role: role.to_string(),
-                content: combined,
+                content,
                 tool_calls,
                 tool_data: None,
                 stored_index: Some(stored_index),

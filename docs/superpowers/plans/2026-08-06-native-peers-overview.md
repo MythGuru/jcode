@@ -4,7 +4,7 @@
 
 **Goal:** Add a token-free `/peers` command that shows live approved peer status and the latest five privacy-safe peer activities from existing persisted transcripts, then build and reload Jcode onto the verified commit.
 
-**Architecture:** Add one read-only lightweight protocol request whose authority is a currently attached session ID and whose server handler derives the exact canonical workspace identity. Keep durable history separate in a pure app-core transcript extractor plus a bounded session-file scanner. The TUI only coordinates the two read-only results, renders a compact card, and receives completion through the existing bus.
+**Architecture:** Add one read-only lightweight protocol request that carries a currently attached session ID. The server rejects detached IDs and derives all visible identity from the session's pinned allowlist identity, never from a caller-supplied path or alias. This transport inherits Jcode's existing local-daemon trust model: it is not a separate per-request capability boundary. Keep durable history separate in a pure app-core transcript extractor plus a bounded session-file scanner. The TUI only coordinates the two read-only results, renders a compact card, and receives completion through the existing bus.
 
 **Tech Stack:** Rust 2024 workspace, Tokio, Serde JSON wire protocol, Jcode snapshot/journal session persistence, Ratatui transcript cards, Windows Cargo self-development build.
 
@@ -13,11 +13,12 @@
 - Peer messaging remains behind the existing default-off `features.peer_messaging` flag.
 - Ambient Mode remains disabled in Michael's active configuration and gains no peer initiation path.
 - `/peers` must not start a model turn or consume provider tokens.
-- Live authorization derives from the requested live session's stored canonical working directory, never a caller-supplied path or alias.
+- Live authorization requires a currently attached session and derives identity from that session's pinned peer identity, never a caller-supplied path or alias.
+- The lightweight request inherits the existing local-daemon socket trust model. A local process that can access the daemon socket and knows another live session ID can request that session's sanitized overview; add a server-minted capability before treating this socket as a multi-user or network security boundary.
 - The overview request can only read status. It cannot send, reply, wake, interrupt, reserve a turn, or mutate configuration.
 - Durable history uses existing Jcode transcripts. Do not create a peer-history database or journal.
 - Display at most five activities. Never display message bodies, reply bodies, full paths, session IDs, capabilities, or exchange secrets.
-- Inspect at most 12 recently updated matching Jcode sessions, skip a transcript over 2 MiB, and inspect at most the newest 500 messages in each parsed session.
+- Consider at most the 256 newest Jcode session files, load at most 12 matching sessions from that window, skip any transcript over 2 MiB, and inspect at most the newest 500 messages in each parsed session.
 - Preserve existing `peer list`, `peer send`, and `peer reply` schemas and behavior.
 - Follow red-green-refactor for every production behavior.
 - Use plain `cargo` commands on Windows. Do not use shell wrapper scripts.
@@ -475,7 +476,7 @@ Test:
 - An older persisted session in the same canonical workspace is visible from a fresh session.
 - A different workspace is excluded.
 - Results are newest-first and capped at five.
-- Only 12 newest matching sessions are considered.
+- Only the newest 256 candidate files are considered, and only the 12 newest matching sessions inside that window are loaded.
 - A snapshot over 2 MiB is skipped and sets `history_limited`.
 - Only the newest 500 messages per parsed session are inspected.
 - Malformed snapshot files increment `read_errors` and do not panic.
@@ -497,12 +498,13 @@ Implementation rules:
 1. Resolve the local sessions directory through `crate::storage::jcode_dir()?.join("sessions")`.
 2. Collect `.json` snapshots with metadata only.
 3. Sort by modified time newest-first.
-4. Read startup/session metadata only until 12 canonical working-directory matches are found.
-5. Skip a file over `2 * 1024 * 1024` bytes and set `history_limited`.
-6. Load matching sessions with `Session::load_from_path`, which merges supported journal persistence.
-7. Slice to the newest 500 messages.
-8. Extract activities and stop after enough newest records are known.
-9. Sort by timestamp with session update/order fallback, deduplicate correlated records, truncate to five.
+4. Stop after the 256 newest candidate files; if more candidates remain, set `history_limited`.
+5. Read startup/session metadata only until 12 canonical working-directory matches are found.
+6. Skip a file over `2 * 1024 * 1024` bytes and set `history_limited`.
+7. Load matching sessions with `Session::load_from_path`, which merges supported journal persistence.
+8. Slice to the newest 500 messages.
+9. Extract activities and stop after enough newest records are known.
+10. Sort by timestamp with session update/order fallback, deduplicate correlated records, truncate to five.
 
 - [ ] **Step 4: Implement the read-only overview socket client**
 

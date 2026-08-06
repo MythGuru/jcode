@@ -510,7 +510,9 @@ async fn real_handler_completes_one_scripted_peer_round_trip_and_releases_both_s
     let history = atlas.history().await.expect("Atlas history");
     let peer_history = history
         .iter()
-        .filter(|message| message.role == "peer")
+        .filter(|message| {
+            message.role == "system" && message.content.starts_with("[Peer message]\n")
+        })
         .collect::<Vec<_>>();
     assert_eq!(peer_history.len(), 1, "exactly one inbound peer message");
     assert!(peer_history[0].content.contains("Eve (`eve-project`)"));

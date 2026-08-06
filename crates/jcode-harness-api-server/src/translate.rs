@@ -68,6 +68,29 @@ fn flatten_content(content: &Value) -> String {
 }
 use serde_json::{Value, json};
 
+const PEER_HISTORY_PREFIX: &str = "[Peer message]\n";
+
+fn api_history_role_and_content(role: &str, content: String) -> (String, String) {
+    if role == "system" && content.starts_with(PEER_HISTORY_PREFIX) {
+        return ("tool".to_string(), content);
+    }
+    match role {
+        "user" | "assistant" | "tool" => (role.to_string(), content),
+        "peer" => {
+            let content = if content.starts_with(PEER_HISTORY_PREFIX) {
+                content
+            } else {
+                format!("{PEER_HISTORY_PREFIX}{content}")
+            };
+            ("tool".to_string(), content)
+        }
+        other => (
+            "tool".to_string(),
+            format!("[{} message]\n{content}", other.trim()),
+        ),
+    }
+}
+
 /// Where a translated client request should go.
 #[derive(Debug)]
 pub enum Outbound {
@@ -867,9 +890,12 @@ impl BridgeState {
                     .map(|messages| {
                         messages
                             .iter()
-                            .map(|m| HistoryMessage {
-                                role: m["role"].as_str().unwrap_or("").to_string(),
-                                content: m["content"].as_str().unwrap_or("").to_string(),
+                            .map(|m| {
+                                let (role, content) = api_history_role_and_content(
+                                    m["role"].as_str().unwrap_or(""),
+                                    m["content"].as_str().unwrap_or("").to_string(),
+                                );
+                                HistoryMessage { role, content }
                             })
                             .collect()
                     })
@@ -1160,7 +1186,17 @@ impl BridgeState {
         }
         let home = match std::env::var_os("JCODE_HOME") {
             Some(home) => std::path::PathBuf::from(home),
-            None => std::path::Path::new(&std::env::var_os("HOME")?).join(".jcode"),
+            None => {
+                let user_home = std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        let drive = std::env::var_os("HOMEDRIVE")?;
+                        let path = std::env::var_os("HOMEPATH")?;
+                        Some(std::path::PathBuf::from(drive).join(path))
+                    })?;
+                user_home.join(".jcode")
+            }
         };
         Some(home.join("sessions").join(format!("{session_id}.json")))
     }
@@ -1802,15 +1838,15 @@ impl BridgeState {
                 if role != "user" && role != "assistant" {
                     return None;
                 }
-                let history_role =
-                    if role == "user" && message["display_role"].as_str() == Some("peer") {
-                        "peer"
-                    } else {
-                        role
-                    };
                 let content = flatten_content(&message["content"]);
-                (!content.trim().is_empty()).then(|| HistoryMessage {
-                    role: history_role.to_string(),
+                let (history_role, content) =
+                    if role == "user" && message["display_role"].as_str() == Some("peer") {
+                        api_history_role_and_content("peer", content)
+                    } else {
+                        api_history_role_and_content(role, content)
+                    };
+                (!content.trim().is_empty()).then_some(HistoryMessage {
+                    role: history_role,
                     content,
                 })
             })

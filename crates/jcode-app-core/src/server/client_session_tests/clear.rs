@@ -15,6 +15,36 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
         old_session_id,
         Vec::new(),
     )));
+    let peer_home = tempfile::TempDir::new()?;
+    let peer_dir = tempfile::TempDir::new()?;
+    let other_dir = tempfile::TempDir::new()?;
+    std::fs::write(
+        peer_home.path().join("peer-groups.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "groups": [{
+                "name": "reviewers",
+                "members": [
+                    { "alias": "Jcode", "working_dir": peer_dir.path() },
+                    { "alias": "Atlas", "working_dir": other_dir.path() }
+                ]
+            }]
+        }))?,
+    )?;
+    let peer_groups = jcode_base::peer_groups::PeerGroups::load_from_jcode_home(peer_home.path())?;
+    agent
+        .lock()
+        .await
+        .set_working_dir(&peer_dir.path().to_string_lossy());
+    let turn_coordinator = crate::server::turn_coordinator::TurnCoordinator::default();
+    let peer_exchanges = crate::server::peer_exchange::PeerExchangeRegistry::new(
+        turn_coordinator.clone(),
+        std::time::Duration::from_secs(60),
+    );
+    peer_exchanges.pin_or_invalidate_session(old_session_id, peer_dir.path(), &peer_groups);
+    let _old_turn = turn_coordinator
+        .begin_server_turn(old_session_id, crate::tool::TurnOrigin::NormalUser)
+        .expect("old active turn");
 
     let old_queue = {
         let guard = agent.lock().await;
@@ -97,10 +127,20 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
         &event_counter,
         &swarm_event_tx,
         &client_event_tx,
+        Some((&peer_groups, &peer_exchanges)),
     )
     .await;
 
     assert_ne!(client_session_id, old_session_id);
+    assert_eq!(peer_exchanges.pinned_session_identity(old_session_id), None);
+    assert!(!turn_coordinator.session_is_busy(old_session_id));
+    assert_eq!(
+        peer_exchanges
+            .pinned_session_identity(&client_session_id)
+            .expect("new session should be pinned from preserved directory")
+            .alias,
+        "Jcode"
+    );
 
     old_queue
         .lock()

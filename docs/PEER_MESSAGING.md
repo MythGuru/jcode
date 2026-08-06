@@ -91,15 +91,22 @@ The card combines two deliberately separate sources:
   exact current working directory. It shows at most the latest five peer events,
   so it survives a restart without creating a second message database.
 
-The history reader is intentionally bounded to keep `/peers` quick. It checks at
-most 12 matching sessions, reads at most the newest 500 messages from each, and
-skips any unusually large saved session. When a limit or unreadable file is
-encountered, the card says that some older activity was skipped.
+The history reader is intentionally bounded to keep `/peers` quick. It considers
+only the newest 256 candidate session files, loads at most 12 matching sessions,
+reads at most the newest 500 messages from each, and skips any saved session over
+2 MiB. When a limit or unreadable file is encountered, the card says that some
+older activity was skipped.
 
 Privacy is part of the design. The card may show an approved alias, approved
 project name, direction, time, and outcome such as `replied` or `timed out`. It
 does **not** show message bodies, reply bodies, full paths, session IDs,
 capabilities, message IDs, exchange IDs, or raw configuration errors.
+
+The live overview uses Jcode's existing local-daemon trust boundary. It verifies
+that the requested session is currently live and uses that session's pinned peer
+identity, but it does not add a new per-request capability. Do not expose the
+local daemon socket as a multi-user or network API without adding stronger
+request binding first.
 
 The main states are explained in plain language:
 

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 const MAX_MATCHING_SESSIONS: usize = 12;
+const MAX_CANDIDATE_FILES_INSPECTED: usize = 256;
 const MAX_SNAPSHOT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MESSAGES_PER_SESSION: usize = 500;
 const MAX_RECENT_ACTIVITIES: usize = 5;
@@ -106,7 +107,11 @@ pub fn load_recent_peer_activity(canonical_working_dir: &Path) -> Result<PeerAct
     let mut history_limited = false;
     let mut read_errors = 0;
 
-    for candidate in candidates {
+    for (candidate_index, candidate) in candidates.into_iter().enumerate() {
+        if candidate_index == MAX_CANDIDATE_FILES_INSPECTED {
+            history_limited = true;
+            break;
+        }
         if candidate.size > MAX_SNAPSHOT_BYTES {
             history_limited = true;
             continue;
@@ -540,6 +545,41 @@ mod tests {
             assert!(report.activities.iter().all(|activity| {
                 activity.peer_alias != "TooOldSession" && activity.peer_alias != "OutsideNewest500"
             }));
+        });
+    }
+
+    #[test]
+    fn recent_peer_activity_stops_after_bounded_unrelated_candidates() {
+        with_temp_home(|_| {
+            let workspace = tempfile::TempDir::new().expect("workspace");
+            let other = tempfile::TempDir::new().expect("other workspace");
+            let canonical = workspace
+                .path()
+                .canonicalize()
+                .expect("canonical workspace");
+            let base = Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0).unwrap();
+
+            save_activity_session(
+                "older-match",
+                workspace.path(),
+                base,
+                Some(inbound("OlderMatch", "approved", base)),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            for index in 0..MAX_CANDIDATE_FILES_INSPECTED {
+                save_activity_session(
+                    &format!("newer-unrelated-{index}"),
+                    other.path(),
+                    base + Duration::minutes(index as i64 + 1),
+                    None,
+                );
+            }
+
+            let report = load_recent_peer_activity(&canonical).expect("bounded candidate scan");
+
+            assert!(report.history_limited);
+            assert!(report.activities.is_empty());
+            assert_eq!(report.read_errors, 0);
         });
     }
 

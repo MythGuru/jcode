@@ -1622,7 +1622,8 @@ fn test_render_messages_honors_peer_display_role_override() {
 
     let rendered = render_messages(&session);
     assert_eq!(rendered.len(), 1);
-    assert_eq!(rendered[0].role, "peer");
+    assert_eq!(rendered[0].role, "system");
+    assert!(rendered[0].content.starts_with("[Peer message]\n"));
     assert!(rendered[0].content.contains("Peer message from Eve"));
 }
 
@@ -2210,6 +2211,45 @@ fn test_render_images_attached_label_message_does_not_shift_prompt_ordinals() {
         images[1].anchor,
         Some(RenderedImageAnchor::UserPrompt { ordinal: 0 }),
         "label-only messages must not consume prompt ordinals"
+    );
+}
+
+#[test]
+fn test_render_peer_display_message_does_not_shift_prompt_ordinals() {
+    let mut session = Session::create_with_id(
+        "session_render_peer_ordinal_test".to_string(),
+        None,
+        Some("peer ordinal test".to_string()),
+    );
+
+    session.add_message_with_display_role(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "Peer message from Planner".to_string(),
+            cache_control: None,
+        }],
+        Some(StoredDisplayRole::Peer),
+    );
+    session.add_message(
+        Role::User,
+        vec![
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "user-image-after-peer".to_string(),
+            },
+            ContentBlock::Text {
+                text: "first real prompt".to_string(),
+                cache_control: None,
+            },
+        ],
+    );
+
+    let (_, images) = render_messages_and_images(&session);
+    assert_eq!(images.len(), 1);
+    assert_eq!(
+        images[0].anchor,
+        Some(RenderedImageAnchor::UserPrompt { ordinal: 0 }),
+        "peer display messages must not consume user prompt ordinals"
     );
 }
 
