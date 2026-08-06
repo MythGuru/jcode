@@ -99,7 +99,7 @@
   },
   {
     "name": "bash",
-    "description": "Run a Windows cmd.exe command (compatibility name `bash`). Use cmd.exe syntax, not Bash.",
+    "description": "Run a Windows cmd.exe command. Use cmd.exe syntax, not Bash.",
     "input_schema": {
       "properties": {
         "accept_large_output": {
@@ -431,7 +431,7 @@
           "type": "string"
         },
         "script": {
-          "description": "JavaScript for action='eval'. The bridge runs this as a FUNCTION BODY, so you must use an explicit `return`. `return document.title` works; a bare expression like `document.title` or `1+1` evaluates and is discarded, yielding null with type 'undefined'.",
+          "description": "JavaScript for action='eval'. Runs as a function body, so an explicit `return` is required.",
           "type": "string"
         },
         "scroll_to": {
@@ -689,7 +689,7 @@
           "type": "string"
         },
         "authority": {
-          "description": "verify_step authority. evidence (default) uses this session's build/test events; user records explicit user confirmation and must only be used after the user actually confirmed.",
+          "description": "verify_step authority: evidence (default) uses build/test events, user needs the user.",
           "enum": [
             "evidence",
             "user"
@@ -787,7 +787,7 @@
           "type": "boolean"
         },
         "action": {
-          "description": "Phase. Defaults to select when `tool` is set, else search. Select the product actually chosen, even when it is not in the catalog. Suggest a capability gap only when no product was chosen.",
+          "description": "Phase. Defaults to select when `tool` is set, else search. Select whatever was chosen.",
           "enum": [
             "search",
             "select",
@@ -875,7 +875,7 @@
           "type": "string"
         },
         "tool": {
-          "description": "For select: public name of the product actually chosen. Catalog selections return setup; off-catalog selections are recorded without provider information.",
+          "description": "For select: the chosen product. Catalog picks return setup; off-catalog selections are recorded.",
           "maxLength": 100,
           "minLength": 2,
           "type": "string"
@@ -922,7 +922,7 @@
   },
   {
     "name": "knowledge",
-    "description": "Maintain the project's living knowledge map (structure, decisions, rules, known problems, responsibilities). Entries start as proposed; they become verified only after builds/tests pass (action=verify) or the user explicitly confirms them in conversation (action=confirm).",
+    "description": "Maintain the project's knowledge map of structure, decisions, and rules.",
     "input_schema": {
       "properties": {
         "accept_large_output": {
@@ -930,7 +930,7 @@
           "type": "boolean"
         },
         "action": {
-          "description": "Action. verify uses this session's build/test evidence; confirm records explicit user confirmation and must only be used after the user actually confirmed.",
+          "description": "Action. Entries start proposed; verify needs build/test evidence, confirm needs the user.",
           "enum": [
             "show",
             "propose",
@@ -1057,7 +1057,7 @@
           "type": "string"
         },
         "id": {
-          "description": "Memory id, or proposal id for core_confirm. For core_propose, optionally targets an existing global entry.",
+          "description": "Memory id, or proposal id for core_confirm. core_propose may target an existing global entry.",
           "type": "string"
         },
         "importance": {
