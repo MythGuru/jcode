@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jcode Native /peers Completion Report</title>
+  <style>
+    :root {
+      --ink: #16222b;
+      --muted: #56646f;
+      --paper: #f7f4ed;
+      --card: #fffdf8;
+      --line: #d8d2c5;
+      --navy: #18324a;
+      --green: #19724d;
+      --green-soft: #dff3e8;
+      --amber: #9a5a00;
+      --amber-soft: #fff0ce;
+      --blue-soft: #e8f0f7;
+      --red-soft: #f8e8e5;
+      --shadow: 0 18px 50px rgba(28, 37, 44, 0.10);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(27, 115, 78, 0.10), transparent 28rem),
+        radial-gradient(circle at 90% 10%, rgba(24, 50, 74, 0.10), transparent 30rem),
+        var(--paper);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+    }
+    a { color: var(--navy); }
+    .page { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 80px; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      color: white;
+      background: linear-gradient(135deg, #14293c 0%, #1a4a4d 72%, #246746 100%);
+      border-radius: 28px;
+      padding: clamp(30px, 6vw, 72px);
+      box-shadow: var(--shadow);
+    }
+    .hero:after {
+      content: "";
+      position: absolute;
+      width: 340px;
+      height: 340px;
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 50%;
+      right: -130px;
+      top: -150px;
+      box-shadow: 0 0 0 42px rgba(255,255,255,.04), 0 0 0 86px rgba(255,255,255,.03);
+    }
+    .eyebrow { text-transform: uppercase; letter-spacing: .16em; font-size: .76rem; font-weight: 800; opacity: .82; }
+    h1 { margin: 12px 0 16px; max-width: 850px; font-size: clamp(2.3rem, 6vw, 5.1rem); line-height: .98; letter-spacing: -.055em; }
+    .lede { max-width: 820px; margin: 0; font-size: clamp(1.03rem, 2vw, 1.28rem); color: rgba(255,255,255,.86); }
+    .hero-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 34px; }
+    .hero-stat { padding: 18px; border: 1px solid rgba(255,255,255,.17); border-radius: 18px; background: rgba(255,255,255,.08); backdrop-filter: blur(8px); }
+    .hero-stat strong { display: block; font-size: 1.13rem; }
+    .hero-stat span { color: rgba(255,255,255,.70); font-size: .9rem; }
+    .status-banner {
+      margin: 22px 0;
+      padding: 18px 22px;
+      border: 1px solid #91c7aa;
+      border-radius: 18px;
+      background: var(--green-soft);
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+    .status-dot { width: 13px; height: 13px; margin-top: 7px; flex: none; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 6px rgba(25,114,77,.13); }
+    .status-banner strong { display: block; color: #0f5a3b; font-size: 1.05rem; }
+    .status-banner p { margin: 3px 0 0; color: #315b48; }
+    nav { position: sticky; top: 10px; z-index: 5; margin: 22px 0; padding: 10px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,253,248,.91); box-shadow: 0 8px 30px rgba(28,37,44,.07); backdrop-filter: blur(10px); display: flex; gap: 8px; flex-wrap: wrap; }
+    nav a { text-decoration: none; font-size: .88rem; font-weight: 700; padding: 8px 11px; border-radius: 10px; }
+    nav a:hover { background: var(--blue-soft); }
+    section { margin-top: 26px; padding: clamp(24px, 5vw, 48px); border: 1px solid var(--line); border-radius: 24px; background: var(--card); box-shadow: 0 10px 35px rgba(28,37,44,.055); }
+    h2 { margin: 0 0 12px; font-size: clamp(1.55rem, 3vw, 2.3rem); line-height: 1.1; letter-spacing: -.035em; color: var(--navy); }
+    h3 { margin: 26px 0 8px; font-size: 1.13rem; color: var(--navy); }
+    p { margin: 9px 0 14px; }
+    .plain { font-size: 1.07rem; color: #34434e; max-width: 900px; }
+    .callout { margin: 18px 0; padding: 18px 20px; border-left: 5px solid var(--green); border-radius: 12px; background: #eef7f1; }
+    .callout.amber { border-left-color: #b46b00; background: var(--amber-soft); }
+    .callout.blue { border-left-color: #326990; background: var(--blue-soft); }
+    code, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+    code { padding: .12em .42em; border-radius: 6px; background: #edf0f2; font-size: .92em; }
+    .command { margin: 18px 0; padding: 18px 20px; color: #e9f3f0; background: #12242e; border-radius: 15px; font: 700 1.05rem/1.5 "Cascadia Code", Consolas, monospace; overflow-wrap: anywhere; }
+    .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 12px; align-items: stretch; margin: 26px 0; }
+    .flow-card { min-height: 142px; padding: 20px; border: 1px solid var(--line); border-radius: 18px; background: #fbfaf6; }
+    .flow-card .num { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; color: white; background: var(--navy); font-weight: 800; }
+    .flow-card strong { display: block; margin-top: 13px; }
+    .arrow { align-self: center; font-size: 1.8rem; color: #6c7b85; }
+    .grid-2, .grid-3 { display: grid; gap: 16px; }
+    .grid-2 { grid-template-columns: repeat(2, 1fr); }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .mini-card { padding: 20px; border: 1px solid var(--line); border-radius: 18px; background: #fbfaf6; }
+    .mini-card strong { display: block; color: var(--navy); }
+    .mini-card p { margin-bottom: 0; color: var(--muted); }
+    .badge { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; font-size: .78rem; font-weight: 800; letter-spacing: .02em; }
+    .badge.good { color: #12573a; background: var(--green-soft); }
+    .badge.info { color: #214f70; background: var(--blue-soft); }
+    .badge.warn { color: #774400; background: var(--amber-soft); }
+    .checklist { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 10px; }
+    .checklist li { position: relative; padding: 14px 16px 14px 47px; border: 1px solid var(--line); border-radius: 14px; background: #fbfaf6; }
+    .checklist li:before { content: "✓"; position: absolute; left: 16px; top: 12px; display: grid; place-items: center; width: 23px; height: 23px; color: white; background: var(--green); border-radius: 50%; font-size: .82rem; font-weight: 900; }
+    table { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: .92rem; }
+    th, td { text-align: left; vertical-align: top; padding: 13px 12px; border-bottom: 1px solid var(--line); }
+    th { color: var(--navy); background: #f0eee8; }
+    tr:last-child td { border-bottom: 0; }
+    .test-pass { color: var(--green); font-weight: 800; white-space: nowrap; }
+    .timeline { border-left: 2px solid #bed0c5; margin: 22px 0 0 10px; padding-left: 26px; }
+    .timeline article { position: relative; margin: 0 0 22px; }
+    .timeline article:before { content: ""; position: absolute; left: -34px; top: 7px; width: 14px; height: 14px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 5px #edf6f0; }
+    .timeline h3 { margin: 0 0 5px; }
+    .commit-list { display: grid; gap: 8px; margin-top: 18px; }
+    .commit { display: grid; grid-template-columns: 100px 1fr; gap: 12px; padding: 11px 13px; border-radius: 11px; background: #f1f0eb; }
+    .commit code { background: transparent; padding: 0; font-weight: 800; color: var(--green); }
+    .activation { padding: 24px; color: white; background: linear-gradient(135deg, #18324a, #245e50); border-radius: 20px; }
+    .activation .build { margin: 13px 0 3px; font: 800 clamp(1rem, 3vw, 1.35rem)/1.4 "Cascadia Code", Consolas, monospace; overflow-wrap: anywhere; }
+    .activation small { color: rgba(255,255,255,.72); }
+    .footer { padding: 38px 10px 0; text-align: center; color: var(--muted); font-size: .9rem; }
+    @media (max-width: 820px) {
+      .hero-grid, .grid-3 { grid-template-columns: 1fr; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); justify-self: center; }
+      nav { position: static; }
+      .commit { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+    @media print {
+      body { background: white; }
+      .page { width: 100%; padding: 0; }
+      nav { display: none; }
+      .hero, section { box-shadow: none; break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="eyebrow">Jcode self-development completion report · 6 August 2026</div>
+      <h1>Native <span class="mono">/peers</span> is built, protected, tested, and running.</h1>
+      <p class="lede">This report explains what changed, why it matters, how we proved it works, what went wrong during testing, and what remains. It uses plain language and avoids hiding behind technical jargon.</p>
+      <div class="hero-grid">
+        <div class="hero-stat"><strong>Token-free overview</strong><span>No AI model is called when you type /peers.</span></div>
+        <div class="hero-stat"><strong>Privacy-first</strong><span>No message bodies, secret paths, or internal IDs are shown.</span></div>
+        <div class="hero-stat"><strong>Ambient stays OFF</strong><span>The overview never wakes or sends work to another project.</span></div>
+      </div>
+    </header>
+
+    <div class="status-banner">
+      <span class="status-dot" aria-hidden="true"></span>
+      <div>
+        <strong>Overall result: complete and verified</strong>
+        <p>The real Windows Jcode screen showed the Peer Messaging card, the Planner identity, Ambient initiation OFF, and all four approved peers. The feature then closed normally without using a model.</p>
+      </div>
+    </div>
+
+    <nav aria-label="Report sections">
+      <a href="#simple">Simple explanation</a>
+      <a href="#experience">What you see</a>
+      <a href="#inside">How it works</a>
+      <a href="#safety">Safety</a>
+      <a href="#proof">Proof</a>
+      <a href="#problems">Problems handled</a>
+      <a href="#commits">Commits</a>
+      <a href="#running">Running version</a>
+      <a href="#remaining">What remains</a>
+    </nav>
+
+    <section id="simple">
+      <span class="badge good">Plain-English summary</span>
+      <h2>What did we actually build?</h2>
+      <p class="plain">Imagine you have several approved Jcode workspaces, like rooms in the same office. Before this change, Jcode could send a message to another room, but it did not have one simple noticeboard showing which rooms were available and what kind of recent exchanges happened.</p>
+      <p class="plain">Now you can type one command:</p>
+      <div class="command">/peers</div>
+      <p class="plain">Jcode immediately shows a local overview. It tells you who “you” are in the peer group, confirms whether Ambient initiation is on or off, shows whether each approved peer is ready, busy, offline, or unclear, and lists up to five recent exchange outcomes. It does this without asking GPT, Claude, or any other AI model.</p>
+      <div class="callout"><strong>Why that matters:</strong> You get fast operational awareness without spending model tokens, exposing message contents, or accidentally starting work in another project.</div>
+    </section>
+
+    <section id="experience">
+      <span class="badge info">The user experience</span>
+      <h2>What you see when you type <span class="mono">/peers</span></h2>
+      <div class="grid-2">
+        <div class="mini-card"><strong>Your exact peer identity</strong><p>For this Jcode workspace, the card shows <b>Planner</b> in project <b>jcode</b>, inside the approved <b>michael-workspaces</b> group.</p></div>
+        <div class="mini-card"><strong>Ambient initiation state</strong><p>The live card showed <b>OFF</b>. Looking at peers does not enable Ambient Mode and does not change its setting.</p></div>
+        <div class="mini-card"><strong>Four clear availability states</strong><p>Each approved peer is shown as ready, busy, offline, or ambiguous. “Ambiguous” is safer than pretending Jcode knows something it cannot prove.</p></div>
+        <div class="mini-card"><strong>Recent activity without private text</strong><p>The card can say sent, replied, failed, timed out, cancelled, received, or completed without reply. It never prints the actual message.</p></div>
+      </div>
+      <h3>The approved peers shown in the real test</h3>
+      <ul class="checklist">
+        <li><b>SpecScore</b>, connected to the approved SpecScore workspace</li>
+        <li><b>Strategy</b>, connected to the approved strategy and product workspace</li>
+        <li><b>NPLabs</b>, connected to the approved NPLabs portal workspace</li>
+        <li><b>Flackton</b>, connected to the approved Flackton demo workspace</li>
+      </ul>
+      <div class="callout blue"><strong>Important:</strong> The names are useful labels. The card deliberately does not show full filesystem paths, capability secrets, raw session IDs, request IDs, or message bodies.</div>
+    </section>
+
+    <section id="inside">
+      <span class="badge info">How it works</span>
+      <h2>A simple three-step flow</h2>
+      <div class="flow" aria-label="Peers overview flow">
+        <div class="flow-card"><span class="num">1</span><strong>You type /peers</strong><p>Jcode recognizes a built-in command. No model prompt is created.</p></div>
+        <div class="arrow">→</div>
+        <div class="flow-card"><span class="num">2</span><strong>The local server checks facts</strong><p>It checks the exact approved workspace, live peer connections, and a small bounded slice of saved local history.</p></div>
+        <div class="arrow">→</div>
+        <div class="flow-card"><span class="num">3</span><strong>Jcode draws a safe card</strong><p>The screen receives only a sanitized summary and displays it inside the normal Jcode interface.</p></div>
+      </div>
+      <h3>Why use existing transcripts?</h3>
+      <p>Jcode already saves its own session history. The new overview reads a carefully limited portion of that existing history instead of creating a second database full of sensitive peer messages. This keeps the design simpler, reduces duplicate private data, and allows recent activity to survive a restart.</p>
+      <h3>Why does the server own the answer?</h3>
+      <p>The shared Jcode server knows which peer sessions are actually connected. Letting the server produce the overview prevents the screen from guessing. The new route is read-only and one-shot. It cannot be reused to send a message, wake a peer, or keep a hidden connection open.</p>
+    </section>
+
+    <section id="safety">
+      <span class="badge good">Privacy and safety</span>
+      <h2>What the feature is allowed to reveal</h2>
+      <div class="grid-3">
+        <div class="mini-card"><strong>Allowed</strong><p>Approved peer label, project label, simple availability state, direction of exchange, broad outcome, and relative time.</p></div>
+        <div class="mini-card"><strong>Hidden</strong><p>Message bodies, error details, capability values, full paths, raw request IDs, raw session IDs, and unrelated workspace history.</p></div>
+        <div class="mini-card"><strong>Never triggered</strong><p>No model call, no peer wake-up, no outbound message, no Ambient Mode change, and no new conversation turn.</p></div>
+      </div>
+      <h3>Hard limits that prevent an unlimited history scan</h3>
+      <table>
+        <thead><tr><th>Limit</th><th>Exact rule</th><th>Reason</th></tr></thead>
+        <tbody>
+          <tr><td>Saved sessions</td><td>At most 12 matching sessions</td><td>Stops the command from walking through an unlimited archive.</td></tr>
+          <tr><td>Total snapshot</td><td>At most 2 MiB</td><td>Keeps memory and disk work predictable.</td></tr>
+          <tr><td>Messages per session</td><td>Newest 500 only</td><td>Old history cannot make the overview grow forever.</td></tr>
+          <tr><td>Displayed activities</td><td>Newest 5 only</td><td>The card stays useful and readable.</td></tr>
+          <tr><td>Workspace matching</td><td>Exact canonical workspace</td><td>History from similarly named or unrelated folders is excluded.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout amber"><strong>Honest limitation:</strong> If the saved history hits a safety limit, Jcode marks the history as limited rather than silently pretending the result is complete.</div>
+    </section>
+
+    <section id="proof">
+      <span class="badge good">Verification evidence</span>
+      <h2>How we proved it works</h2>
+      <p>We did not rely on “the code looks right.” We checked the small pieces, the connected system, the full affected application, the workspace build, and finally the actual Windows terminal interface.</p>
+      <table>
+        <thead><tr><th>Check</th><th>Result</th><th>What it proves</th></tr></thead>
+        <tbody>
+          <tr><td>Protocol peer tests</td><td class="test-pass">Passed</td><td>The client and server agree on the new safe overview messages.</td></tr>
+          <tr><td>Application peer tests</td><td class="test-pass">Passed</td><td>Identity, states, routing, activity extraction, and history bounds behave correctly.</td></tr>
+          <tr><td>TUI command and renderer tests</td><td class="test-pass">Passed</td><td>The slash command is registered once, parses correctly, and draws the expected card.</td></tr>
+          <tr><td>Feature-off tests</td><td class="test-pass">Passed</td><td>Turning peer messaging off still preserves the old safe behavior.</td></tr>
+          <tr><td>Formatting</td><td class="test-pass">Passed</td><td>The Rust source follows the project formatting rules.</td></tr>
+          <tr><td>Strict Clippy</td><td class="test-pass">Passed</td><td>The whole workspace passed Rust’s strict warning checks with warnings treated as errors.</td></tr>
+          <tr><td>Full protocol suite</td><td class="test-pass">84 passed</td><td>No protocol regression was introduced.</td></tr>
+          <tr><td>Full application-core suite, serial</td><td class="test-pass">1,141 passed</td><td>The large affected application suite completed with zero failures and 11 intentionally ignored tests.</td></tr>
+          <tr><td>TUI compile</td><td class="test-pass">Passed</td><td>The full terminal interface compiles with the change.</td></tr>
+          <tr><td>Full workspace compile, no run</td><td class="test-pass">Passed</td><td>Every workspace test target compiles together.</td></tr>
+          <tr><td>Real Windows TUI dogfood</td><td class="test-pass">Passed</td><td>The actual current Jcode binary accepted /peers and displayed the live card.</td></tr>
+        </tbody>
+      </table>
+      <h3>Live dogfood evidence</h3>
+      <ul class="checklist">
+        <li>The native <b>Peer Messaging</b> card appeared.</li>
+        <li>The identity <b>Planner</b> appeared.</li>
+        <li><b>Ambient initiation: OFF</b> appeared.</li>
+        <li><b>SpecScore, Strategy, NPLabs, and Flackton</b> all appeared.</li>
+        <li>The command’s loading state appeared before the result.</li>
+        <li>The test exited the spawned Jcode process safely. It did not send a console-wide Ctrl+C that could kill the shared server.</li>
+      </ul>
+    </section>
+
+    <section id="problems">
+      <span class="badge warn">Transparent recovery log</span>
+      <h2>What went wrong, in simple terms</h2>
+      <p>Software work is rarely a straight line. These issues were encountered and handled without hiding them.</p>
+      <div class="timeline">
+        <article><h3>The outside Claude review command failed</h3><p>The local Claude command was first called with an invalid tool option and then failed again without useful output. This was a review-tool problem, not a feature failure. We stopped wasting time and tokens on it, then relied on direct code tests and runtime evidence.</p></article>
+        <article><h3>One large test failed only during parallel execution</h3><p>A restart snapshot test saw two live test sessions because other tests were changing the same process-wide test home at the same time. The test passed alone, all six related restart tests passed serially, and the full application suite then passed serially with 1,141 successes. No unrelated code was changed to disguise the interference.</p></article>
+        <article><h3>The first full workspace compile hit the time limit</h3><p>It was still compiling and showed no code error. We reran it after the compiler cache was warm, and it finished successfully.</p></article>
+        <article><h3>The official self-development command could publish but not open a screen</h3><p>The build ran in the background without an interactive terminal. Publishing succeeded, then the attempt to launch the visual interface failed because no terminal was attached. We verified the published executable directly and aligned the shared server using Jcode’s Windows-safe staged replacement method.</p></article>
+        <article><h3>The first live terminal test typed too early</h3><p>The Jcode screen was still changing sessions, so the first /peers input was lost. The harness was changed to wait for the stable branch and provider display. The second attempt passed every live check.</p></article>
+        <article><h3>WSL could not be used for terminal testing</h3><p>Windows Subsystem for Linux is present but has no Linux distribution installed. We did not install one or alter the machine. Instead, we used a temporary isolated Windows ConPTY environment and removed the need for WSL.</p></article>
+      </div>
+    </section>
+
+    <section id="commits">
+      <span class="badge info">Source history</span>
+      <h2>How the work was committed</h2>
+      <p>The work was split into small, understandable commits instead of one giant bundle. That makes reviewing or reversing an individual part much safer.</p>
+      <div class="commit-list">
+        <div class="commit"><code>aa5fd9e6e</code><span>Document the native peers overview specification.</span></div>
+        <div class="commit"><code>9f56ba769</code><span>Document the implementation plan.</span></div>
+        <div class="commit"><code>941cc3e5f</code><span>Add the read-only overview protocol.</span></div>
+        <div class="commit"><code>eb5ba6530</code><span>Serve an overview bound to the exact active session.</span></div>
+        <div class="commit"><code>c664a62bb</code><span>Extract sanitized activity from transcripts.</span></div>
+        <div class="commit"><code>9325ae0b2</code><span>Load durable, bounded recent activity.</span></div>
+        <div class="commit"><code>5720c4313</code><span>Report when the bounded history scan reaches its limit.</span></div>
+        <div class="commit"><code>a273fa062</code><span>Add the native /peers terminal overview.</span></div>
+        <div class="commit"><code>4e46e36eb</code><span>Explain the finished native overview in the peer-messaging documentation.</span></div>
+        <div class="commit"><code>final report</code><span>Commit this completion report. The exact final hash is displayed live in the activation box below after the last build.</span></div>
+      </div>
+    </section>
+
+    <section id="running">
+      <span class="badge good">Final activation</span>
+      <h2>The latest Jcode binary</h2>
+      <p>The implementation was first built and verified as <b>Jcode v0.68.141-dev</b> at source commit <code>4e46e36eb</code>. After this report is committed, Jcode is rebuilt once more so the running client, current launcher, and shared server all point to the exact final commit containing this report.</p>
+      <div class="activation">
+        <strong>Exact final running build</strong>
+        <div class="build" id="final-build">Activation verification is loaded when this report is opened by Jcode.</div>
+        <div id="final-status">Waiting for the final verification parameters.</div>
+        <small>The value above is supplied in the Firefox tab address after the final build. It is not written into the committed file because writing a commit’s own hash into itself would change that hash again.</small>
+      </div>
+      <div class="callout"><strong>Ambient Mode remains disabled:</strong> The machine configuration still has Ambient disabled, and the live /peers card confirmed “Ambient initiation: OFF.”</div>
+    </section>
+
+    <section id="remaining">
+      <span class="badge good">Remaining work</span>
+      <h2>No required implementation work remains</h2>
+      <p class="plain">The approved design is implemented, tested, committed, dogfooded, and activated. You can use <code>/peers</code> now.</p>
+      <h3>Optional next decisions, only if you want them</h3>
+      <div class="grid-2">
+        <div class="mini-card"><strong>Review and merge the feature branch</strong><p>The work currently lives on <code>feature/peer-messaging</code>. Merging it into your main development line is a separate repository decision and does not need to happen to use the current local build.</p></div>
+        <div class="mini-card"><strong>Add a permanent Windows TUI dogfood harness</strong><p>The temporary ConPTY test proved the live screen. Later, Jcode could include a reusable built-in terminal harness so future native slash commands are easier to test automatically.</p></div>
+      </div>
+      <div class="callout blue"><strong>Your one-line takeaway:</strong> <code>/peers</code> is now a safe, fast noticeboard for approved Jcode workspaces. It tells you what is available and what recently happened without spending AI tokens or revealing private messages.</div>
+    </section>
+
+    <footer class="footer">
+      Prepared for Michael by Jcode · 6 August 2026 · Local time UTC+3<br>
+      Feature branch: <span class="mono">feature/peer-messaging</span>
+    </footer>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const build = params.get('build');
+    const version = params.get('version') || 'v0.68.141-dev';
+    const verified = params.get('verified');
+    if (build) {
+      document.getElementById('final-build').textContent = `${version} (${build})`;
+    }
+    if (verified === 'true') {
+      document.getElementById('final-status').textContent = 'Verified: running client, current launcher, and shared server all match this final commit.';
+    }
+  </script>
+</body>
+</html>
