@@ -907,6 +907,76 @@ mod tests {
         );
     }
 
+    /// Re-pinning a session onto a non-peer directory must leave it with no
+    /// identity at all, never the previous one and never the new one.
+    ///
+    /// Four defects during development shared one shape: a session ending up
+    /// authorized as a project it was not in. Verified live by taking over an
+    /// existing session id while claiming a different project's directory;
+    /// the server answered "This project is not configured as a peer" rather
+    /// than granting either identity. Pin that end state here, because a
+    /// regression that remapped instead of invalidating would be silent.
+    #[test]
+    fn repinning_onto_a_non_peer_directory_grants_no_identity_at_all() {
+        let home = tempfile::TempDir::new().expect("peer config home");
+        let eve_dir = tempfile::TempDir::new().expect("Eve project");
+        let atlas_dir = tempfile::TempDir::new().expect("Atlas project");
+        let outsider_dir = tempfile::TempDir::new().expect("unconfigured project");
+        let config = serde_json::json!({
+            "version": 1,
+            "groups": [{
+                "name": "reviewers",
+                "members": [
+                    { "alias": "Eve", "working_dir": eve_dir.path() },
+                    { "alias": "Atlas", "working_dir": atlas_dir.path() }
+                ]
+            }]
+        });
+        std::fs::write(
+            home.path().join("peer-groups.json"),
+            serde_json::to_vec(&config).expect("serialize peer config"),
+        )
+        .expect("write peer config");
+        let groups = jcode_base::peer_groups::PeerGroups::load_from_jcode_home(home.path())
+            .expect("load peer groups");
+        let registry =
+            PeerExchangeRegistry::new(TurnCoordinator::default(), Duration::from_secs(60));
+
+        // The session starts as a legitimate peer.
+        registry.pin_or_invalidate_session("session", eve_dir.path(), &groups);
+        assert!(
+            registry.pinned_session_identity("session").is_some(),
+            "a session in a configured directory should hold an identity"
+        );
+
+        // The same session id is then re-pinned onto a directory nobody listed.
+        registry.pin_or_invalidate_session("session", outsider_dir.path(), &groups);
+        assert!(
+            registry.pinned_session_identity("session").is_none(),
+            "re-pinning onto an unconfigured directory must clear the identity, \
+             not keep the old one"
+        );
+
+        // Invalidation is permanent for the life of the session. Even moving
+        // to a directory that IS configured does not resurrect an identity,
+        // which is stronger than merely re-resolving and is what stops a
+        // session from acquiring a project it did not start in.
+        registry.pin_or_invalidate_session("session", atlas_dir.path(), &groups);
+        assert!(
+            registry.pinned_session_identity("session").is_none(),
+            "an invalidated session must stay invalidated, even in a \
+             configured directory"
+        );
+
+        // A different session starting fresh in that same directory is of
+        // course fine; the restriction is per session, not per directory.
+        registry.pin_or_invalidate_session("fresh", atlas_dir.path(), &groups);
+        let identity = registry
+            .pinned_session_identity("fresh")
+            .expect("a fresh session in a configured directory is eligible");
+        assert_eq!(identity.alias, "Atlas");
+    }
+
     #[test]
     fn later_working_dir_change_invalidates_pinned_peer_identity() {
         let home = tempfile::TempDir::new().expect("peer config home");
