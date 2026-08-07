@@ -24,6 +24,8 @@ struct Args {
     cwd: PathBuf,
     #[arg(long = "arg", allow_hyphen_values = true, value_name = "VALUE")]
     child_args: Vec<OsString>,
+    #[arg(long = "startup-expect", value_name = "RAW_TEXT")]
+    startup_expected: Vec<String>,
     #[arg(long, default_value = "/peers")]
     command: String,
     #[arg(long = "expect", required = true)]
@@ -60,6 +62,9 @@ impl Args {
         }
         if self.command.trim().is_empty() {
             bail!("--command must not be empty");
+        }
+        if self.startup_expected.iter().any(|value| value.is_empty()) {
+            bail!("--startup-expect values must not be empty");
         }
         if self.expected.is_empty() || self.expected.iter().any(|value| value.is_empty()) {
             bail!("at least one non-empty --expect value is required");
@@ -163,6 +168,7 @@ fn run(args: Args) -> Result<RunStatus> {
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect(),
+        startup_expected: args.startup_expected.clone(),
         command: args.command.clone(),
         expected: args.expected.clone(),
         forbidden: args.forbidden.clone(),
@@ -260,6 +266,34 @@ fn execute_pty(
 
 type ReaderMessage = std::result::Result<Vec<u8>, String>;
 
+#[derive(Default)]
+struct TerminalQueryResponder {
+    cursor_position_query_bytes_matched: usize,
+}
+
+impl TerminalQueryResponder {
+    const CURSOR_POSITION_QUERY: &'static [u8] = b"\x1b[6n";
+    const CURSOR_POSITION_RESPONSE: &'static [u8] = b"\x1b[1;1R";
+
+    fn responses_for(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut responses = Vec::new();
+        for &byte in bytes {
+            let expected = Self::CURSOR_POSITION_QUERY[self.cursor_position_query_bytes_matched];
+            if byte == expected {
+                self.cursor_position_query_bytes_matched += 1;
+                if self.cursor_position_query_bytes_matched == Self::CURSOR_POSITION_QUERY.len() {
+                    responses.extend_from_slice(Self::CURSOR_POSITION_RESPONSE);
+                    self.cursor_position_query_bytes_matched = 0;
+                }
+            } else {
+                self.cursor_position_query_bytes_matched =
+                    usize::from(byte == Self::CURSOR_POSITION_QUERY[0]);
+            }
+        }
+        responses
+    }
+}
+
 fn spawn_reader(mut reader: Box<dyn Read + Send>) -> Receiver<ReaderMessage> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -304,10 +338,24 @@ fn drive_terminal(
     let mut command_sent = false;
     let mut screen_at_send = String::new();
     let mut saw_post_command_change = false;
+    let mut query_responder = TerminalQueryResponder::default();
 
     loop {
-        receive_one(receiver, observer, raw, Duration::from_millis(25))?;
-        drain_available(receiver, observer, raw)?;
+        receive_one(
+            receiver,
+            writer.as_mut(),
+            &mut query_responder,
+            observer,
+            raw,
+            Duration::from_millis(25),
+        )?;
+        drain_available(
+            receiver,
+            writer.as_mut(),
+            &mut query_responder,
+            observer,
+            raw,
+        )?;
         let now = Instant::now();
 
         if let Some(status) = child.try_wait().context("failed to poll PTY child")? {
@@ -318,7 +366,15 @@ fn drive_terminal(
             });
         }
 
-        if !command_sent && observer.is_stable(now, startup_stability) {
+        if !command_sent
+            && startup_ready(
+                observer,
+                raw,
+                &args.startup_expected,
+                now,
+                startup_stability,
+            )
+        {
             screen_at_send = observer.text().to_string();
             writer
                 .write_all(args.command.as_bytes())
@@ -356,10 +412,19 @@ fn drive_terminal(
 
         if now >= deadline {
             let reason = if !command_sent {
-                format!(
-                    "startup timed out before a stable non-empty screen; final screen:\n{}",
-                    observer.text()
-                )
+                let missing = missing_raw_markers(raw, &args.startup_expected);
+                if missing.is_empty() {
+                    format!(
+                        "startup timed out before a stable non-empty screen; final screen:\n{}",
+                        observer.text()
+                    )
+                } else {
+                    format!(
+                        "startup timed out waiting for raw terminal markers: {}; final screen:\n{}",
+                        missing.join(", "),
+                        observer.text()
+                    )
+                }
             } else if !saw_post_command_change {
                 "verification timed out because the screen never changed after the command"
                     .to_string()
@@ -380,37 +445,73 @@ fn drive_terminal(
     }
 }
 
+fn startup_ready(
+    observer: &ScreenObserver,
+    raw: &[u8],
+    expected_raw_markers: &[String],
+    now: Instant,
+    stability: Duration,
+) -> bool {
+    observer.is_stable(now, stability) && missing_raw_markers(raw, expected_raw_markers).is_empty()
+}
+
+fn missing_raw_markers(raw: &[u8], expected: &[String]) -> Vec<String> {
+    expected
+        .iter()
+        .filter(|marker| {
+            let marker = marker.as_bytes();
+            !marker.is_empty() && !raw.windows(marker.len()).any(|window| window == marker)
+        })
+        .cloned()
+        .collect()
+}
+
 fn receive_one(
     receiver: &Receiver<ReaderMessage>,
+    writer: &mut dyn Write,
+    query_responder: &mut TerminalQueryResponder,
     observer: &mut ScreenObserver,
     raw: &mut Vec<u8>,
     wait: Duration,
 ) -> Result<()> {
     match receiver.recv_timeout(wait) {
-        Ok(message) => process_reader_message(message, observer, raw),
+        Ok(message) => process_reader_message(message, writer, query_responder, observer, raw),
         Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => Ok(()),
     }
 }
 
 fn drain_available(
     receiver: &Receiver<ReaderMessage>,
+    writer: &mut dyn Write,
+    query_responder: &mut TerminalQueryResponder,
     observer: &mut ScreenObserver,
     raw: &mut Vec<u8>,
 ) -> Result<()> {
     for message in receiver.try_iter() {
-        process_reader_message(message, observer, raw)?;
+        process_reader_message(message, writer, query_responder, observer, raw)?;
     }
     Ok(())
 }
 
 fn process_reader_message(
     message: ReaderMessage,
+    writer: &mut dyn Write,
+    query_responder: &mut TerminalQueryResponder,
     observer: &mut ScreenObserver,
     raw: &mut Vec<u8>,
 ) -> Result<()> {
     let bytes = message.map_err(anyhow::Error::msg)?;
     raw.extend_from_slice(&bytes);
     observer.process(&bytes, Instant::now());
+    let responses = query_responder.responses_for(&bytes);
+    if !responses.is_empty() {
+        writer
+            .write_all(&responses)
+            .context("failed to answer pseudo-terminal query")?;
+        writer
+            .flush()
+            .context("failed to flush pseudo-terminal query response")?;
+    }
     Ok(())
 }
 
@@ -485,6 +586,7 @@ mod tests {
             binary: std::env::current_exe().unwrap(),
             cwd: std::env::current_dir().unwrap(),
             child_args: vec![],
+            startup_expected: vec![],
             command: "/peers".to_string(),
             expected: vec!["Peer Messaging".to_string()],
             forbidden: vec![],
@@ -511,6 +613,39 @@ mod tests {
                 .to_string()
                 .contains("--expect")
         );
+    }
+
+    #[test]
+    fn terminal_query_responder_answers_cursor_position_once_across_split_reads() {
+        let mut responder = TerminalQueryResponder::default();
+
+        assert!(responder.responses_for(b"startup\x1b[").is_empty());
+        assert_eq!(responder.responses_for(b"6nrest"), b"\x1b[1;1R");
+        assert!(responder.responses_for(b"ordinary output").is_empty());
+    }
+
+    #[test]
+    fn startup_readiness_requires_configured_raw_terminal_markers() {
+        let start = Instant::now();
+        let mut observer = ScreenObserver::new(4, 40, start);
+        observer.process(b"1> ", start);
+        let stable_at = start + Duration::from_secs(1);
+        let expected = vec!["jcode:d:".to_string()];
+
+        assert!(!startup_ready(
+            &observer,
+            b"\x1b]0;jcode:c:raccoon\x07",
+            &expected,
+            stable_at,
+            Duration::from_millis(750),
+        ));
+        assert!(startup_ready(
+            &observer,
+            b"\x1b]0;jcode:d:creek/raccoon\x07",
+            &expected,
+            stable_at,
+            Duration::from_millis(750),
+        ));
     }
 
     #[test]

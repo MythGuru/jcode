@@ -110,6 +110,12 @@ console group, or global control event.
 Use `vt100 0.16.2` with the same rows and columns as the PTY. Every received byte
 chunk is appended to `raw.ansi` and processed by the parser.
 
+The harness also performs the minimum terminal-side protocol needed for Jcode
+startup: when output contains the cursor-position query `ESC [ 6 n`, including
+when the sequence is split across reader chunks, write `ESC [ 1 ; 1 R` back to
+the PTY exactly once for that query. Without this response Crossterm waits for a
+real terminal reply and the TUI never completes startup.
+
 `screen.txt` comes from `parser.screen().contents()` after normalization:
 
 - Convert CRLF and lone CR to LF.
@@ -126,7 +132,8 @@ interval.
 The harness has four states:
 
 1. **Starting**
-   - Read terminal output until a non-empty screen is stable.
+   - Read terminal output until a non-empty screen is stable and every optional
+     raw startup marker has appeared.
    - Fail if the child exits or the overall timeout expires.
 2. **Command sent**
    - Write the exact command followed by carriage return and flush.
@@ -151,6 +158,10 @@ Use Clap derive with these arguments:
 - `--binary <PATH>`: required executable path.
 - `--cwd <PATH>`: required child working directory.
 - `--arg <VALUE>`: repeatable child argument.
+- `--startup-expect <RAW_TEXT>`: repeatable optional substring that must appear
+  in raw terminal output before the command is sent. The live Jcode scenario
+  uses `jcode:d:` so the new client is attached to the daemon rather than merely
+  displaying an initially stable screen.
 - `--command <TEXT>`: command to type, default `/peers`.
 - `--expect <TEXT>`: repeatable required substring, at least one required.
 - `--forbid <TEXT>`: repeatable forbidden substring.
@@ -162,9 +173,9 @@ Use Clap derive with these arguments:
 - `--artifacts <PATH>`: optional explicit artifact directory. When omitted,
   use `target/tui-dogfood/<UTC timestamp>`.
 
-Validation rejects zero dimensions, zero timeout values, an empty command, no
-required assertions, missing executable, or missing working directory before a
-child is started.
+Validation rejects zero dimensions, zero timeout values, an empty command, an
+empty startup marker, no required assertions, missing executable, or missing
+working directory before a child is started.
 
 ## 6. Artifact contract
 
@@ -174,7 +185,7 @@ child is started.
 - UTC start and finish timestamps.
 - Duration in milliseconds.
 - Binary and working directory.
-- Child arguments and typed command.
+- Child arguments, raw startup markers, and typed command.
 - Terminal dimensions and timeout settings.
 - Required and forbidden strings.
 - Final status: `passed` or `failed`.
@@ -212,6 +223,8 @@ not committed.
 Every failure must be plain and actionable:
 
 - Startup timeout: include the final normalized screen.
+- Startup marker timeout: list missing raw terminal markers and include the
+  final normalized screen.
 - Verification timeout: list missing required strings.
 - Forbidden text: name the first forbidden string found.
 - Child exit: report that it exited before verification and include status when

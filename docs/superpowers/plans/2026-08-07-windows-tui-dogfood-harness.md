@@ -339,12 +339,17 @@ initial `RunResult` before opening the PTY. Convert validation, open, spawn,
 read, write, assertion, child-exit, and timeout errors into a failed result so
 those paths still attempt artifact output.
 
+Maintain a small streaming terminal-query responder. It must recognize the
+cursor-position query `b"\x1b[6n"` even when split across reader chunks and write
+`b"\x1b[1;1R"` back to the PTY. Cover the split-read case with a unit test.
+
 In the main loop:
 
 1. Drain chunks with `recv_timeout(Duration::from_millis(25))`.
 2. Append bytes to the raw buffer and call `observer.process`.
 3. Poll `child.try_wait()` and fail on an early exit.
-4. In startup, send `command + "\r"` only after the non-empty screen is stable.
+4. In startup, send `command + "\r"` only after the non-empty screen is stable
+   and every `--startup-expect` raw terminal marker has appeared.
 5. In verification, fail immediately on a forbidden match.
 6. After all expected strings match, require `settle_ms` of unchanged screen and
    re-evaluate assertions.
@@ -447,7 +452,7 @@ Expected: `target\selfdev\windows_tui_dogfood.exe` exists.
 Run as one Windows command:
 
 ```text
-target\selfdev\windows_tui_dogfood.exe --binary target\selfdev\jcode.exe --cwd C:\Users\micha\dev\jcode --arg=--no-update --command /peers --expect "Peer Messaging" --expect Planner --expect "Ambient initiation: OFF" --expect SpecScore --expect Strategy --expect NPLabs --expect Flackton --forbid "CONFIGURATION ERROR" --timeout-secs 45
+target\selfdev\windows_tui_dogfood.exe --binary target\selfdev\jcode.exe --cwd C:\Users\micha\dev\jcode --arg=--no-update --startup-expect "jcode:d:" --command /peers --expect "Peer Messaging" --expect Planner --expect "Ambient initiation: OFF" --expect SpecScore --expect Strategy --expect NPLabs --expect Flackton --forbid "CONFIGURATION ERROR" --timeout-secs 45
 ```
 
 If `--arg=--no-update` is rejected by Clap, fix argument parsing with a failing
