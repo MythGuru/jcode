@@ -173,9 +173,9 @@ Use Clap derive with these arguments:
 - `--artifacts <PATH>`: optional explicit artifact directory. When omitted,
   use `target/tui-dogfood/<UTC timestamp>`.
 
-Validation rejects zero dimensions, zero timeout values, an empty command, an
-empty startup marker, no required assertions, missing executable, or missing
-working directory before a child is started.
+Validation rejects zero dimensions, zero or platform-overflowing timeout values,
+an empty command, an empty startup marker, no required assertions, missing
+executable, or missing working directory before a child is started.
 
 ## 6. Artifact contract
 
@@ -192,6 +192,8 @@ working directory before a child is started.
 - Human-readable reason.
 - Child process ID when available.
 - Child exit status when observed.
+- Cleanup action, distinguishing an already-exited child from an owned child
+  intentionally killed by the harness or a failed cleanup operation.
 - Paths of `raw.ansi` and `screen.txt`.
 
 Artifacts are written for validation errors, PTY setup failures, assertion
@@ -229,6 +231,8 @@ Every failure must be plain and actionable:
 - Forbidden text: name the first forbidden string found.
 - Child exit: report that it exited before verification and include status when
   available.
+- Cleanup failure: change the final status to `failed`, preserve the original
+  reason, append the cleanup error, and exit nonzero.
 - PTY read/write error: name the operation.
 - Artifact error: name the destination path.
 

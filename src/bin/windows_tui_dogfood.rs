@@ -75,6 +75,12 @@ impl Args {
         if self.timeout_secs == 0 {
             bail!("--timeout-secs must be greater than zero");
         }
+        if Instant::now()
+            .checked_add(Duration::from_secs(self.timeout_secs))
+            .is_none()
+        {
+            bail!("--timeout-secs is too large for this platform");
+        }
         if self.stable_ms == 0 {
             bail!("--stable-ms must be greater than zero");
         }
@@ -113,6 +119,7 @@ struct ExecutionOutcome {
     reason: String,
     process_id: Option<u32>,
     exit_status: Option<String>,
+    cleanup_action: Option<String>,
 }
 
 impl ExecutionOutcome {
@@ -122,6 +129,7 @@ impl ExecutionOutcome {
             reason: "all assertions matched on a stable post-command screen".to_string(),
             process_id,
             exit_status: None,
+            cleanup_action: None,
         }
     }
 
@@ -131,6 +139,7 @@ impl ExecutionOutcome {
             reason: reason.into(),
             process_id,
             exit_status: None,
+            cleanup_action: None,
         }
     }
 }
@@ -181,6 +190,7 @@ fn run(args: Args) -> Result<RunStatus> {
         reason: std::mem::take(&mut outcome.reason),
         process_id: outcome.process_id,
         exit_status: outcome.exit_status,
+        cleanup_action: outcome.cleanup_action,
         raw_ansi_path: None,
         screen_text_path: None,
         result_json_path: None,
@@ -232,11 +242,10 @@ fn execute_pty(
     let (receiver, mut writer) = match setup {
         Ok(setup) => setup,
         Err(error) => {
-            let (exit_status, cleanup_error) = cleanup_child(&mut child, None);
+            let cleanup = cleanup_child(&mut child, None);
             let mut outcome =
                 ExecutionOutcome::failed(format!("PTY setup failed: {error:#}"), process_id);
-            outcome.exit_status = exit_status.map(|status| status.to_string());
-            append_cleanup_error(&mut outcome.reason, cleanup_error);
+            apply_cleanup_result(&mut outcome, cleanup);
             drop(master);
             return Ok(outcome);
         }
@@ -247,7 +256,7 @@ fn execute_pty(
         .as_ref()
         .ok()
         .and_then(|result| result.observed_exit.clone());
-    let (exit_status, cleanup_error) = cleanup_child(&mut child, observed_exit);
+    let cleanup = cleanup_child(&mut child, observed_exit);
     drop(writer);
     drop(master);
     drain_reader(&receiver, observer, raw, Duration::from_millis(250));
@@ -259,8 +268,7 @@ fn execute_pty(
             ExecutionOutcome::failed(format!("terminal drive failed: {error:#}"), process_id)
         }
     };
-    outcome.exit_status = exit_status.map(|status| status.to_string());
-    append_cleanup_error(&mut outcome.reason, cleanup_error);
+    apply_cleanup_result(&mut outcome, cleanup);
     Ok(outcome)
 }
 
@@ -332,7 +340,9 @@ fn drive_terminal(
     observer: &mut ScreenObserver,
     raw: &mut Vec<u8>,
 ) -> Result<DriveResult> {
-    let deadline = Instant::now() + Duration::from_secs(args.timeout_secs);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(args.timeout_secs))
+        .context("--timeout-secs is too large for this platform")?;
     let startup_stability = Duration::from_millis(args.stable_ms);
     let result_stability = Duration::from_millis(args.settle_ms);
     let mut command_sent = false;
@@ -535,44 +545,68 @@ fn drain_reader(
     }
 }
 
+struct CleanupResult {
+    exit_status: Option<ExitStatus>,
+    action: &'static str,
+    error: Option<String>,
+}
+
 fn cleanup_child(
     child: &mut Box<dyn portable_pty::Child + Send + Sync>,
     observed_exit: Option<ExitStatus>,
-) -> (Option<ExitStatus>, Option<String>) {
+) -> CleanupResult {
     if observed_exit.is_some() {
-        return (observed_exit, None);
+        return CleanupResult {
+            exit_status: observed_exit,
+            action: "already_exited",
+            error: None,
+        };
     }
 
     match child.try_wait() {
-        Ok(Some(status)) => (Some(status), None),
+        Ok(Some(status)) => CleanupResult {
+            exit_status: Some(status),
+            action: "already_exited",
+            error: None,
+        },
         Ok(None) => match child.kill() {
             Ok(()) => match child.wait() {
-                Ok(status) => (Some(status), None),
-                Err(error) => (
-                    None,
-                    Some(format!("failed to wait after killing child: {error}")),
-                ),
+                Ok(status) => CleanupResult {
+                    exit_status: Some(status),
+                    action: "killed_owned_child",
+                    error: None,
+                },
+                Err(error) => CleanupResult {
+                    exit_status: None,
+                    action: "killed_owned_child_wait_failed",
+                    error: Some(format!("failed to wait after killing child: {error}")),
+                },
             },
-            Err(error) => (
-                None,
-                Some(format!("failed to kill owned PTY child: {error}")),
-            ),
+            Err(error) => CleanupResult {
+                exit_status: None,
+                action: "kill_failed",
+                error: Some(format!("failed to kill owned PTY child: {error}")),
+            },
         },
-        Err(error) => (
-            None,
-            Some(format!(
+        Err(error) => CleanupResult {
+            exit_status: None,
+            action: "poll_failed",
+            error: Some(format!(
                 "failed to poll owned PTY child during cleanup: {error}"
             )),
-        ),
+        },
     }
 }
 
-fn append_cleanup_error(reason: &mut String, cleanup_error: Option<String>) {
-    if let Some(error) = cleanup_error {
-        if !reason.is_empty() {
-            reason.push_str("; ");
+fn apply_cleanup_result(outcome: &mut ExecutionOutcome, cleanup: CleanupResult) {
+    outcome.exit_status = cleanup.exit_status.map(|status| status.to_string());
+    outcome.cleanup_action = Some(cleanup.action.to_string());
+    if let Some(error) = cleanup.error {
+        outcome.status = RunStatus::Failed;
+        if !outcome.reason.is_empty() {
+            outcome.reason.push_str("; ");
         }
-        reason.push_str(&error);
+        outcome.reason.push_str(&error);
     }
 }
 
@@ -646,6 +680,37 @@ mod tests {
             stable_at,
             Duration::from_millis(750),
         ));
+    }
+
+    #[test]
+    fn cleanup_failure_turns_a_passed_run_into_a_failed_run() {
+        let mut outcome = ExecutionOutcome::passed(Some(42));
+
+        apply_cleanup_result(
+            &mut outcome,
+            CleanupResult {
+                exit_status: None,
+                action: "kill_failed",
+                error: Some("failed to kill owned PTY child".to_string()),
+            },
+        );
+
+        assert_eq!(outcome.status, RunStatus::Failed);
+        assert_eq!(outcome.cleanup_action.as_deref(), Some("kill_failed"));
+        assert!(outcome.reason.contains("failed to kill owned PTY child"));
+    }
+
+    #[test]
+    fn validation_rejects_a_timeout_that_cannot_fit_in_an_instant() {
+        let mut args = valid_args();
+        args.timeout_secs = u64::MAX;
+
+        assert!(
+            args.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
     }
 
     #[test]

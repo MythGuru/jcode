@@ -372,9 +372,13 @@ final chunks to the raw buffer and `ScreenObserver`. Do not wait indefinitely on
 the reader thread. Artifact writing happens after the bounded drain so the final
 screen and raw bytes are as complete as possible.
 
-Preserve the first run failure if cleanup also fails, but append cleanup failure
-text to the final reason. The only error allowed to escape without a written
-`result.json` is failure to create or write the artifact destination itself.
+Preserve the first run failure if cleanup also fails, append cleanup failure
+text to the final reason, and force the final status to `failed` even if screen
+assertions had passed. Record a cleanup action such as `already_exited`,
+`killed_owned_child`, `kill_failed`, or `poll_failed` so an exit code caused by
+intentional harness termination is not ambiguous. The only error allowed to
+escape without a written `result.json` is failure to create or write the
+artifact destination itself.
 
 - [ ] **Step 6: Run all binary unit tests**
 
