@@ -1230,10 +1230,15 @@ pub struct App {
     tool_output_scan_index: usize,
     // Current session ID (from server in remote mode)
     remote_session_id: Option<String>,
-    // `/peers` was requested before remote History supplied the server-owned
-    // session id. Keep one pending request and launch it after History arrives
-    // instead of sending it under the temporary local fallback id.
-    pending_peer_overview_request: bool,
+    // Monotonic identity for `/peers` loads. Background completions carry this
+    // value so a cancelled or replaced request cannot render later as current.
+    peer_overview_request_generation: u64,
+    // Generation requested before remote History supplied the server-owned
+    // session id. Launch it after History instead of using the local fallback.
+    pending_peer_overview_request: Option<u64>,
+    // Generation and server-owned session id of the background load currently
+    // allowed to update this App. Cancellation clears this before late replies.
+    active_peer_overview_request: Option<(u64, String)>,
     // All sessions on the server (remote mode only)
     remote_sessions: Vec<String>,
     remote_side_pane_images: Vec<crate::session::RenderedImage>,

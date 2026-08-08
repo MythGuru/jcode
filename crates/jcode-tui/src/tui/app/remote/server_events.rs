@@ -1440,6 +1440,12 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::SessionId { session_id } => {
+            if app.remote_session_id.as_deref() != Some(session_id.as_str()) {
+                super::super::commands_peers::cancel_peer_overview_request(
+                    app,
+                    "the active session changed",
+                );
+            }
             remote.set_session_id(session_id.clone());
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
@@ -2079,6 +2085,12 @@ pub(in crate::tui::app) fn handle_server_event(
             // History is the completion signal for a session attach/resume and
             // can replace the entire visible transcript. Request a frame now so
             // the new session does not appear stuck until another event arrives.
+            if session_changed && prev_session_id.is_some() {
+                super::super::commands_peers::cancel_peer_overview_request(
+                    app,
+                    "the active session changed",
+                );
+            }
             super::super::commands_peers::handle_remote_history_ready(app);
             true
         }

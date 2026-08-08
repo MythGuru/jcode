@@ -336,6 +336,173 @@ fn test_handle_server_event_history_session_change_clears_streaming_preview_diag
 }
 
 #[test]
+fn test_session_id_change_cancels_pending_peer_overview_with_clear_error() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.remote_session_id = None;
+    assert!(commands_peers::handle_peers_command(&mut app, "/peers"));
+    assert!(app.pending_peer_overview_request.is_some());
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SessionId {
+            session_id: "session_after_clear".to_string(),
+        },
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.remote_session_id.as_deref(),
+        Some("session_after_clear")
+    );
+    assert!(app.pending_peer_overview_request.is_none());
+    assert!(app.status_notice.as_ref().is_some_and(|(notice, _)| {
+        notice == "Peer overview cancelled"
+    }));
+    assert!(app.display_messages().iter().any(|message| {
+        message.role == "error"
+            && message
+                .content
+                .contains("Peer overview cancelled because the active session changed.")
+    }));
+}
+
+#[test]
+fn test_history_session_change_cancels_inflight_peer_overview_with_clear_error() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.remote_session_id = Some("session_old".to_string());
+    remote.set_session_id("session_old".to_string());
+    app.active_peer_overview_request = Some((11, "session_old".to_string()));
+    app.set_status_notice("Peer overview loading...");
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: "session_new".to_string(),
+            messages: vec![],
+            images: vec![],
+            provider_name: Some("claude".to_string()),
+            provider_model: Some("claude-sonnet-4-20250514".to_string()),
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            token_usage_totals: None,
+            all_sessions: vec![],
+            client_count: None,
+            is_canary: None,
+            reload_recovery: None,
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: None,
+            connection_type: None,
+            status_detail: None,
+            upstream_provider: None,
+            resolved_credential: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
+        },
+        &mut remote,
+    );
+
+    assert!(app.active_peer_overview_request.is_none());
+    assert!(app.status_notice.as_ref().is_some_and(|(notice, _)| {
+        notice == "Peer overview cancelled"
+    }));
+    assert!(app.display_messages().iter().any(|message| {
+        message.role == "error"
+            && message
+                .content
+                .contains("Peer overview cancelled because the active session changed.")
+    }));
+}
+
+#[test]
+fn test_initial_history_launches_pending_peer_overview_instead_of_cancelling_it() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.remote_session_id = None;
+    assert!(commands_peers::handle_peers_command(&mut app, "/peers"));
+    let pending_generation = app
+        .pending_peer_overview_request
+        .expect("early peer overview should be pending");
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::History {
+            id: 1,
+            session_id: "session_server_owned".to_string(),
+            messages: vec![],
+            images: vec![],
+            provider_name: Some("claude".to_string()),
+            provider_model: Some("claude-sonnet-4-20250514".to_string()),
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            available_models: vec![],
+            available_model_routes: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            total_tokens: None,
+            token_usage_totals: None,
+            all_sessions: vec![],
+            client_count: None,
+            is_canary: None,
+            reload_recovery: None,
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: None,
+            was_interrupted: None,
+            connection_type: None,
+            status_detail: None,
+            upstream_provider: None,
+            resolved_credential: None,
+            reasoning_effort: None,
+            service_tier: None,
+            compaction_mode: crate::config::CompactionMode::Reactive,
+            activity: None,
+            side_panel: crate::side_panel::SidePanelSnapshot::default(),
+        },
+        &mut remote,
+    );
+
+    assert!(app.pending_peer_overview_request.is_none());
+    assert_eq!(
+        app.active_peer_overview_request,
+        Some((pending_generation, "session_server_owned".to_string()))
+    );
+    assert!(app.status_notice.as_ref().is_some_and(|(notice, _)| {
+        notice == "Peer overview loading..."
+    }));
+    assert!(!app.display_messages().iter().any(|message| {
+        message
+            .content
+            .contains("Peer overview cancelled because the active session changed.")
+    }));
+}
+
+#[test]
 fn test_handle_server_event_history_same_session_rewind_reapply_clears_streaming_preview_diagram() {
     // Regression pin: a remote /rewind (or /rewind undo) triggers a History
     // redelivery for the SAME session id, so the session_changed branch of the

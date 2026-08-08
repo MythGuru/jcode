@@ -273,6 +273,7 @@ pub struct GitStatusCompleted {
 
 #[derive(Clone, Debug)]
 pub struct PeerOverviewCompleted {
+    pub generation: u64,
     pub session_id: String,
     pub result: std::result::Result<String, String>,
 }

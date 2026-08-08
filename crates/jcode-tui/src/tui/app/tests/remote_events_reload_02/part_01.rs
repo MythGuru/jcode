@@ -1022,3 +1022,26 @@ fn test_handle_remote_disconnect_flushes_streaming_text_and_sets_reconnect_state
         last.content
     );
 }
+
+#[test]
+fn test_handle_remote_disconnect_cancels_peer_overview_with_clear_error() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = None;
+    assert!(commands_peers::handle_peers_command(&mut app, "/peers"));
+    assert!(app.pending_peer_overview_request.is_some());
+
+    let mut state = remote::RemoteRunState::default();
+    remote::handle_disconnect(&mut app, &mut state, None);
+
+    assert!(app.pending_peer_overview_request.is_none());
+    assert!(app.status_notice.as_ref().is_some_and(|(notice, _)| {
+        notice == "Peer overview cancelled"
+    }));
+    assert!(app.display_messages().iter().any(|message| {
+        message.role == "error"
+            && message
+                .content
+                .contains("Peer overview cancelled because the server connection was lost.")
+    }));
+}

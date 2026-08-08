@@ -182,7 +182,17 @@ fn build_peer_overview_card(
     ))
 }
 
-fn begin_peer_overview_load(app: &mut App, session_id: String) {
+fn next_peer_overview_generation(app: &mut App) -> u64 {
+    app.peer_overview_request_generation = app.peer_overview_request_generation.wrapping_add(1);
+    if app.peer_overview_request_generation == 0 {
+        app.peer_overview_request_generation = 1;
+    }
+    app.peer_overview_request_generation
+}
+
+fn begin_peer_overview_load(app: &mut App, generation: u64, session_id: String) {
+    app.pending_peer_overview_request = None;
+    app.active_peer_overview_request = None;
     let working_dir = activity_working_dir(app.is_remote, super::commands::active_working_dir(app));
     if !app.is_remote
         && app.session.id == session_id
@@ -191,31 +201,45 @@ fn begin_peer_overview_load(app: &mut App, session_id: String) {
         app.push_display_message(DisplayMessage::error(format!(
             "Unable to save the current session before reading peer activity: {error}"
         )));
+        app.set_status_notice("Peer overview unavailable");
         return;
     }
+    app.active_peer_overview_request = Some((generation, session_id.clone()));
     let ambient_enabled = crate::config::config().ambient.enabled;
     app.set_status_notice("Peer overview loading...");
     std::thread::spawn(move || {
         let result = build_peer_overview_card(&session_id, working_dir, ambient_enabled);
         Bus::global().publish(BusEvent::PeerOverviewCompleted(PeerOverviewCompleted {
+            generation,
             session_id,
             result,
         }));
     });
 }
 
-fn take_pending_peer_overview_session(app: &mut App) -> Option<String> {
-    if !app.pending_peer_overview_request {
-        return None;
-    }
+fn take_pending_peer_overview_session(app: &mut App) -> Option<(u64, String)> {
+    let generation = app.pending_peer_overview_request?;
     let session_id = app.remote_session_id.clone()?;
-    app.pending_peer_overview_request = false;
-    Some(session_id)
+    app.pending_peer_overview_request = None;
+    Some((generation, session_id))
+}
+
+pub(super) fn cancel_peer_overview_request(app: &mut App, reason: &str) -> bool {
+    let had_pending = app.pending_peer_overview_request.take().is_some();
+    let had_active = app.active_peer_overview_request.take().is_some();
+    if !had_pending && !had_active {
+        return false;
+    }
+    app.set_status_notice("Peer overview cancelled");
+    app.push_display_message(DisplayMessage::error(format!(
+        "Peer overview cancelled because {reason}."
+    )));
+    true
 }
 
 pub(super) fn handle_remote_history_ready(app: &mut App) {
-    if let Some(session_id) = take_pending_peer_overview_session(app) {
-        begin_peer_overview_load(app, session_id);
+    if let Some((generation, session_id)) = take_pending_peer_overview_session(app) {
+        begin_peer_overview_load(app, generation, session_id);
     }
 }
 
@@ -229,33 +253,48 @@ pub(super) fn handle_peers_command(app: &mut App, trimmed: &str) -> bool {
         PeersCommandMatch::Exact => {}
     }
 
+    let generation = next_peer_overview_generation(app);
     if app.is_remote && app.remote_session_id.is_none() {
-        app.pending_peer_overview_request = true;
+        app.active_peer_overview_request = None;
+        app.pending_peer_overview_request = Some(generation);
         app.set_status_notice("Peer overview loading...");
         return true;
     }
 
-    app.pending_peer_overview_request = false;
     let session_id = super::commands::active_session_id(app);
-    begin_peer_overview_load(app, session_id);
+    begin_peer_overview_load(app, generation, session_id);
     true
 }
 
 pub(super) fn handle_peer_overview_completed(app: &mut App, completed: PeerOverviewCompleted) {
+    let matches_active_request =
+        app.active_peer_overview_request
+            .as_ref()
+            .is_some_and(|(generation, session_id)| {
+                *generation == completed.generation && session_id == &completed.session_id
+            });
+    if !matches_active_request {
+        return;
+    }
     if !completion_belongs_to_session(
         &completed.session_id,
         &super::commands::active_session_id(app),
     ) {
+        cancel_peer_overview_request(app, "the active session changed");
         return;
     }
+    app.active_peer_overview_request = None;
     match completed.result {
         Ok(message) => {
             app.push_display_message(DisplayMessage::system(message));
             app.set_status_notice("Peer overview");
         }
-        Err(error) => app.push_display_message(DisplayMessage::error(format!(
-            "Unable to load peer overview: {error}"
-        ))),
+        Err(error) => {
+            app.push_display_message(DisplayMessage::error(format!(
+                "Unable to load peer overview: {error}"
+            )));
+            app.set_status_notice("Peer overview unavailable");
+        }
     }
 }
 
@@ -293,17 +332,77 @@ mod tests {
         app.remote_session_id = None;
 
         assert!(handle_peers_command(&mut app, "/peers"));
-        assert!(app.pending_peer_overview_request);
+        assert!(app.pending_peer_overview_request.is_some());
         assert_eq!(take_pending_peer_overview_session(&mut app), None);
-        assert!(app.pending_peer_overview_request);
+        assert!(app.pending_peer_overview_request.is_some());
 
         app.remote_session_id = Some("session_server_owned".to_string());
 
-        assert_eq!(
-            take_pending_peer_overview_session(&mut app).as_deref(),
-            Some("session_server_owned")
+        let (generation, session_id) =
+            take_pending_peer_overview_session(&mut app).expect("pending request should launch");
+        assert_eq!(generation, 1);
+        assert_eq!(session_id, "session_server_owned");
+        assert!(app.pending_peer_overview_request.is_none());
+    }
+
+    #[test]
+    fn peer_overview_error_completion_ends_the_loading_state() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        app.is_remote = true;
+        app.remote_session_id = Some("session_active".to_string());
+        app.active_peer_overview_request = Some((7, "session_active".to_string()));
+        app.set_status_notice("Peer overview loading...");
+
+        handle_peer_overview_completed(
+            &mut app,
+            PeerOverviewCompleted {
+                generation: 7,
+                session_id: "session_active".to_string(),
+                result: Err("peer service unavailable".to_string()),
+            },
         );
-        assert!(!app.pending_peer_overview_request);
+
+        assert!(app.active_peer_overview_request.is_none());
+        assert!(
+            app.status_notice
+                .as_ref()
+                .is_some_and(|(notice, _)| { notice == "Peer overview unavailable" })
+        );
+        assert!(app.display_messages().iter().any(|message| {
+            message.role == "error"
+                && message
+                    .content
+                    .contains("Unable to load peer overview: peer service unavailable")
+        }));
+    }
+
+    #[test]
+    fn stale_peer_overview_completion_cannot_replace_the_current_request() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        app.is_remote = true;
+        app.remote_session_id = Some("session_active".to_string());
+        app.active_peer_overview_request = Some((8, "session_active".to_string()));
+        app.set_status_notice("Peer overview loading...");
+
+        handle_peer_overview_completed(
+            &mut app,
+            PeerOverviewCompleted {
+                generation: 7,
+                session_id: "session_active".to_string(),
+                result: Ok("stale overview".to_string()),
+            },
+        );
+
+        assert_eq!(
+            app.active_peer_overview_request,
+            Some((8, "session_active".to_string()))
+        );
+        assert!(app.display_messages().is_empty());
+        assert!(
+            app.status_notice
+                .as_ref()
+                .is_some_and(|(notice, _)| { notice == "Peer overview loading..." })
+        );
     }
 
     #[test]

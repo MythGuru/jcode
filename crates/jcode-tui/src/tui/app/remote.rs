@@ -915,6 +915,7 @@ pub(super) fn handle_disconnect(
     // it cannot remain blocked forever waiting for an event that was lost.
     app.finish_auth_catalog_refresh();
     state.last_disconnect_reason = Some(detail.clone());
+    super::commands_peers::cancel_peer_overview_request(app, "the server connection was lost");
 
     let scheduled_retry =
         app.schedule_pending_remote_retry(&format!("⚡ Connection lost ({detail})."));
