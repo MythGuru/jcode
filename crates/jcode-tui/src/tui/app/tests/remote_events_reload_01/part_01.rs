@@ -336,16 +336,16 @@ fn test_handle_server_event_history_session_change_clears_streaming_preview_diag
 }
 
 #[test]
-fn test_session_id_change_cancels_pending_peer_overview_with_clear_error() {
+fn test_session_id_change_cancels_active_peer_overview_with_clear_error() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
     app.is_remote = true;
-    app.remote_session_id = None;
-    assert!(commands_peers::handle_peers_command(&mut app, "/peers"));
-    assert!(app.pending_peer_overview_request.is_some());
+    app.remote_session_id = Some("session_before_clear".to_string());
+    app.active_peer_overview_request = Some((12, "session_before_clear".to_string()));
+    app.set_status_notice("Peer overview loading...");
 
     app.handle_server_event(
         crate::protocol::ServerEvent::SessionId {
@@ -358,7 +358,7 @@ fn test_session_id_change_cancels_pending_peer_overview_with_clear_error() {
         app.remote_session_id.as_deref(),
         Some("session_after_clear")
     );
-    assert!(app.pending_peer_overview_request.is_none());
+    assert!(app.active_peer_overview_request.is_none());
     assert!(app.status_notice.as_ref().is_some_and(|(notice, _)| {
         notice == "Peer overview cancelled"
     }));
@@ -367,6 +367,43 @@ fn test_session_id_change_cancels_pending_peer_overview_with_clear_error() {
             && message
                 .content
                 .contains("Peer overview cancelled because the active session changed.")
+    }));
+}
+
+#[test]
+fn test_initial_session_id_before_history_preserves_pending_peer_overview() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.remote_session_id = None;
+    assert!(commands_peers::handle_peers_command(&mut app, "/peers"));
+    let pending_generation = app
+        .pending_peer_overview_request
+        .expect("early peer overview should be pending");
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::SessionId {
+            session_id: "session_server_owned".to_string(),
+        },
+        &mut remote,
+    );
+
+    assert_eq!(
+        app.pending_peer_overview_request,
+        Some(pending_generation),
+        "initial SessionId must not cancel a request waiting for History"
+    );
+    assert!(app.active_peer_overview_request.is_none());
+    assert!(app.status_notice.as_ref().is_some_and(|(notice, _)| {
+        notice == "Peer overview loading..."
+    }));
+    assert!(!app.display_messages().iter().any(|message| {
+        message
+            .content
+            .contains("Peer overview cancelled because the active session changed.")
     }));
 }
 

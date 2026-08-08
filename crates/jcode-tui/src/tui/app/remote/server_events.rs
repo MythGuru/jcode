@@ -1440,7 +1440,11 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::SessionId { session_id } => {
-            if app.remote_session_id.as_deref() != Some(session_id.as_str()) {
+            if app
+                .remote_session_id
+                .as_deref()
+                .is_some_and(|current| current != session_id)
+            {
                 super::super::commands_peers::cancel_peer_overview_request(
                     app,
                     "the active session changed",
