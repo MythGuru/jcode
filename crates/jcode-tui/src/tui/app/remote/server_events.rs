@@ -2079,6 +2079,7 @@ pub(in crate::tui::app) fn handle_server_event(
             // History is the completion signal for a session attach/resume and
             // can replace the entire visible transcript. Request a frame now so
             // the new session does not appear stuck until another event arrives.
+            super::super::commands_peers::handle_remote_history_ready(app);
             true
         }
         ServerEvent::CompactedHistory {

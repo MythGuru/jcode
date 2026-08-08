@@ -1230,6 +1230,10 @@ pub struct App {
     tool_output_scan_index: usize,
     // Current session ID (from server in remote mode)
     remote_session_id: Option<String>,
+    // `/peers` was requested before remote History supplied the server-owned
+    // session id. Keep one pending request and launch it after History arrives
+    // instead of sending it under the temporary local fallback id.
+    pending_peer_overview_request: bool,
     // All sessions on the server (remote mode only)
     remote_sessions: Vec<String>,
     remote_side_pane_images: Vec<crate::session::RenderedImage>,

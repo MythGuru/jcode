@@ -182,17 +182,7 @@ fn build_peer_overview_card(
     ))
 }
 
-pub(super) fn handle_peers_command(app: &mut App, trimmed: &str) -> bool {
-    match classify_peers_command(trimmed) {
-        PeersCommandMatch::UsageError => {
-            app.push_display_message(DisplayMessage::error("Usage: /peers".to_string()));
-            return true;
-        }
-        PeersCommandMatch::NotPeers => return false,
-        PeersCommandMatch::Exact => {}
-    }
-
-    let session_id = super::commands::active_session_id(app);
+fn begin_peer_overview_load(app: &mut App, session_id: String) {
     let working_dir = activity_working_dir(app.is_remote, super::commands::active_working_dir(app));
     if !app.is_remote
         && app.session.id == session_id
@@ -201,7 +191,7 @@ pub(super) fn handle_peers_command(app: &mut App, trimmed: &str) -> bool {
         app.push_display_message(DisplayMessage::error(format!(
             "Unable to save the current session before reading peer activity: {error}"
         )));
-        return true;
+        return;
     }
     let ambient_enabled = crate::config::config().ambient.enabled;
     app.set_status_notice("Peer overview loading...");
@@ -212,6 +202,42 @@ pub(super) fn handle_peers_command(app: &mut App, trimmed: &str) -> bool {
             result,
         }));
     });
+}
+
+fn take_pending_peer_overview_session(app: &mut App) -> Option<String> {
+    if !app.pending_peer_overview_request {
+        return None;
+    }
+    let session_id = app.remote_session_id.clone()?;
+    app.pending_peer_overview_request = false;
+    Some(session_id)
+}
+
+pub(super) fn handle_remote_history_ready(app: &mut App) {
+    if let Some(session_id) = take_pending_peer_overview_session(app) {
+        begin_peer_overview_load(app, session_id);
+    }
+}
+
+pub(super) fn handle_peers_command(app: &mut App, trimmed: &str) -> bool {
+    match classify_peers_command(trimmed) {
+        PeersCommandMatch::UsageError => {
+            app.push_display_message(DisplayMessage::error("Usage: /peers".to_string()));
+            return true;
+        }
+        PeersCommandMatch::NotPeers => return false,
+        PeersCommandMatch::Exact => {}
+    }
+
+    if app.is_remote && app.remote_session_id.is_none() {
+        app.pending_peer_overview_request = true;
+        app.set_status_notice("Peer overview loading...");
+        return true;
+    }
+
+    app.pending_peer_overview_request = false;
+    let session_id = super::commands::active_session_id(app);
+    begin_peer_overview_load(app, session_id);
     true
 }
 
@@ -258,6 +284,26 @@ mod tests {
     fn peers_command_completion_is_scoped_to_the_active_session() {
         assert!(completion_belongs_to_session("active", "active"));
         assert!(!completion_belongs_to_session("old", "active"));
+    }
+
+    #[test]
+    fn remote_peers_command_waits_for_history_session_identity() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        app.is_remote = true;
+        app.remote_session_id = None;
+
+        assert!(handle_peers_command(&mut app, "/peers"));
+        assert!(app.pending_peer_overview_request);
+        assert_eq!(take_pending_peer_overview_session(&mut app), None);
+        assert!(app.pending_peer_overview_request);
+
+        app.remote_session_id = Some("session_server_owned".to_string());
+
+        assert_eq!(
+            take_pending_peer_overview_session(&mut app).as_deref(),
+            Some("session_server_owned")
+        );
+        assert!(!app.pending_peer_overview_request);
     }
 
     #[test]
